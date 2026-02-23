@@ -55,6 +55,12 @@ const envSchema = z.object({
 
   // CSRF
   CSRF_SECRET: z.string().min(16).default('change-me-csrf-secret-32chars!!'),
+
+  // PayMongo
+  PAYMONGO_SECRET_KEY: z.string().default(''),
+
+  // Frontend URL (for redirect URLs)
+  FRONTEND_URL: z.string().default('http://localhost:5173'),
 });
 
 const parsed = envSchema.safeParse(process.env);

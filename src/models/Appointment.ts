@@ -33,6 +33,13 @@ export interface IAppointment extends Document {
   };
   ocularFeePaymentMethod?: PaymentMethod;
   ocularFeePaid?: boolean;
+  ocularFeeProofKey?: string;
+  ocularFeeReferenceNumber?: string;
+  ocularFeeStatus?: 'pending' | 'proof_submitted' | 'verified' | 'declined';
+  ocularFeeDeclineReason?: string;
+  ocularFeeVerifiedBy?: Types.ObjectId;
+  paymongoCheckoutSessionId?: string;
+  paymongoCheckoutUrl?: string;
 
   // Notes
   customerNotes?: string;
@@ -86,6 +93,13 @@ const appointmentSchema = new Schema<IAppointment>(
     },
     ocularFeePaymentMethod: { type: String, enum: Object.values(PaymentMethod) },
     ocularFeePaid: { type: Boolean, default: false },
+    ocularFeeProofKey: { type: String },
+    ocularFeeReferenceNumber: { type: String },
+    ocularFeeStatus: { type: String, enum: ['pending', 'proof_submitted', 'verified', 'declined'], default: 'pending' },
+    ocularFeeDeclineReason: { type: String },
+    ocularFeeVerifiedBy: { type: Schema.Types.ObjectId, ref: 'User' },
+    paymongoCheckoutSessionId: { type: String },
+    paymongoCheckoutUrl: { type: String },
 
     customerNotes: { type: String },
     internalNotes: { type: String },

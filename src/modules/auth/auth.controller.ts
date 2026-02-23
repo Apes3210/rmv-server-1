@@ -34,7 +34,28 @@ export const verifyEmail = asyncHandler(async (req: Request, res: Response) => {
     req.ip,
     req.headers['user-agent'],
   );
-  res.json({ success: true, data: result });
+
+  // Set auth cookies so user is auto-logged-in after verification
+  res.cookie('accessToken', result.accessToken, {
+    ...COOKIE_OPTIONS,
+    maxAge: 15 * 60 * 1000,
+  });
+
+  res.cookie('refreshToken', result.refreshToken, {
+    ...COOKIE_OPTIONS,
+    maxAge: 7 * 24 * 60 * 60 * 1000,
+    path: '/api/v1/auth',
+  });
+
+  const csrfToken = generateCsrfToken();
+  res.clearCookie('csrfToken', { path: '/' });
+  res.clearCookie('csrfToken', { domain: env.COOKIE_DOMAIN, path: '/' });
+  res.cookie('csrfToken', csrfToken, {
+    ...CSRF_COOKIE_OPTIONS,
+    maxAge: 7 * 24 * 60 * 60 * 1000,
+  });
+
+  res.json({ success: true, data: { message: result.message, user: result.user } });
 });
 
 export const login = asyncHandler(async (req: Request, res: Response) => {

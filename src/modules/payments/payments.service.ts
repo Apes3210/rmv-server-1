@@ -1,6 +1,6 @@
 import { v4 as uuidv4 } from 'uuid';
 import {
-  PaymentPlan, Payment, Project, User, AuditLog, ReceiptCounter,
+  PaymentPlan, Payment, Project, User, AuditLog, ReceiptCounter, Appointment,
 } from '../../models/index.js';
 import { AppError, ErrorCode } from '../../utils/appError.js';
 import {
@@ -474,6 +474,77 @@ export async function getPaymentById(
   if (!payment) throw AppError.notFound('Payment not found');
   await assertPaymentProjectAccess(payment.projectId.toString(), actorId, actorRoles);
   return payment;
+}
+
+// ── Customer: Payment History (all payments) ──
+
+export async function getMyPaymentHistory(customerId: string) {
+  // Get all projects belonging to this customer
+  const projects = await Project.find({ customerId }).select('_id title');
+  const projectIds = projects.map(p => p._id);
+  const projectMap = new Map(projects.map(p => [p._id.toString(), p.title]));
+
+  // Get all project payments
+  const projectPayments = await Payment.find({ projectId: { $in: projectIds } })
+    .sort({ createdAt: -1 })
+    .lean();
+
+  // Get all ocular fee appointments (paid or pending)
+  const ocularAppointments = await Appointment.find({
+    customerId,
+    type: 'ocular',
+    ocularFee: { $gt: 0 },
+    ocularFeeStatus: { $in: ['verified', 'pending', 'proof_submitted', 'declined'] },
+  })
+    .select('date ocularFee ocularFeePaid ocularFeeStatus ocularFeePaymentMethod formattedAddress createdAt')
+    .sort({ createdAt: -1 })
+    .lean();
+
+  // Build unified timeline
+  const history: Array<{
+    _id: string;
+    type: 'project_payment' | 'ocular_fee';
+    amount: number;
+    status: string;
+    method?: string;
+    referenceNumber?: string;
+    receiptNumber?: string;
+    description: string;
+    date: string;
+    declineReason?: string;
+  }> = [];
+
+  for (const p of projectPayments) {
+    history.push({
+      _id: p._id.toString(),
+      type: 'project_payment',
+      amount: p.amountPaid,
+      status: p.status,
+      method: p.method,
+      referenceNumber: p.referenceNumber,
+      receiptNumber: p.receiptNumber,
+      description: projectMap.get(p.projectId.toString()) || 'Project Payment',
+      date: (p.createdAt as Date).toISOString(),
+      declineReason: p.declineReason,
+    });
+  }
+
+  for (const a of ocularAppointments) {
+    history.push({
+      _id: a._id.toString(),
+      type: 'ocular_fee',
+      amount: a.ocularFee!,
+      status: a.ocularFeePaid ? 'verified' : (a.ocularFeeStatus || 'pending'),
+      method: a.ocularFeePaymentMethod,
+      description: `Ocular Fee — ${a.formattedAddress || a.date}`,
+      date: (a.createdAt as Date).toISOString(),
+    });
+  }
+
+  // Sort by date descending
+  history.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+
+  return history;
 }
 
 // ── Helpers ──

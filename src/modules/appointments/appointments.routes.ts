@@ -13,6 +13,8 @@ import {
   cancelAppointmentSchema,
   noShowSchema,
   recordOcularFeeSchema,
+  submitOcularFeeProofSchema,
+  declineOcularFeeSchema,
   availableSlotsQuerySchema,
 } from './appointments.validation.js';
 
@@ -71,14 +73,14 @@ router.post(
 router.post(
   '/:id/complete',
   authenticate,
-  authorize(Role.APPOINTMENT_AGENT, Role.SALES_STAFF),
+  authorize(Role.SALES_STAFF),
   ctrl.completeAppointment,
 );
 
 router.post(
   '/:id/no-show',
   authenticate,
-  authorize(Role.APPOINTMENT_AGENT, Role.SALES_STAFF),
+  authorize(Role.SALES_STAFF),
   validate(noShowSchema),
   ctrl.markNoShow,
 );
@@ -89,6 +91,56 @@ router.post(
   authorize(Role.APPOINTMENT_AGENT, Role.SALES_STAFF),
   validate(recordOcularFeeSchema),
   ctrl.recordOcularFee,
+);
+
+// ⚠️ TESTING ONLY: Simulate payment without PayMongo. Remove for production.
+router.post(
+  '/:id/simulate-ocular-payment',
+  authenticate,
+  authorize(Role.CUSTOMER),
+  ctrl.simulateOcularFeePayment,
+);
+// ⚠️ END TESTING ONLY
+
+// ── Customer: Create PayMongo Checkout Session ──
+router.post(
+  '/:id/ocular-fee-checkout',
+  authenticate,
+  authorize(Role.CUSTOMER),
+  ctrl.createOcularFeeCheckout,
+);
+
+// ── Customer: Submit Ocular Fee Proof (manual fallback) ──
+router.post(
+  '/:id/ocular-fee-proof',
+  authenticate,
+  authorize(Role.CUSTOMER),
+  validate(submitOcularFeeProofSchema),
+  ctrl.submitOcularFeeProof,
+);
+
+// ── Cashier: Verify or Decline Ocular Fee ──
+router.post(
+  '/:id/ocular-fee-verify',
+  authenticate,
+  authorize(Role.CASHIER, Role.ADMIN),
+  ctrl.verifyOcularFee,
+);
+
+router.post(
+  '/:id/ocular-fee-decline',
+  authenticate,
+  authorize(Role.CASHIER, Role.ADMIN),
+  validate(declineOcularFeeSchema),
+  ctrl.declineOcularFee,
+);
+
+// ── Cashier: List Pending Ocular Fees ──
+router.get(
+  '/ocular-fee-queue',
+  authenticate,
+  authorize(Role.CASHIER, Role.ADMIN),
+  ctrl.listPendingOcularFees,
 );
 
 // ── Cancel (customer or agent/admin) ──
@@ -104,14 +156,14 @@ router.post(
 router.get(
   '/',
   authenticate,
-  authorize(Role.CUSTOMER, Role.APPOINTMENT_AGENT, Role.SALES_STAFF, Role.ADMIN),
+  authorize(Role.CUSTOMER, Role.APPOINTMENT_AGENT, Role.SALES_STAFF, Role.CASHIER, Role.ADMIN),
   ctrl.listAppointments,
 );
 
 router.get(
   '/:id',
   authenticate,
-  authorize(Role.CUSTOMER, Role.APPOINTMENT_AGENT, Role.SALES_STAFF, Role.ADMIN),
+  authorize(Role.CUSTOMER, Role.APPOINTMENT_AGENT, Role.SALES_STAFF, Role.CASHIER, Role.ADMIN),
   ctrl.getAppointmentById,
 );
 

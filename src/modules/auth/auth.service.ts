@@ -171,6 +171,21 @@ export async function verifyEmail(input: VerifyEmailInput, ip?: string, ua?: str
   user.isEmailVerified = true;
   await user.save();
 
+  // Generate tokens so the user is auto-logged-in
+  const accessToken = generateAccessToken(user._id.toString(), user.roles as Role[]);
+  const refreshTokenValue = generateRefreshToken();
+
+  const refreshExpiryDays = parseInt(env.JWT_REFRESH_EXPIRY) || 7;
+  const refreshExpiresAt = new Date(Date.now() + refreshExpiryDays * 24 * 60 * 60 * 1000);
+
+  await RefreshToken.create({
+    userId: user._id,
+    token: refreshTokenValue,
+    userAgent: ua,
+    ipAddress: ip,
+    expiresAt: refreshExpiresAt,
+  });
+
   await AuditLog.create({
     action: AuditAction.EMAIL_VERIFIED,
     actorId: user._id,
@@ -181,7 +196,18 @@ export async function verifyEmail(input: VerifyEmailInput, ip?: string, ua?: str
     userAgent: ua,
   });
 
-  return { message: 'Email verified successfully' };
+  return {
+    message: 'Email verified successfully',
+    accessToken,
+    refreshToken: refreshTokenValue,
+    user: {
+      id: user._id,
+      email: user.email,
+      firstName: user.firstName,
+      lastName: user.lastName,
+      roles: user.roles,
+    },
+  };
 }
 
 export async function login(

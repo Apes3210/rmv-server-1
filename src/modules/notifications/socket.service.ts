@@ -24,7 +24,14 @@ export function initializeSocket(server: HttpServer): SocketServer {
 
   io.use(async (socket: Socket, next) => {
     try {
-      const token = socket.handshake.auth?.token || socket.handshake.query?.token;
+      // Read access token from cookie header, auth payload, or query param
+      let token: string | undefined;
+      const cookieHeader = socket.handshake.headers?.cookie;
+      if (cookieHeader) {
+        const match = cookieHeader.match(/(?:^|;\s*)accessToken=([^;]+)/);
+        if (match) token = match[1];
+      }
+      if (!token) token = socket.handshake.auth?.token || socket.handshake.query?.token;
       if (!token) {
         next(new Error('Authentication required'));
         return;
@@ -82,6 +89,17 @@ export async function createAndSendNotification(
   link?: string,
 ): Promise<void> {
   try {
+    // Check user notification preferences BEFORE saving
+    if (category !== NotificationCategory.SYSTEM) {
+      const user = await User.findById(userId);
+      if (user) {
+        const prefKey = category as keyof typeof user.notificationPreferences;
+        if (!user.notificationPreferences[prefKey]) {
+          return; // User has disabled this category — skip entirely
+        }
+      }
+    }
+
     const notification = await Notification.create({
       userId,
       category,
@@ -90,19 +108,11 @@ export async function createAndSendNotification(
       link,
     });
 
-    // Check user notification preferences
-    const user = await User.findById(userId);
-    if (user) {
-      const prefKey = category as keyof typeof user.notificationPreferences;
-      if (category !== NotificationCategory.SYSTEM && !user.notificationPreferences[prefKey]) {
-        return; // User has disabled this category
-      }
-    }
-
     // Push via socket
     if (io) {
       io.to(`user:${userId.toString()}`).emit('notification:new', {
-        id: notification._id,
+        _id: notification._id,
+        userId: notification.userId,
         category,
         title,
         message,

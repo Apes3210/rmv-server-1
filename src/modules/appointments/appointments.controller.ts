@@ -141,6 +141,74 @@ export const recordOcularFee = asyncHandler(async (req: Request, res: Response) 
   res.json({ success: true, data: appointment });
 });
 
+// ⚠️ TESTING ONLY: Simulate ocular fee payment. Remove for production.
+export const simulateOcularFeePayment = asyncHandler(async (req: Request, res: Response) => {
+  const appointment = await appointmentsService.simulateOcularFeePayment(
+    req.params.id as string,
+    req.userId!,
+  );
+  res.json({ success: true, data: { verified: true, appointmentId: appointment._id } });
+});
+// ⚠️ END TESTING ONLY
+
+// ── Customer: Create PayMongo Checkout for Ocular Fee ──
+export const createOcularFeeCheckout = asyncHandler(async (req: Request, res: Response) => {
+  const result = await appointmentsService.createOcularFeeCheckout(
+    (req.params.id as string),
+    req.userId!,
+    req.ip,
+    req.get('user-agent'),
+  );
+  res.json({
+    success: true,
+    data: {
+      checkoutUrl: result.checkoutUrl,
+      sessionId: result.sessionId,
+    },
+  });
+});
+
+// ── Customer: Submit Ocular Fee Proof (manual fallback) ──
+export const submitOcularFeeProof = asyncHandler(async (req: Request, res: Response) => {
+  const appointment = await appointmentsService.submitOcularFeeProof(
+    (req.params.id as string),
+    req.body,
+    req.userId!,
+    req.ip,
+    req.get('user-agent'),
+  );
+  res.json({ success: true, data: appointment });
+});
+
+// ── Cashier: Verify Ocular Fee ──
+export const verifyOcularFee = asyncHandler(async (req: Request, res: Response) => {
+  const appointment = await appointmentsService.verifyOcularFee(
+    (req.params.id as string),
+    req.userId!,
+    req.ip,
+    req.get('user-agent'),
+  );
+  res.json({ success: true, data: appointment });
+});
+
+// ── Cashier: Decline Ocular Fee ──
+export const declineOcularFee = asyncHandler(async (req: Request, res: Response) => {
+  const appointment = await appointmentsService.declineOcularFee(
+    (req.params.id as string),
+    req.body.reason,
+    req.userId!,
+    req.ip,
+    req.get('user-agent'),
+  );
+  res.json({ success: true, data: appointment });
+});
+
+// ── Cashier: List Pending Ocular Fees ──
+export const listPendingOcularFees = asyncHandler(async (_req: Request, res: Response) => {
+  const appointments = await appointmentsService.listPendingOcularFees();
+  res.json({ success: true, data: appointments.map(formatAppointment) });
+});
+
 // ── Get By ID ──
 export const getAppointmentById = asyncHandler(async (req: Request, res: Response) => {
   const appointment = await appointmentsService.getAppointmentById(

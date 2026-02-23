@@ -69,6 +69,7 @@ export enum PaymentMethod {
   GCASH = 'gcash',
   BANK_TRANSFER = 'bank_transfer',
   PAYMONGO = 'paymongo',
+  QRPH = 'qrph',
 }
 
 // ── Fabrication Status ──
@@ -182,4 +183,8 @@ export enum AuditAction {
   HOLIDAY_CREATED = 'holiday_created',
   HOLIDAY_DELETED = 'holiday_deleted',
   MAINTENANCE_TOGGLED = 'maintenance_toggled',
+  SLOT_BLOCKED = 'slot_blocked',
+  SLOT_UNBLOCKED = 'slot_unblocked',
+  SLOTS_BULK_BLOCKED = 'slots_bulk_blocked',
+  SLOTS_BULK_UNBLOCKED = 'slots_bulk_unblocked',
 }

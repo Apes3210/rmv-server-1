@@ -1,18 +1,20 @@
 import { format, parse, isAfter, isBefore, startOfDay, addMinutes } from 'date-fns';
 import { toZonedTime } from 'date-fns-tz';
 import {
-  Appointment, SlotLock, User, AuditLog, Holiday, SalesAvailability, Config,
+  Appointment, SlotLock, User, AuditLog, Holiday, SalesAvailability, Config, BlockedSlot,
 } from '../../models/index.js';
 import { AppError, ErrorCode } from '../../utils/appError.js';
 import {
   AppointmentStatus, AppointmentType, Role, AuditAction,
-  NotificationCategory, SLOT_CODES, type SlotCode,
+  NotificationCategory, PaymentMethod, SLOT_CODES, type SlotCode,
 } from '../../utils/constants.js';
 import { appointmentStateMachine } from '../../utils/stateMachine.js';
 import { createAndSendNotification, notifyRole } from '../notifications/socket.service.js';
 import { sendAppointmentConfirmedEmail } from '../notifications/email.service.js';
 import { autoCreateDraft as autoCreateVisitReport } from '../visit-reports/visit-reports.service.js';
 import { computeOcularFee, reverseGeocode } from '../maps/maps.service.js';
+import { createCheckoutSession } from '../../services/paymongo.service.js';
+import { env } from '../../config/env.js';
 import type {
   RequestAppointmentInput,
   AgentCreateAppointmentInput,
@@ -71,6 +73,23 @@ async function assertDateAvailable(dateStr: string): Promise<void> {
   const holiday = await Holiday.findOne({ date: dateStr });
   if (holiday) {
     throw AppError.badRequest(`${dateStr} is a holiday: ${holiday.name}`);
+  }
+}
+
+async function assertSlotAvailable(dateStr: string, slotCode: string, type: string): Promise<void> {
+  const blocked = await BlockedSlot.exists({ date: dateStr, slotCode, type });
+  if (blocked) {
+    throw AppError.conflict('This slot has been blocked by an administrator', ErrorCode.SLOT_LOCKED);
+  }
+
+  const booked = await Appointment.countDocuments({
+    date: dateStr,
+    slotCode,
+    type,
+    status: { $in: [AppointmentStatus.REQUESTED, AppointmentStatus.CONFIRMED] },
+  });
+  if (booked > 0) {
+    throw AppError.conflict('This slot is no longer available', ErrorCode.SLOT_LOCKED);
   }
 }
 
@@ -182,11 +201,7 @@ export async function getAvailableSlots(query: AvailableSlotsQuery) {
   const { date, type } = query;
   await assertDateAvailable(date);
 
-  // Both office and ocular use capacity-based availability.
-  // Sales staff assignment is handled later by the Appointment Agent at confirmation.
-  const capacityKey = type === AppointmentType.OFFICE ? 'office_slot_capacity' : 'ocular_slot_capacity';
-  const capacity = await getConfigValue<number>(capacityKey, 3);
-
+  // 1 booking per slot; also check admin/agent blocked slots
   const slots = await Promise.all(
     SLOT_CODES.map(async (slotCode) => {
       const booked = await Appointment.countDocuments({
@@ -195,11 +210,12 @@ export async function getAvailableSlots(query: AvailableSlotsQuery) {
         type,
         status: { $in: [AppointmentStatus.REQUESTED, AppointmentStatus.CONFIRMED] },
       });
+      const blocked = await BlockedSlot.exists({ date, slotCode, type });
       return {
         slotCode,
         time: formatSlotTime(slotCode),
-        available: booked < capacity,
-        remaining: Math.max(0, capacity - booked),
+        available: booked === 0 && !blocked,
+        blocked: !!blocked,
       };
     }),
   );
@@ -217,12 +233,18 @@ export async function requestAppointment(
 ) {
   await assertNoActiveAppointment(customerId);
   await assertDateAvailable(input.date);
+  await assertSlotAvailable(input.date, input.slotCode, input.type);
 
   const ocularVisitData = await resolveOcularVisitData(
     input.type,
     input.formattedAddress,
     input.customerLocation,
   );
+
+  // Determine ocular fee status for outside-NCR appointments
+  const isOutsideNcr = input.type === AppointmentType.OCULAR &&
+    ocularVisitData?.ocularFeeBreakdown &&
+    !ocularVisitData.ocularFeeBreakdown.isWithinNCR;
 
   const appointment = await Appointment.create({
     customerId,
@@ -238,6 +260,7 @@ export async function requestAppointment(
     distanceKm: ocularVisitData?.distanceKm,
     ocularFee: ocularVisitData?.ocularFee,
     ocularFeeBreakdown: ocularVisitData?.ocularFeeBreakdown,
+    ocularFeeStatus: isOutsideNcr ? 'pending' : undefined,
     customerNotes: input.purpose,
     bookedBy: customerId,
   });
@@ -278,6 +301,7 @@ export async function agentCreateAppointment(
 
   await assertNoActiveAppointment(input.customerId);
   await assertDateAvailable(input.date);
+  await assertSlotAvailable(input.date, input.slotCode, input.type);
 
   const ocularVisitData = await resolveOcularVisitData(
     input.type,
@@ -343,6 +367,19 @@ export async function confirmAppointment(
   if (!appointment) throw AppError.notFound('Appointment not found');
 
   appointmentStateMachine.assertTransition(appointment.status, AppointmentStatus.CONFIRMED);
+
+  // Block confirmation for non-NCR ocular appointments if the ocular fee hasn't been paid
+  if (
+    appointment.type === AppointmentType.OCULAR &&
+    appointment.ocularFeeBreakdown &&
+    !appointment.ocularFeeBreakdown.isWithinNCR &&
+    !appointment.ocularFeePaid
+  ) {
+    throw AppError.badRequest(
+      'Ocular fee must be paid before confirming this appointment. The location is outside Metro Manila.',
+      ErrorCode.VALIDATION_ERROR,
+    );
+  }
 
   // Assign or re-assign sales staff
   const salesStaff = await User.findOne({
@@ -445,6 +482,24 @@ export async function completeAppointment(
     ipAddress: ip,
     userAgent: ua,
   });
+
+  // Notify customer
+  await createAndSendNotification(
+    appointment.customerId,
+    NotificationCategory.APPOINTMENT,
+    'Appointment Completed',
+    `Your ${appointment.type} appointment on ${appointment.date} has been marked as completed.`,
+    `/appointments/${appointment._id}`,
+  );
+
+  // Notify appointment agents
+  await notifyRole(
+    Role.APPOINTMENT_AGENT,
+    NotificationCategory.APPOINTMENT,
+    'Appointment Completed',
+    `${appointment.type.charAt(0).toUpperCase() + appointment.type.slice(1)} appointment on ${appointment.date} at ${formatSlotTime(appointment.slotCode)} has been completed.`,
+    `/appointments/${appointment._id}`,
+  );
 
   return appointment;
 }
@@ -562,6 +617,7 @@ export async function completeReschedule(
   }
 
   await assertDateAvailable(input.date);
+  await assertSlotAvailable(input.date, input.slotCode, appointment.type);
 
   const salesId = input.salesStaffId || appointment.salesStaffId?.toString();
 
@@ -674,10 +730,341 @@ export async function cancelAppointment(
     );
   }
 
+  // Notify appointment agents when customer cancels
+  if (actorRole === Role.CUSTOMER) {
+    await notifyRole(
+      Role.APPOINTMENT_AGENT,
+      NotificationCategory.APPOINTMENT,
+      'Appointment Cancelled by Customer',
+      `Customer cancelled their ${appointment.type} appointment on ${appointment.date} at ${formatSlotTime(appointment.slotCode)}.`,
+      `/appointments/${appointment._id}`,
+    );
+  }
+
   return appointment;
 }
 
 // ── Record Ocular Fee Payment ──
+
+// ── Customer: Create PayMongo Checkout for Ocular Fee ──
+
+export async function createOcularFeeCheckout(
+  appointmentId: string,
+  customerId: string,
+  ip?: string,
+  ua?: string,
+) {
+  const appointment = await Appointment.findById(appointmentId);
+  if (!appointment) throw AppError.notFound('Appointment not found');
+
+  if (appointment.customerId.toString() !== customerId) {
+    throw AppError.forbidden('You can only pay for your own appointments');
+  }
+
+  if (appointment.type !== AppointmentType.OCULAR) {
+    throw AppError.badRequest('Ocular fee only applies to ocular appointments');
+  }
+
+  if (appointment.ocularFeePaid) {
+    throw AppError.badRequest('Ocular fee has already been verified');
+  }
+
+  const feeAmount = appointment.ocularFee ?? appointment.ocularFeeBreakdown?.total ?? 0;
+  if (feeAmount <= 0) {
+    throw AppError.badRequest('No ocular fee to pay');
+  }
+
+  // ⚠️ TESTING ONLY: Override fee to ₱1 for PayMongo test payments. Remove this line for production.
+  const chargeAmount = 1; // TODO: change back to `feeAmount` for real payments
+
+  // If there's already an active checkout session, return it
+  if (appointment.paymongoCheckoutUrl && appointment.ocularFeeStatus === 'pending') {
+    return {
+      appointment,
+      checkoutUrl: appointment.paymongoCheckoutUrl,
+      sessionId: appointment.paymongoCheckoutSessionId,
+    };
+  }
+
+  const session = await createCheckoutSession({
+    amount: chargeAmount, // ⚠️ TESTING ONLY: using chargeAmount (₱1) instead of feeAmount
+    description: `Ocular Visit Fee`,
+    appointmentId: appointment._id.toString(),
+    customerId,
+    successUrl: `${env.FRONTEND_URL}/appointments/${appointment._id}/pay-ocular-fee?status=success`,
+    cancelUrl: `${env.FRONTEND_URL}/appointments/${appointment._id}/pay-ocular-fee?status=cancelled`,
+  });
+
+  appointment.paymongoCheckoutSessionId = session.id;
+  appointment.paymongoCheckoutUrl = session.attributes.checkout_url;
+  appointment.ocularFeeStatus = 'pending';
+  appointment.ocularFeePaymentMethod = PaymentMethod.QRPH;
+  await appointment.save();
+
+  await AuditLog.create({
+    action: AuditAction.PAYMENT_PROOF_SUBMITTED,
+    actorId: customerId,
+    targetType: 'appointment',
+    targetId: appointment._id,
+    details: { paymongoSessionId: session.id, ocularFee: feeAmount },
+    ipAddress: ip,
+    userAgent: ua,
+  });
+
+  return {
+    appointment,
+    checkoutUrl: session.attributes.checkout_url,
+    sessionId: session.id,
+  };
+}
+
+// ⚠️ TESTING ONLY: Simulate payment without PayMongo. Remove for production.
+export async function simulateOcularFeePayment(appointmentId: string, customerId: string) {
+  const appointment = await Appointment.findById(appointmentId);
+  if (!appointment) throw AppError.notFound('Appointment not found');
+  if (appointment.customerId.toString() !== customerId) {
+    throw AppError.forbidden('You can only pay for your own appointments');
+  }
+  if (appointment.ocularFeePaid) {
+    throw AppError.badRequest('Already paid');
+  }
+  appointment.ocularFeePaid = true;
+  appointment.ocularFeeStatus = 'verified';
+  appointment.ocularFeeDeclineReason = undefined;
+  await appointment.save();
+  return appointment;
+}
+// ⚠️ END TESTING ONLY
+
+// ── Handle PayMongo Webhook: Payment Paid ──
+
+export async function handlePaymongoPayment(checkoutSessionId: string) {
+  const appointment = await Appointment.findOne({
+    paymongoCheckoutSessionId: checkoutSessionId,
+  }).populate('customerId', 'firstName lastName email');
+
+  if (!appointment) {
+    // Not an appointment payment — ignore
+    return null;
+  }
+
+  if (appointment.ocularFeePaid) {
+    // Already verified — idempotent
+    return appointment;
+  }
+
+  appointment.ocularFeePaid = true;
+  appointment.ocularFeeStatus = 'verified';
+  appointment.ocularFeeDeclineReason = undefined;
+  await appointment.save();
+
+  await AuditLog.create({
+    action: AuditAction.PAYMENT_VERIFIED,
+    actorId: appointment.customerId._id ?? appointment.customerId,
+    targetType: 'appointment',
+    targetId: appointment._id,
+    details: { ocularFee: appointment.ocularFee, verifiedVia: 'paymongo_webhook' },
+  });
+
+  // Notify customer
+  await createAndSendNotification(
+    appointment.customerId._id ?? appointment.customerId,
+    NotificationCategory.PAYMENT,
+    'Ocular Fee Payment Confirmed',
+    `Your ocular fee payment of ₱${appointment.ocularFee?.toLocaleString()} has been confirmed via PayMongo. An appointment agent will assign your sales staff shortly.`,
+    `/appointments/${appointment._id}`,
+  );
+
+  // Notify appointment agents
+  await notifyRole(
+    Role.APPOINTMENT_AGENT,
+    NotificationCategory.APPOINTMENT,
+    'Ocular Fee Paid — Ready for Assignment',
+    `Ocular fee for appointment on ${appointment.date} has been paid via PayMongo. You can now assign a sales staff.`,
+    `/appointments/${appointment._id}`,
+  );
+
+  // Notify cashiers (for their records)
+  await notifyRole(
+    Role.CASHIER,
+    NotificationCategory.PAYMENT,
+    'Ocular Fee Auto-Verified',
+    `Ocular fee payment for appointment on ${appointment.date} was automatically verified via PayMongo.`,
+    `/ocular-fee-queue`,
+  );
+
+  return appointment;
+}
+
+// ── Customer: Submit Ocular Fee Proof (manual fallback) ──
+
+export async function submitOcularFeeProof(
+  appointmentId: string,
+  input: { referenceNumber: string; proofKey: string },
+  customerId: string,
+  ip?: string,
+  ua?: string,
+) {
+  const appointment = await Appointment.findById(appointmentId);
+  if (!appointment) throw AppError.notFound('Appointment not found');
+
+  if (appointment.customerId.toString() !== customerId) {
+    throw AppError.forbidden('You can only submit proof for your own appointments');
+  }
+
+  if (appointment.type !== AppointmentType.OCULAR) {
+    throw AppError.badRequest('Ocular fee only applies to ocular appointments');
+  }
+
+  if (appointment.ocularFeePaid) {
+    throw AppError.badRequest('Ocular fee has already been verified');
+  }
+
+  if (appointment.ocularFeeStatus === 'proof_submitted') {
+    throw AppError.badRequest('Proof has already been submitted. Please wait for cashier verification.');
+  }
+
+  appointment.ocularFeePaymentMethod = PaymentMethod.QRPH;
+  appointment.ocularFeeReferenceNumber = input.referenceNumber;
+  appointment.ocularFeeProofKey = input.proofKey;
+  appointment.ocularFeeStatus = 'proof_submitted';
+  await appointment.save();
+
+  await AuditLog.create({
+    action: AuditAction.PAYMENT_PROOF_SUBMITTED,
+    actorId: customerId,
+    targetType: 'appointment',
+    targetId: appointment._id,
+    details: { referenceNumber: input.referenceNumber, ocularFee: appointment.ocularFee },
+    ipAddress: ip,
+    userAgent: ua,
+  });
+
+  // Notify cashier role
+  await notifyRole(
+    Role.CASHIER,
+    NotificationCategory.PAYMENT,
+    'New Ocular Fee Payment',
+    `A customer has submitted ocular fee payment proof for appointment on ${appointment.date}.`,
+    `/ocular-fee-queue`,
+  );
+
+  return appointment;
+}
+
+// ── Cashier: Verify Ocular Fee ──
+
+export async function verifyOcularFee(
+  appointmentId: string,
+  cashierId: string,
+  ip?: string,
+  ua?: string,
+) {
+  const appointment = await Appointment.findById(appointmentId)
+    .populate('customerId', 'firstName lastName email');
+  if (!appointment) throw AppError.notFound('Appointment not found');
+
+  if (appointment.ocularFeeStatus !== 'proof_submitted') {
+    throw AppError.badRequest('No proof submitted to verify');
+  }
+
+  appointment.ocularFeePaid = true;
+  appointment.ocularFeeStatus = 'verified';
+  appointment.ocularFeeVerifiedBy = cashierId as unknown as Types.ObjectId;
+  appointment.ocularFeeDeclineReason = undefined;
+  await appointment.save();
+
+  await AuditLog.create({
+    action: AuditAction.PAYMENT_VERIFIED,
+    actorId: cashierId,
+    targetType: 'appointment',
+    targetId: appointment._id,
+    details: { ocularFee: appointment.ocularFee },
+    ipAddress: ip,
+    userAgent: ua,
+  });
+
+  // Notify customer
+  await createAndSendNotification(
+    appointment.customerId._id ?? appointment.customerId,
+    NotificationCategory.PAYMENT,
+    'Ocular Fee Verified',
+    `Your ocular fee payment of ₱${appointment.ocularFee?.toLocaleString()} has been verified. An appointment agent will assign your sales staff shortly.`,
+    `/appointments/${appointment._id}`,
+  );
+
+  // Notify appointment agents
+  await notifyRole(
+    Role.APPOINTMENT_AGENT,
+    NotificationCategory.APPOINTMENT,
+    'Ocular Fee Paid — Ready for Assignment',
+    `Ocular fee for appointment on ${appointment.date} has been verified. You can now assign a sales staff.`,
+    `/appointments/${appointment._id}`,
+  );
+
+  return appointment;
+}
+
+// ── Cashier: Decline Ocular Fee ──
+
+export async function declineOcularFee(
+  appointmentId: string,
+  reason: string,
+  cashierId: string,
+  ip?: string,
+  ua?: string,
+) {
+  const appointment = await Appointment.findById(appointmentId);
+  if (!appointment) throw AppError.notFound('Appointment not found');
+
+  if (appointment.ocularFeeStatus !== 'proof_submitted') {
+    throw AppError.badRequest('No proof submitted to decline');
+  }
+
+  appointment.ocularFeeStatus = 'declined';
+  appointment.ocularFeeDeclineReason = reason;
+  appointment.ocularFeeProofKey = undefined;
+  appointment.ocularFeeReferenceNumber = undefined;
+  await appointment.save();
+
+  await AuditLog.create({
+    action: AuditAction.PAYMENT_DECLINED,
+    actorId: cashierId,
+    targetType: 'appointment',
+    targetId: appointment._id,
+    details: { reason, ocularFee: appointment.ocularFee },
+    ipAddress: ip,
+    userAgent: ua,
+  });
+
+  // Notify customer
+  await createAndSendNotification(
+    appointment.customerId,
+    NotificationCategory.PAYMENT,
+    'Ocular Fee Payment Declined',
+    `Your ocular fee payment was declined: ${reason}. Please re-submit a valid proof.`,
+    `/appointments/${appointment._id}/pay-ocular-fee`,
+  );
+
+  return appointment;
+}
+
+// ── Cashier: List Pending Ocular Fees ──
+
+export async function listPendingOcularFees() {
+  const appointments = await Appointment.find({
+    type: AppointmentType.OCULAR,
+    'ocularFeeBreakdown.isWithinNCR': false,
+    ocularFeeStatus: { $in: ['proof_submitted', 'pending', 'declined'] },
+    status: { $ne: AppointmentStatus.CANCELLED },
+  })
+    .populate('customerId', 'firstName lastName email phone')
+    .sort({ updatedAt: -1 });
+
+  return appointments;
+}
+
+// ── Record Ocular Fee Payment (kept for agent/staff backward compat) ──
 
 export async function recordOcularFee(
   appointmentId: string,
@@ -699,10 +1086,12 @@ export async function recordOcularFee(
 
   appointment.ocularFeePaymentMethod = input.paymentMethod;
   appointment.ocularFeePaid = true;
+  appointment.ocularFeeStatus = 'verified';
+  appointment.ocularFeeVerifiedBy = actorId as unknown as Types.ObjectId;
   await appointment.save();
 
   await AuditLog.create({
-    action: AuditAction.APPOINTMENT_CONFIRMED,
+    action: AuditAction.PAYMENT_VERIFIED,
     actorId,
     targetType: 'appointment',
     targetId: appointment._id,
@@ -774,6 +1163,7 @@ export async function listAppointments(query: {
   dateTo?: string;
   customerId?: string;
   salesStaffId?: string;
+  ocularFeeStatus?: string;
   search?: string;
   page?: string;
   limit?: string;
@@ -795,11 +1185,17 @@ export async function listAppointments(query: {
     !actorRoles.some(r => [Role.ADMIN, Role.APPOINTMENT_AGENT].includes(r))
   ) {
     filter.salesStaffId = actorId;
+  } else if (
+    actorRoles.some(r => [Role.ADMIN, Role.APPOINTMENT_AGENT].includes(r))
+  ) {
+    // Hide ocular appointments whose fee hasn't been paid yet
+    filter.ocularFeeStatus = { $ne: 'pending' } as any;
   }
 
   if (query.status) filter.status = query.status;
   if (query.type) filter.type = query.type;
   if (query.date) filter.date = query.date;
+  if (query.ocularFeeStatus) filter.ocularFeeStatus = query.ocularFeeStatus;
   if (query.customerId && !filter.customerId) filter.customerId = query.customerId;
   if (query.salesStaffId && !filter.salesStaffId) filter.salesStaffId = query.salesStaffId;
 

@@ -56,6 +56,15 @@ export const recordOcularFeeSchema = z.object({
   paymentMethod: z.nativeEnum(PaymentMethod),
 });
 
+export const submitOcularFeeProofSchema = z.object({
+  referenceNumber: z.string().min(1, 'Reference number is required').max(100).trim(),
+  proofKey: z.string().min(1, 'Proof upload is required'),
+});
+
+export const declineOcularFeeSchema = z.object({
+  reason: z.string().min(1, 'Reason is required').max(500).trim(),
+});
+
 export const availableSlotsQuerySchema = z.object({
   date: z.string().regex(dateRegex),
   type: z.nativeEnum(AppointmentType),
@@ -68,4 +77,6 @@ export type RescheduleRequestInput = z.infer<typeof rescheduleRequestSchema>;
 export type RescheduleCompleteInput = z.infer<typeof rescheduleCompleteSchema>;
 export type CancelAppointmentInput = z.infer<typeof cancelAppointmentSchema>;
 export type RecordOcularFeeInput = z.infer<typeof recordOcularFeeSchema>;
+export type SubmitOcularFeeProofInput = z.infer<typeof submitOcularFeeProofSchema>;
+export type DeclineOcularFeeInput = z.infer<typeof declineOcularFeeSchema>;
 export type AvailableSlotsQuery = z.infer<typeof availableSlotsQuerySchema>;

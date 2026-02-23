@@ -27,6 +27,7 @@ import reportRoutes from './modules/reports/reports.routes.js';
 import uploadRoutes from './modules/uploads/upload.routes.js';
 import configRoutes from './modules/config/config.routes.js';
 import visitReportRoutes from './modules/visit-reports/visit-reports.routes.js';
+import webhookRoutes from './modules/webhooks/webhook.routes.js';
 
 const app = express();
 app.set('trust proxy', 1);
@@ -96,6 +97,9 @@ app.get(`${env.API_PREFIX}/csrf-token`, (req, res) => {
   });
   res.json({ success: true, data: { csrfToken: token } });
 });
+
+// ── Webhook Routes (before CSRF — external providers can't send CSRF tokens) ──
+app.use(`${env.API_PREFIX}/webhooks`, webhookRoutes);
 
 // ── CSRF Protection (state-changing methods) ──
 app.use(csrfProtection);

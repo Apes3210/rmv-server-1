@@ -1,7 +1,7 @@
-import { Config, Holiday, AuditLog } from '../../models/index.js';
+import { Config, Holiday, AuditLog, BlockedSlot } from '../../models/index.js';
 import { AppError, ErrorCode } from '../../utils/appError.js';
 import { AuditAction } from '../../utils/constants.js';
-import type { UpdateConfigInput, CreateHolidayInput } from './config.validation.js';
+import type { UpdateConfigInput, CreateHolidayInput, CreateBlockedSlotInput, BulkBlockSlotsInput, BulkUnblockSlotsInput } from './config.validation.js';
 
 const LEGACY_SHOP_COORDS = {
   lat: 14.6617,
@@ -145,12 +145,144 @@ export async function isMaintenanceMode(): Promise<boolean> {
   return config?.value === true;
 }
 
+// ── Blocked Slots ──
+
+export async function listBlockedSlots(date?: string) {
+  const filter: Record<string, unknown> = {};
+  if (date) filter.date = date;
+  return BlockedSlot.find(filter).sort({ date: 1, slotCode: 1 }).populate('blockedBy', 'firstName lastName');
+}
+
+export async function createBlockedSlot(
+  input: CreateBlockedSlotInput,
+  userId: string,
+  ip?: string,
+  ua?: string,
+) {
+  const existing = await BlockedSlot.findOne({ date: input.date, slotCode: input.slotCode, type: input.type });
+  if (existing) throw AppError.conflict('This slot is already blocked', ErrorCode.DUPLICATE_ENTRY);
+
+  const slot = await BlockedSlot.create({
+    date: input.date,
+    slotCode: input.slotCode,
+    type: input.type,
+    reason: input.reason,
+    blockedBy: userId,
+  });
+
+  await AuditLog.create({
+    action: AuditAction.SLOT_BLOCKED,
+    actorId: userId,
+    targetType: 'blockedSlot',
+    targetId: slot._id,
+    details: { date: input.date, slotCode: input.slotCode, type: input.type, reason: input.reason },
+    ipAddress: ip,
+    userAgent: ua,
+  });
+
+  return slot;
+}
+
+export async function deleteBlockedSlot(
+  slotId: string,
+  userId: string,
+  ip?: string,
+  ua?: string,
+) {
+  const slot = await BlockedSlot.findByIdAndDelete(slotId);
+  if (!slot) throw AppError.notFound('Blocked slot not found');
+
+  await AuditLog.create({
+    action: AuditAction.SLOT_UNBLOCKED,
+    actorId: userId,
+    targetType: 'blockedSlot',
+    targetId: slot._id,
+    details: { date: slot.date, slotCode: slot.slotCode, type: slot.type },
+    ipAddress: ip,
+    userAgent: ua,
+  });
+
+  return { deleted: true };
+}
+
+export async function bulkCreateBlockedSlots(
+  input: BulkBlockSlotsInput,
+  userId: string,
+  ip?: string,
+  ua?: string,
+) {
+  const docs = input.slots.map((s) => ({
+    date: input.date,
+    slotCode: s.slotCode,
+    type: s.type,
+    reason: input.reason,
+    blockedBy: userId,
+  }));
+
+  let created = 0;
+  let skipped = 0;
+
+  try {
+    const result = await BlockedSlot.insertMany(docs, { ordered: false });
+    created = result.length;
+    skipped = docs.length - created;
+  } catch (err: unknown) {
+    // BulkWriteError — some succeeded, some duplicates
+    const bwe = err as { code?: number; insertedDocs?: unknown[] };
+    if (bwe.code === 11000) {
+      created = (bwe.insertedDocs ?? []).length;
+      skipped = docs.length - created;
+    } else {
+      throw err;
+    }
+  }
+
+  if (created > 0) {
+    await AuditLog.create({
+      action: AuditAction.SLOTS_BULK_BLOCKED,
+      actorId: userId,
+      targetType: 'blockedSlot',
+      details: {
+        date: input.date,
+        slots: input.slots,
+        reason: input.reason,
+        created,
+        skipped,
+      },
+      ipAddress: ip,
+      userAgent: ua,
+    });
+  }
+
+  return { created, skipped };
+}
+
+export async function bulkDeleteBlockedSlots(
+  input: BulkUnblockSlotsInput,
+  userId: string,
+  ip?: string,
+  ua?: string,
+) {
+  const slots = await BlockedSlot.find({ _id: { $in: input.ids } });
+  if (!slots.length) throw AppError.notFound('No blocked slots found for the given IDs');
+
+  const details = slots.map((s) => ({ date: s.date, slotCode: s.slotCode, type: s.type }));
+  await BlockedSlot.deleteMany({ _id: { $in: input.ids } });
+
+  await AuditLog.create({
+    action: AuditAction.SLOTS_BULK_UNBLOCKED,
+    actorId: userId,
+    targetType: 'blockedSlot',
+    details: { slots: details, count: slots.length },
+    ipAddress: ip,
+    userAgent: ua,
+  });
+
+  return { deleted: slots.length };
+}
+
 export async function seedDefaultConfigs(): Promise<void> {
   const defaults: Record<string, { value: unknown; description: string }> = {
-    office_slot_capacity: {
-      value: 3,
-      description: 'Maximum number of office visit appointments per time slot',
-    },
     maintenance_mode: {
       value: false,
       description: 'Enable/disable maintenance mode',

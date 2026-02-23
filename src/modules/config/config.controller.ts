@@ -36,3 +36,28 @@ export const toggleMaintenance = asyncHandler(async (req: Request, res: Response
   const result = await configService.toggleMaintenance(req.body.enabled, req.userId!, req.ip, req.get('user-agent'));
   res.json({ success: true, data: result });
 });
+
+export const listBlockedSlots = asyncHandler(async (req: Request, res: Response) => {
+  const slots = await configService.listBlockedSlots(req.query.date as string);
+  res.json({ success: true, data: slots });
+});
+
+export const createBlockedSlot = asyncHandler(async (req: Request, res: Response) => {
+  const slot = await configService.createBlockedSlot(req.body, req.userId!, req.ip, req.get('user-agent'));
+  res.status(201).json({ success: true, data: slot });
+});
+
+export const deleteBlockedSlot = asyncHandler(async (req: Request, res: Response) => {
+  await configService.deleteBlockedSlot(req.params.id as string, req.userId!, req.ip, req.get('user-agent'));
+  res.json({ success: true, message: 'Blocked slot removed' });
+});
+
+export const bulkCreateBlockedSlots = asyncHandler(async (req: Request, res: Response) => {
+  const result = await configService.bulkCreateBlockedSlots(req.body, req.userId!, req.ip, req.get('user-agent'));
+  res.status(201).json({ success: true, data: result });
+});
+
+export const bulkDeleteBlockedSlots = asyncHandler(async (req: Request, res: Response) => {
+  const result = await configService.bulkDeleteBlockedSlots(req.body, req.userId!, req.ip, req.get('user-agent'));
+  res.json({ success: true, data: result });
+});

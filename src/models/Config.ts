@@ -75,3 +75,29 @@ const receiptCounterSchema = new Schema<IReceiptCounter>({
 });
 
 export const ReceiptCounter = mongoose.model<IReceiptCounter>('ReceiptCounter', receiptCounterSchema);
+
+// ── Blocked Slot Model ──
+export interface IBlockedSlot extends Document {
+  _id: Types.ObjectId;
+  date: string; // YYYY-MM-DD
+  slotCode: string;
+  type: 'office' | 'ocular';
+  reason?: string;
+  blockedBy: Types.ObjectId;
+  createdAt: Date;
+}
+
+const blockedSlotSchema = new Schema<IBlockedSlot>(
+  {
+    date: { type: String, required: true },
+    slotCode: { type: String, required: true },
+    type: { type: String, required: true, enum: ['office', 'ocular'] },
+    reason: { type: String },
+    blockedBy: { type: Schema.Types.ObjectId, ref: 'User', required: true },
+  },
+  { timestamps: { createdAt: true, updatedAt: false } },
+);
+
+blockedSlotSchema.index({ date: 1, slotCode: 1, type: 1 }, { unique: true });
+
+export const BlockedSlot = mongoose.model<IBlockedSlot>('BlockedSlot', blockedSlotSchema);

@@ -4,7 +4,7 @@ import { authenticate } from '../../middleware/auth.js';
 import { authorize } from '../../middleware/rbac.js';
 import { validate } from '../../middleware/validate.js';
 import { Role } from '../../utils/constants.js';
-import { updateConfigSchema, createHolidaySchema, maintenanceToggleSchema } from './config.validation.js';
+import { updateConfigSchema, createHolidaySchema, maintenanceToggleSchema, createBlockedSlotSchema, bulkBlockSlotsSchema, bulkUnblockSlotsSchema } from './config.validation.js';
 
 const router = Router();
 
@@ -18,5 +18,11 @@ router.post('/holidays', authenticate, authorize(Role.ADMIN), validate(createHol
 router.delete('/holidays/:id', authenticate, authorize(Role.ADMIN), ctrl.deleteHoliday);
 
 router.post('/maintenance', authenticate, authorize(Role.ADMIN), validate(maintenanceToggleSchema), ctrl.toggleMaintenance);
+
+router.get('/blocked-slots', authenticate, authorize(Role.ADMIN, Role.APPOINTMENT_AGENT), ctrl.listBlockedSlots);
+router.post('/blocked-slots/bulk', authenticate, authorize(Role.ADMIN, Role.APPOINTMENT_AGENT), validate(bulkBlockSlotsSchema), ctrl.bulkCreateBlockedSlots);
+router.delete('/blocked-slots/bulk', authenticate, authorize(Role.ADMIN, Role.APPOINTMENT_AGENT), validate(bulkUnblockSlotsSchema), ctrl.bulkDeleteBlockedSlots);
+router.post('/blocked-slots', authenticate, authorize(Role.ADMIN, Role.APPOINTMENT_AGENT), validate(createBlockedSlotSchema), ctrl.createBlockedSlot);
+router.delete('/blocked-slots/:id', authenticate, authorize(Role.ADMIN, Role.APPOINTMENT_AGENT), ctrl.deleteBlockedSlot);
 
 export default router;

@@ -56,6 +56,14 @@ router.post(
   ctrl.declinePayment,
 );
 
+// ── Customer: Payment History ──
+router.get(
+  '/my-history',
+  authenticate,
+  authorize(Role.CUSTOMER),
+  ctrl.getMyPaymentHistory,
+);
+
 // ── Cashier: Pending Queue ──
 router.get(
   '/pending',

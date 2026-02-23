@@ -28,6 +28,11 @@ export const declinePayment = asyncHandler(async (req: Request, res: Response) =
   res.json({ success: true, data: payment });
 });
 
+export const getMyPaymentHistory = asyncHandler(async (req: Request, res: Response) => {
+  const history = await paymentsService.getMyPaymentHistory(req.userId!);
+  res.json({ success: true, data: history });
+});
+
 export const getPaymentPlanByProject = asyncHandler(async (req: Request, res: Response) => {
   const plan = await paymentsService.getPaymentPlanByProject(
     (req.params.projectId as string),
