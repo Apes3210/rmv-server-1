@@ -29,6 +29,9 @@ jobs:
     name: Deploy
     runs-on: ubuntu-latest
     needs: ci
+    concurrency:
+      group: vps-deploy
+      cancel-in-progress: false
     steps:
       - name: Deploy to VPS
         uses: appleboy/ssh-action@v1.2.0
@@ -36,14 +39,22 @@ jobs:
           host: ${{ secrets.VPS_HOST }}
           username: ${{ secrets.VPS_USERNAME }}
           password: ${{ secrets.VPS_PASSWORD }}
+          command_timeout: 15m
           script_stop: true
           script: |
             set -e
 
+            # Acquire deploy lock (prevent concurrent deploys from both repos)
+            LOCKFILE=/tmp/rmv-deploy.lock
+            exec 200>"$LOCKFILE"
+            echo "Waiting for deploy lock..."
+            flock -w 600 200 || { echo "Could not acquire deploy lock after 10m"; exit 1; }
+            echo "Deploy lock acquired"
+
             wait_for_health() {
               container="$1"
               expected="${2:-healthy}"
-              retries="${3:-60}"
+              retries="${3:-90}"
               sleep_seconds="${4:-3}"
 
               for i in $(seq 1 "$retries"); do
@@ -52,10 +63,17 @@ jobs:
                 if [ "$status" = "$expected" ]; then
                   return 0
                 fi
+                # If container is unhealthy (not just starting), show logs and bail
+                if [ "$status" = "unhealthy" ]; then
+                  echo "Container $container is unhealthy! Recent logs:"
+                  docker logs --tail 30 "$container" 2>&1 || true
+                  return 1
+                fi
                 sleep "$sleep_seconds"
               done
 
               echo "Timed out waiting for $container to become $expected"
+              docker logs --tail 30 "$container" 2>&1 || true
               return 1
             }
 
