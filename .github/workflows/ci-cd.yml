@@ -26,11 +26,11 @@ jobs:
         run: npm run build
 
   deploy:
-    name: Deploy
+    name: Deploy to Production
     runs-on: ubuntu-latest
     needs: ci
     concurrency:
-      group: vps-deploy
+      group: vps-deploy-backend
       cancel-in-progress: false
     steps:
       - name: Deploy to VPS
@@ -44,64 +44,70 @@ jobs:
           script: |
             set -e
 
-            # Acquire deploy lock (prevent concurrent deploys from both repos)
-            LOCKFILE=/tmp/rmv-deploy.lock
-            exec 200>"$LOCKFILE"
-            echo "Waiting for deploy lock..."
-            flock -w 600 200 || { echo "Could not acquire deploy lock after 10m"; exit 1; }
+            # ── Cross-repo deploy lock (mkdir is atomic) ──────────────
+            LOCKDIR="/tmp/rmv-deploy.lock"
+            cleanup() { rm -rf "$LOCKDIR"; }
+            trap cleanup EXIT
+
+            acquired=false
+            for i in $(seq 1 60); do
+              if mkdir "$LOCKDIR" 2>/dev/null; then acquired=true; break; fi
+              if [ -d "$LOCKDIR" ]; then
+                lock_age=$(( $(date +%s) - $(stat -c %Y "$LOCKDIR") ))
+                if [ "$lock_age" -gt 900 ]; then
+                  echo "Breaking stale lock (${lock_age}s old)"
+                  rm -rf "$LOCKDIR"; mkdir "$LOCKDIR"; acquired=true; break
+                fi
+              fi
+              echo "Waiting for deploy lock ($i/60)..."
+              sleep 5
+            done
+            [ "$acquired" = true ] || { echo "Failed to acquire deploy lock"; exit 1; }
             echo "Deploy lock acquired"
 
+            # ── Helper: wait for container health ─────────────────────
             wait_for_health() {
-              container="$1"
-              expected="${2:-healthy}"
-              retries="${3:-90}"
-              sleep_seconds="${4:-3}"
-
+              local c="$1" retries="${2:-60}" delay="${3:-3}"
               for i in $(seq 1 "$retries"); do
-                status="$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$container" 2>/dev/null || true)"
-                echo "[$i/$retries] $container status: $status"
-                if [ "$status" = "$expected" ]; then
-                  return 0
+                s=$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$c" 2>/dev/null || true)
+                echo "  [$i/$retries] $c -> $s"
+                [ "$s" = "healthy" ] && return 0
+                if [ "$s" = "unhealthy" ]; then
+                  echo "!! $c is unhealthy — recent logs:"; docker logs --tail 30 "$c" 2>&1 || true; return 1
                 fi
-                # If container is unhealthy (not just starting), show logs and bail
-                if [ "$status" = "unhealthy" ]; then
-                  echo "Container $container is unhealthy! Recent logs:"
-                  docker logs --tail 30 "$container" 2>&1 || true
-                  return 1
-                fi
-                sleep "$sleep_seconds"
+                sleep "$delay"
               done
-
-              echo "Timed out waiting for $container to become $expected"
-              docker logs --tail 30 "$container" 2>&1 || true
-              return 1
+              echo "Timeout waiting for $c"; docker logs --tail 30 "$c" 2>&1 || true; return 1
             }
 
+            # ── Clone repos (first-time only) ────────────────────────
             mkdir -p /opt/rmv
+            [ -d /opt/rmv/rmv-server/.git ] || git clone https://github.com/potatsukki/rmv-server.git /opt/rmv/rmv-server
+            [ -d /opt/rmv/rmv-web/.git ]    || git clone https://github.com/potatsukki/rmv-web.git    /opt/rmv/rmv-web
 
-            if [ ! -d /opt/rmv/rmv-server/.git ]; then
-              git clone https://github.com/potatsukki/rmv-server.git /opt/rmv/rmv-server
-            fi
+            # ── Pull latest code ──────────────────────────────────────
+            echo "Pulling latest code..."
+            git -C /opt/rmv/rmv-server fetch --all && git -C /opt/rmv/rmv-server reset --hard origin/main
+            git -C /opt/rmv/rmv-web    fetch --all && git -C /opt/rmv/rmv-web    reset --hard origin/main
 
-            if [ ! -d /opt/rmv/rmv-web/.git ]; then
-              git clone https://github.com/potatsukki/rmv-web.git /opt/rmv/rmv-web
-            fi
-
-            git -C /opt/rmv/rmv-server fetch --all
-            git -C /opt/rmv/rmv-server reset --hard origin/main
-            git -C /opt/rmv/rmv-web fetch --all
-            git -C /opt/rmv/rmv-web reset --hard origin/main
-
+            # ── Tear down & rebuild ───────────────────────────────────
             cd /opt/rmv/rmv-server/deploy
-            docker compose -f docker-compose.prod.yml up -d --build api web nginx
+            echo "Stopping existing containers..."
+            docker compose -f docker-compose.prod.yml down --remove-orphans
 
-            wait_for_health rmv-api healthy
-            wait_for_health rmv-web healthy
+            echo "Building and starting services..."
+            docker compose -f docker-compose.prod.yml up -d --build api web nginx certbot
 
-            docker compose -f docker-compose.prod.yml restart nginx
+            # ── Health checks ─────────────────────────────────────────
+            echo "Waiting for health checks..."
+            wait_for_health rmv-api 60 3
+            wait_for_health rmv-web 40 3
 
-            docker exec rmv-nginx wget --no-verbose --tries=1 --spider http://api:5000/api/v1/health
-            docker exec rmv-nginx wget --no-verbose --tries=1 --spider http://web/
+            # ── Smoke tests ───────────────────────────────────────────
+            echo "Running smoke tests..."
+            docker exec rmv-nginx wget -qO/dev/null --tries=2 --spider http://api:5000/api/v1/health
+            docker exec rmv-nginx wget -qO/dev/null --tries=2 --spider http://web/
 
+            echo "Deploy successful"
             docker compose -f docker-compose.prod.yml ps
             docker image prune -f
