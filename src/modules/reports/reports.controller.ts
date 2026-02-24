@@ -36,3 +36,11 @@ export const getConversionReport = asyncHandler(async (req: Request, res: Respon
   const data = await reportsService.getConversionReport(req.query as any);
   res.json({ success: true, data });
 });
+
+export const getAuditLogs = asyncHandler(async (req: Request, res: Response) => {
+  const data = await reportsService.getRecentAuditLogs({
+    limit: req.query.limit ? Number(req.query.limit) : undefined,
+    page: req.query.page ? Number(req.query.page) : undefined,
+  });
+  res.json({ success: true, data });
+});

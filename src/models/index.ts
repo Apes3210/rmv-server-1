@@ -17,3 +17,4 @@ export { IdempotencyKey, type IIdempotencyKey } from './IdempotencyKey.js';
 export { Config, type IConfig, Holiday, type IHoliday, SalesAvailability, type ISalesAvailability, ReceiptCounter, type IReceiptCounter, BlockedSlot, type IBlockedSlot } from './Config.js';
 export { RouteCache, type IRouteCache } from './RouteCache.js';
 export { VisitReport, type IVisitReport, VisitReportStatus } from './VisitReport.js';
+export { LoginHistory, type ILoginHistory } from './LoginHistory.js';

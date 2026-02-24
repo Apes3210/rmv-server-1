@@ -44,7 +44,20 @@ export const resetPasswordSchema = z.object({
 
 export const resendOtpSchema = z.object({
   email: z.string().email().toLowerCase().trim(),
-  purpose: z.enum(['email_verification', 'password_reset']),
+  purpose: z.enum(['email_verification', 'password_reset', 'login_2fa', 'enable_2fa']),
+});
+
+export const verify2faSchema = z.object({
+  tempToken: z.string().min(1, 'Temp token is required'),
+  otp: z.string().length(6, 'OTP must be 6 digits'),
+});
+
+export const resend2faSchema = z.object({
+  tempToken: z.string().min(1, 'Temp token is required'),
+});
+
+export const disable2faSchema = z.object({
+  password: z.string().min(1, 'Password is required'),
 });
 
 export const changePasswordSchema = z.object({
@@ -65,3 +78,6 @@ export type ForgotPasswordInput = z.infer<typeof forgotPasswordSchema>;
 export type ResetPasswordInput = z.infer<typeof resetPasswordSchema>;
 export type ResendOtpInput = z.infer<typeof resendOtpSchema>;
 export type ChangePasswordInput = z.infer<typeof changePasswordSchema>;
+export type Verify2faInput = z.infer<typeof verify2faSchema>;
+export type Resend2faInput = z.infer<typeof resend2faSchema>;
+export type Disable2faInput = z.infer<typeof disable2faSchema>;

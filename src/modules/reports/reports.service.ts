@@ -1,12 +1,42 @@
 import {
   Project, Payment, PaymentPlan, Appointment,
-  FabricationUpdate, User, CashCollection,
+  FabricationUpdate, User, CashCollection, AuditLog,
 } from '../../models/index.js';
 import {
   ProjectStatus, PaymentStageStatus, FabricationStatus,
   AppointmentStatus, AppointmentType, Role,
 } from '../../utils/constants.js';
 import type { Types } from 'mongoose';
+
+// ── Recent Audit Logs (Admin) ──
+
+export async function getRecentAuditLogs(query: {
+  limit?: number;
+  page?: number;
+}) {
+  const limit = Math.min(query.limit ?? 5, 50);
+  const page = Math.max(query.page ?? 1, 1);
+  const skip = (page - 1) * limit;
+
+  const [items, total] = await Promise.all([
+    AuditLog.find()
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit)
+      .populate('actorId', 'firstName lastName email')
+      .lean()
+      .exec(),
+    AuditLog.countDocuments().exec(),
+  ]);
+
+  return {
+    items,
+    total,
+    page,
+    limit,
+    hasMore: skip + items.length < total,
+  };
+}
 
 // ── Revenue Report (Admin + Cashier) ──
 

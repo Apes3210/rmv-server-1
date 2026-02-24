@@ -126,6 +126,21 @@ const templates: Record<string, string> = {
       </div>
     </div>
   `,
+  login_2fa: `
+    <div style="font-family: Arial, sans-serif; max-width: 500px; margin: 0 auto; padding: 20px;">
+      <div style="text-align: center; padding: 20px; background: #1a1a2e; color: white; border-radius: 8px 8px 0 0;">
+        <h1 style="margin: 0;">RMV Stainless Steel</h1>
+      </div>
+      <div style="padding: 30px; background: #f9f9f9; border-radius: 0 0 8px 8px;">
+        <h2>Login Verification</h2>
+        <p>We detected a login attempt on your account. Enter the code below to verify your identity:</p>
+        <div style="text-align: center; padding: 20px; background: white; border-radius: 8px; margin: 20px 0;">
+          <span style="font-size: 32px; font-weight: bold; letter-spacing: 8px; color: #1a1a2e;">{{otp}}</span>
+        </div>
+        <p style="color: #666;">This code expires in 3 minutes. If you didn't attempt to log in, please change your password immediately.</p>
+      </div>
+    </div>
+  `,
 };
 
 // Compile templates
@@ -270,6 +285,10 @@ export async function sendFabricationUpdateEmail(
   data: { projectTitle: string; status: string; notes: string },
 ): Promise<void> {
   await sendEmail(to, 'Fabrication Update - RMV Stainless Steel', 'fabrication_update', data);
+}
+
+export async function send2faEmail(to: string, otp: string): Promise<void> {
+  await sendEmail(to, 'Login Verification Code - RMV Stainless Steel', 'login_2fa', { otp });
 }
 
 // Retry processor (called by cron or startup)

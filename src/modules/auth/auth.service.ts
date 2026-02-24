@@ -2,11 +2,12 @@ import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import crypto from 'crypto';
 import { env } from '../../config/env.js';
-import { User, OtpToken, RefreshToken, AuditLog } from '../../models/index.js';
+import { User, OtpToken, RefreshToken, AuditLog, LoginHistory } from '../../models/index.js';
 import { AppError, ErrorCode } from '../../utils/appError.js';
 import { Role, OtpPurpose, AuditAction } from '../../utils/constants.js';
 import { generateOtp } from '../../utils/helpers.js';
-import { sendOtpEmail, sendPasswordResetEmail } from '../notifications/email.service.js';
+import { sendOtpEmail, sendPasswordResetEmail, send2faEmail } from '../notifications/email.service.js';
+import { parseDevice } from '../../utils/deviceInfo.js';
 import type {
   RegisterInput,
   VerifyEmailInput,
@@ -15,7 +16,11 @@ import type {
   ResetPasswordInput,
   ResendOtpInput,
   ChangePasswordInput,
+  Verify2faInput,
+  Resend2faInput,
+  Disable2faInput,
 } from './auth.validation.js';
+import type { Types } from 'mongoose';
 
 // ── Token Generation ──
 function generateAccessToken(userId: string, roles: Role[]): string {
@@ -26,6 +31,22 @@ function generateAccessToken(userId: string, roles: Role[]): string {
 
 function generateRefreshToken(): string {
   return crypto.randomBytes(64).toString('hex');
+}
+
+function generateTempToken(userId: string): string {
+  return jwt.sign({ userId, purpose: '2fa' }, env.JWT_ACCESS_SECRET, {
+    expiresIn: '5m',
+  } as jwt.SignOptions);
+}
+
+function verifyTempToken(token: string): { userId: string } {
+  try {
+    const payload = jwt.verify(token, env.JWT_ACCESS_SECRET) as { userId: string; purpose: string };
+    if (payload.purpose !== '2fa') throw new Error('Invalid token purpose');
+    return { userId: payload.userId };
+  } catch {
+    throw AppError.unauthorized('Invalid or expired verification token', ErrorCode.TOKEN_EXPIRED);
+  }
 }
 
 // ── OTP Helpers ──
@@ -70,6 +91,8 @@ async function createAndSendOtp(email: string, purpose: OtpPurpose): Promise<voi
   // Send email
   if (purpose === OtpPurpose.EMAIL_VERIFICATION) {
     await sendOtpEmail(email, otp);
+  } else if (purpose === OtpPurpose.LOGIN_2FA || purpose === OtpPurpose.ENABLE_2FA) {
+    await send2faEmail(email, otp);
   } else {
     await sendPasswordResetEmail(email, otp);
   }
@@ -216,6 +239,7 @@ export async function login(
   ua?: string,
 ) {
   const { email, password } = input;
+  const deviceInfo = parseDevice(ua, ip);
 
   const user = await User.findOne({ email }).select('+password');
   if (!user) {
@@ -245,6 +269,19 @@ export async function login(
 
   const isMatch = await bcrypt.compare(password, user.password);
   if (!isMatch) {
+    // Record failed login
+    await LoginHistory.record({
+      userId: user._id,
+      ipAddress: ip || '',
+      userAgent: ua || '',
+      browser: deviceInfo.browser,
+      os: deviceInfo.os,
+      device: deviceInfo.device,
+      location: deviceInfo.location,
+      status: 'failed',
+      failReason: 'Wrong password',
+    });
+
     await AuditLog.create({
       action: AuditAction.LOGIN_FAILED,
       actorId: user._id,
@@ -256,7 +293,24 @@ export async function login(
     throw AppError.unauthorized('Invalid email or password', ErrorCode.INVALID_CREDENTIALS);
   }
 
-  // Generate tokens
+  // ── 2FA Check ──
+  if (user.twoFactorEnabled) {
+    // Send 2FA OTP and return temp token (no cookies yet)
+    await createAndSendOtp(email, OtpPurpose.LOGIN_2FA);
+    const tempToken = generateTempToken(user._id.toString());
+
+    return {
+      requires2FA: true,
+      tempToken,
+      user: {
+        id: user._id,
+        email: user.email,
+        firstName: user.firstName,
+      },
+    };
+  }
+
+  // ── Normal login (no 2FA) ──
   const accessToken = generateAccessToken(user._id.toString(), user.roles as Role[]);
   const refreshTokenValue = generateRefreshToken();
 
@@ -272,6 +326,18 @@ export async function login(
     expiresAt: refreshExpiresAt,
   });
 
+  // Record successful login
+  await LoginHistory.record({
+    userId: user._id,
+    ipAddress: ip || '',
+    userAgent: ua || '',
+    browser: deviceInfo.browser,
+    os: deviceInfo.os,
+    device: deviceInfo.device,
+    location: deviceInfo.location,
+    status: 'success',
+  });
+
   await AuditLog.create({
     action: AuditAction.LOGIN,
     actorId: user._id,
@@ -283,6 +349,7 @@ export async function login(
   });
 
   return {
+    requires2FA: false,
     accessToken,
     refreshToken: refreshTokenValue,
     user: {
@@ -412,4 +479,222 @@ export async function changePassword(userId: string, input: ChangePasswordInput,
   });
 
   return { message: 'Password changed successfully' };
+}
+
+// ── 2FA Verification (after login) ──
+
+export async function verify2fa(input: Verify2faInput, ip?: string, ua?: string) {
+  const { tempToken, otp } = input;
+  const { userId } = verifyTempToken(tempToken);
+
+  const user = await User.findById(userId);
+  if (!user) throw AppError.notFound('User not found');
+
+  await verifyOtp(user.email, otp, OtpPurpose.LOGIN_2FA);
+
+  const deviceInfo = parseDevice(ua, ip);
+
+  // Now issue full tokens
+  const accessToken = generateAccessToken(user._id.toString(), user.roles as Role[]);
+  const refreshTokenValue = generateRefreshToken();
+
+  const refreshExpiryDays = parseInt(env.JWT_REFRESH_EXPIRY) || 7;
+  const refreshExpiresAt = new Date(Date.now() + refreshExpiryDays * 24 * 60 * 60 * 1000);
+
+  await RefreshToken.create({
+    userId: user._id,
+    token: refreshTokenValue,
+    userAgent: ua,
+    ipAddress: ip,
+    expiresAt: refreshExpiresAt,
+  });
+
+  // Record successful login (after 2FA)
+  await LoginHistory.record({
+    userId: user._id,
+    ipAddress: ip || '',
+    userAgent: ua || '',
+    browser: deviceInfo.browser,
+    os: deviceInfo.os,
+    device: deviceInfo.device,
+    location: deviceInfo.location,
+    status: 'success',
+  });
+
+  await AuditLog.create({
+    action: AuditAction.LOGIN,
+    actorId: user._id,
+    actorEmail: user.email,
+    targetType: 'user',
+    targetId: user._id,
+    details: { via: '2fa' },
+    ipAddress: ip,
+    userAgent: ua,
+  });
+
+  return {
+    accessToken,
+    refreshToken: refreshTokenValue,
+    user: {
+      id: user._id,
+      email: user.email,
+      firstName: user.firstName,
+      lastName: user.lastName,
+      roles: user.roles,
+      mustChangePassword: user.mustChangePassword,
+    },
+  };
+}
+
+export async function resend2fa(input: Resend2faInput) {
+  const { tempToken } = input;
+  const { userId } = verifyTempToken(tempToken);
+
+  const user = await User.findById(userId);
+  if (!user) throw AppError.notFound('User not found');
+
+  await createAndSendOtp(user.email, OtpPurpose.LOGIN_2FA);
+  return { message: 'Verification code resent.' };
+}
+
+// ── 2FA Enable / Disable ──
+
+export async function enable2fa(userId: string) {
+  const user = await User.findById(userId);
+  if (!user) throw AppError.notFound('User not found');
+
+  if (user.twoFactorEnabled) {
+    throw AppError.badRequest('Two-factor authentication is already enabled');
+  }
+
+  // Send verification OTP to confirm email is working
+  await createAndSendOtp(user.email, OtpPurpose.ENABLE_2FA);
+  return { message: 'Verification code sent to your email.' };
+}
+
+export async function confirmEnable2fa(userId: string, otp: string, ip?: string, ua?: string) {
+  const user = await User.findById(userId);
+  if (!user) throw AppError.notFound('User not found');
+
+  await verifyOtp(user.email, otp, OtpPurpose.ENABLE_2FA);
+
+  user.twoFactorEnabled = true;
+  await user.save();
+
+  await AuditLog.create({
+    action: AuditAction.TWO_FA_ENABLED,
+    actorId: user._id,
+    actorEmail: user.email,
+    targetType: 'user',
+    targetId: user._id,
+    ipAddress: ip,
+    userAgent: ua,
+  });
+
+  return { message: 'Two-factor authentication enabled successfully.' };
+}
+
+export async function disable2fa(userId: string, input: Disable2faInput, ip?: string, ua?: string) {
+  const { password } = input;
+
+  const user = await User.findById(userId).select('+password');
+  if (!user) throw AppError.notFound('User not found');
+
+  if (!user.twoFactorEnabled) {
+    throw AppError.badRequest('Two-factor authentication is not enabled');
+  }
+
+  const isMatch = await bcrypt.compare(password, user.password);
+  if (!isMatch) {
+    throw AppError.badRequest('Incorrect password', ErrorCode.INVALID_CREDENTIALS);
+  }
+
+  user.twoFactorEnabled = false;
+  await user.save();
+
+  await AuditLog.create({
+    action: AuditAction.TWO_FA_DISABLED,
+    actorId: user._id,
+    actorEmail: user.email,
+    targetType: 'user',
+    targetId: user._id,
+    ipAddress: ip,
+    userAgent: ua,
+  });
+
+  return { message: 'Two-factor authentication disabled.' };
+}
+
+// ── Sessions & Login History ──
+
+export async function getSessions(userId: string, currentRefreshToken?: string) {
+  const sessions = await RefreshToken.find({ userId })
+    .sort({ createdAt: -1 })
+    .lean();
+
+  return sessions.map((s) => {
+    const deviceInfo = parseDevice(s.userAgent, s.ipAddress);
+    return {
+      _id: s._id,
+      browser: deviceInfo.browser,
+      os: deviceInfo.os,
+      device: deviceInfo.device,
+      location: deviceInfo.location,
+      ipAddress: s.ipAddress || '',
+      isCurrent: s.token === currentRefreshToken,
+      createdAt: s.createdAt,
+      expiresAt: s.expiresAt,
+    };
+  });
+}
+
+export async function revokeSession(userId: string, sessionId: string, currentRefreshToken?: string, ip?: string, ua?: string) {
+  const session = await RefreshToken.findOne({ _id: sessionId, userId });
+  if (!session) throw AppError.notFound('Session not found');
+
+  if (session.token === currentRefreshToken) {
+    throw AppError.badRequest('Cannot revoke your current session. Use logout instead.');
+  }
+
+  await RefreshToken.deleteOne({ _id: sessionId });
+
+  await AuditLog.create({
+    action: AuditAction.SESSION_REVOKED,
+    actorId: userId as unknown as Types.ObjectId,
+    targetType: 'session',
+    targetId: session._id,
+    ipAddress: ip,
+    userAgent: ua,
+  });
+
+  return { message: 'Session revoked.' };
+}
+
+export async function revokeAllOtherSessions(userId: string, currentRefreshToken?: string, ip?: string, ua?: string) {
+  const query: Record<string, unknown> = { userId };
+  if (currentRefreshToken) {
+    query.token = { $ne: currentRefreshToken };
+  }
+
+  const result = await RefreshToken.deleteMany(query);
+
+  await AuditLog.create({
+    action: AuditAction.ALL_SESSIONS_REVOKED,
+    actorId: userId as unknown as Types.ObjectId,
+    targetType: 'user',
+    details: { count: result.deletedCount },
+    ipAddress: ip,
+    userAgent: ua,
+  });
+
+  return { message: `${result.deletedCount} session(s) revoked.` };
+}
+
+export async function getLoginHistory(userId: string) {
+  const history = await LoginHistory.find({ userId })
+    .sort({ createdAt: -1 })
+    .limit(20)
+    .lean();
+
+  return history;
 }

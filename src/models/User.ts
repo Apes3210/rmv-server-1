@@ -14,6 +14,8 @@ export interface IUser extends Document {
   isActive: boolean;
   mustChangePassword: boolean;
   isSuperAdmin: boolean;
+  twoFactorEnabled: boolean;
+  twoFactorMethod: 'email';
   expiresAt?: Date; // For temporary outsourced accounts
   notificationPreferences: {
     appointment: boolean;
@@ -49,6 +51,8 @@ const userSchema = new Schema<IUser>(
     isActive: { type: Boolean, default: true },
     mustChangePassword: { type: Boolean, default: false },
     isSuperAdmin: { type: Boolean, default: false },
+    twoFactorEnabled: { type: Boolean, default: false },
+    twoFactorMethod: { type: String, enum: ['email'], default: 'email' },
     expiresAt: { type: Date },
     notificationPreferences: {
       appointment: { type: Boolean, default: true },

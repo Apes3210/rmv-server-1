@@ -95,6 +95,8 @@ export enum CashCollectionStatus {
 export enum OtpPurpose {
   EMAIL_VERIFICATION = 'email_verification',
   PASSWORD_RESET = 'password_reset',
+  LOGIN_2FA = 'login_2fa',
+  ENABLE_2FA = 'enable_2fa',
 }
 
 // ── Email Log Status ──
@@ -123,6 +125,10 @@ export enum AuditAction {
   PASSWORD_CHANGED = 'password_changed',
   PASSWORD_RESET = 'password_reset',
   EMAIL_VERIFIED = 'email_verified',
+  TWO_FA_ENABLED = '2fa_enabled',
+  TWO_FA_DISABLED = '2fa_disabled',
+  SESSION_REVOKED = 'session_revoked',
+  ALL_SESSIONS_REVOKED = 'all_sessions_revoked',
 
   // User
   USER_CREATED = 'user_created',

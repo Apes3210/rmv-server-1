@@ -55,4 +55,11 @@ router.get(
   ctrl.getConversionReport,
 );
 
+router.get(
+  '/audit-logs',
+  authenticate,
+  authorize(Role.ADMIN),
+  ctrl.getAuditLogs,
+);
+
 export default router;
