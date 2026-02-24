@@ -70,9 +70,9 @@ export const createStageCheckout = asyncHandler(async (req: Request, res: Respon
   const origin = `${req.protocol}://${req.get('host')}`;
   const clientOrigin = req.headers.origin || req.headers.referer?.replace(/\/$/, '') || origin;
   const result = await paymentsService.createStageCheckout(
-    req.params.stageId,
+    req.params.stageId as string,
     req.userId!,
-    clientOrigin,
+    clientOrigin as string,
   );
   res.json({ success: true, data: result });
 });
@@ -80,7 +80,7 @@ export const createStageCheckout = asyncHandler(async (req: Request, res: Respon
 // ⚠️ DEV ONLY: Simulate Stage Payment ──
 export const simulateStagePayment = asyncHandler(async (req: Request, res: Response) => {
   const result = await paymentsService.simulateStagePayment(
-    req.params.stageId,
+    req.params.stageId as string,
     req.userId!,
     req.ip,
     req.get('user-agent'),
