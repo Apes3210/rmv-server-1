@@ -16,6 +16,7 @@ import {
   submitOcularFeeProofSchema,
   declineOcularFeeSchema,
   availableSlotsQuerySchema,
+  submitSiteDetailsSchema,
 } from './appointments.validation.js';
 
 const router = Router();
@@ -43,6 +44,23 @@ router.post(
   authorize(Role.CUSTOMER),
   validate(rescheduleRequestSchema),
   ctrl.requestReschedule,
+);
+
+// ── Customer: Submit Site Details ──
+router.post(
+  '/:id/site-details',
+  authenticate,
+  authorize(Role.CUSTOMER),
+  validate(submitSiteDetailsSchema),
+  ctrl.submitSiteDetails,
+);
+
+// ── Customer: Skip Site Details (ocular only) ──
+router.post(
+  '/:id/skip-site-details',
+  authenticate,
+  authorize(Role.CUSTOMER),
+  ctrl.skipSiteDetails,
 );
 
 // ── Agent Routes ──

@@ -1,5 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { handlePaymongoPayment } from '../appointments/appointments.service.js';
+import { handleStagePaymongoPayment } from '../payments/payments.service.js';
 import { logger } from '../../utils/logger.js';
 
 const router = Router();
@@ -34,12 +35,19 @@ router.post('/paymongo', async (req: Request, res: Response) => {
         return;
       }
 
+      // Try appointment payment first
       const appointment = await handlePaymongoPayment(sessionId);
 
       if (appointment) {
         logger.info(`PayMongo webhook: ocular fee verified for appointment ${appointment._id}`);
       } else {
-        logger.info(`PayMongo webhook: no matching appointment for session ${sessionId}`);
+        // Try project stage payment
+        const stagePlan = await handleStagePaymongoPayment(sessionId);
+        if (stagePlan) {
+          logger.info(`PayMongo webhook: stage payment verified for project ${stagePlan.projectId}`);
+        } else {
+          logger.info(`PayMongo webhook: no matching appointment or stage for session ${sessionId}`);
+        }
       }
     }
 

@@ -24,6 +24,22 @@ export async function getConfig(key: string) {
   return config;
 }
 
+/** Get a config value with fallback (no throw). */
+export async function getConfigValue<T = unknown>(key: string, fallback: T): Promise<T> {
+  const config = await Config.findOne({ key });
+  return config ? (config.value as T) : fallback;
+}
+
+/** Get all payment-related installment config in one call. */
+export async function getInstallmentConfig() {
+  const [surcharge, split, labels] = await Promise.all([
+    getConfigValue<number>('installment_surcharge_percent', 10),
+    getConfigValue<number[]>('installment_split', [30, 40, 30]),
+    getConfigValue<string[]>('installment_stage_labels', ['Down Payment', 'Mid-Project', 'Final Payment']),
+  ]);
+  return { surchargePercent: surcharge, split, stageLabels: labels };
+}
+
 export async function listConfigs() {
   return Config.find().sort({ key: 1 });
 }
@@ -323,6 +339,18 @@ export async function seedDefaultConfigs(): Promise<void> {
     ncrPolygonFile: {
       value: 'src/modules/maps/data/ncr-boundary.json',
       description: 'GeoJSON file path used for NCR point-in-polygon validation',
+    },
+    installment_surcharge_percent: {
+      value: 10,
+      description: 'Surcharge percentage applied to installment payments (e.g. 10 = 10%)',
+    },
+    installment_split: {
+      value: [30, 40, 30],
+      description: 'Installment split percentages for each stage (must sum to 100)',
+    },
+    installment_stage_labels: {
+      value: ['Down Payment', 'Mid-Project', 'Final Payment'],
+      description: 'Labels for each installment stage corresponding to installment_split',
     },
   };
 

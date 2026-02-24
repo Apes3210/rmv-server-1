@@ -9,6 +9,7 @@ export interface IPaymentStage {
   amount: number; // Calculated from total * percentage
   status: PaymentStageStatus;
   qrCodeKey?: string; // R2 key for QR code image
+  checkoutSessionId?: string; // PayMongo checkout session ID
   amountPaid: number;
   creditApplied: number;
   remainingBalance: number;
@@ -38,6 +39,7 @@ const paymentStageSchema = new Schema<IPaymentStage>(
       default: PaymentStageStatus.PENDING,
     },
     qrCodeKey: { type: String },
+    checkoutSessionId: { type: String },
     amountPaid: { type: Number, default: 0 },
     creditApplied: { type: Number, default: 0 },
     remainingBalance: { type: Number, default: 0 },

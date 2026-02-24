@@ -9,6 +9,7 @@ import {
   revisionUploadSchema,
   approveBlueprintSchema,
   requestRevisionSchema,
+  acceptBlueprintSchema,
 } from './blueprints.validation.js';
 
 const router = Router();
@@ -45,6 +46,14 @@ router.post(
   authorize(Role.CUSTOMER),
   validate(requestRevisionSchema),
   ctrl.requestRevision,
+);
+
+router.post(
+  '/:id/accept',
+  authenticate,
+  authorize(Role.CUSTOMER),
+  validate(acceptBlueprintSchema),
+  ctrl.acceptBlueprint,
 );
 
 // ── Read ──

@@ -46,3 +46,24 @@ export const removeMediaKey = asyncHandler(async (req: Request, res: Response) =
   const project = await projectsService.removeMediaKey((req.params.id as string), req.body.key, req.userId!);
   res.json({ success: true, data: project });
 });
+
+export const generateContract = asyncHandler(async (req: Request, res: Response) => {
+  const result = await projectsService.generateContract(
+    req.params.id as string,
+    req.userId!,
+    req.ip,
+    req.get('user-agent'),
+  );
+  res.json({ success: true, data: { originalKey: result.originalKey, copyKey: result.copyKey } });
+});
+
+export const getContractDownloadUrl = asyncHandler(async (req: Request, res: Response) => {
+  const copy = (req.query.copy as string) === 'copy' ? 'copy' : 'original';
+  const result = await projectsService.getContractDownloadUrl(
+    req.params.id as string,
+    copy,
+    req.userId!,
+    req.userRoles!,
+  );
+  res.json({ success: true, data: result });
+});

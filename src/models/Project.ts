@@ -33,6 +33,8 @@ export interface IProject extends Document {
   cancelReason?: string;
 
   mediaKeys: string[]; // R2 keys for reference photos/files
+  contractKey?: string; // R2 key for generated contract PDF
+  contractGeneratedAt?: Date;
 
   deletedAt?: Date;
   createdAt: Date;
@@ -75,6 +77,8 @@ const projectSchema = new Schema<IProject>(
     cancelReason: { type: String },
 
     mediaKeys: [{ type: String }],
+    contractKey: { type: String },
+    contractGeneratedAt: { type: Date },
 
     deletedAt: { type: Date, default: null },
   },

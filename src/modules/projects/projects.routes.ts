@@ -35,7 +35,7 @@ router.patch(
 router.post(
   '/:id/assign-engineers',
   authenticate,
-  authorize(Role.SALES_STAFF, Role.ADMIN),
+  authorize(Role.SALES_STAFF, Role.ENGINEER, Role.ADMIN),
   validate(assignEngineersSchema),
   ctrl.assignEngineers,
 );
@@ -70,6 +70,20 @@ router.delete(
   authenticate,
   authorize(Role.SALES_STAFF, Role.ENGINEER, Role.ADMIN),
   ctrl.removeMediaKey,
+);
+
+// ── Contract ──
+router.post(
+  '/:id/generate-contract',
+  authenticate,
+  authorize(Role.CASHIER, Role.SALES_STAFF, Role.ADMIN),
+  ctrl.generateContract,
+);
+
+router.get(
+  '/:id/contract-url',
+  authenticate,
+  ctrl.getContractDownloadUrl,
 );
 
 // ── Read ──

@@ -40,6 +40,11 @@ export const declinePaymentSchema = z.object({
   reason: z.string().min(1).max(500).trim(),
 });
 
+export const recordCashPaymentSchema = z.object({
+  stageId: z.string().min(1),
+  amountPaid: z.number().positive(),
+});
+
 export type CreatePaymentPlanInput = z.infer<typeof createPaymentPlanSchema>;
 export type UpdatePaymentPlanInput = z.infer<typeof updatePaymentPlanSchema>;
 export type SubmitPaymentProofInput = z.infer<typeof submitPaymentProofSchema>;

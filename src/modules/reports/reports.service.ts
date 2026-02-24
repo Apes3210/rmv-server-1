@@ -1,6 +1,6 @@
 import {
   Project, Payment, PaymentPlan, Appointment,
-  FabricationUpdate, User, CashCollection, AuditLog,
+  FabricationUpdate, User, CashCollection, AuditLog, VisitReport,
 } from '../../models/index.js';
 import {
   ProjectStatus, PaymentStageStatus, FabricationStatus,
@@ -361,7 +361,7 @@ export async function getConversionReport(query: {
 
 // ── Dashboard Summary ──
 
-export async function getDashboardSummary() {
+export async function getDashboardSummary(userId?: string, userRoles?: string[]) {
   try {
     const now = new Date();
     const todayStr = now.toISOString().split('T')[0];
@@ -376,11 +376,19 @@ export async function getDashboardSummary() {
       pendingAppointments,
       totalAppointmentsToday,
       fabricationInProgress,
+      pendingVisitReports,
     ] = await Promise.all([
       Project.countDocuments({ deletedAt: null }).exec(),
       Project.countDocuments({
         deletedAt: null,
         status: { $nin: [ProjectStatus.COMPLETED, ProjectStatus.CANCELLED] },
+        ...(userRoles?.includes(Role.ENGINEER) && !userRoles?.some(r => [Role.ADMIN, Role.SALES_STAFF].includes(r as Role))
+          ? { $or: [{ engineerIds: userId }, { status: ProjectStatus.SUBMITTED, engineerIds: { $size: 0 } }] }
+          : userRoles?.includes(Role.SALES_STAFF) && !userRoles?.includes(Role.ADMIN)
+            ? { salesStaffId: userId }
+            : userRoles?.includes(Role.CUSTOMER) && !userRoles?.some(r => [Role.ADMIN, Role.SALES_STAFF, Role.ENGINEER].includes(r as Role))
+              ? { customerId: userId }
+              : {}),
       }).exec(),
       Project.countDocuments({ deletedAt: null, status: ProjectStatus.COMPLETED }).exec(),
       Payment.countDocuments({ status: PaymentStageStatus.PROOF_SUBMITTED }).exec(),
@@ -399,6 +407,13 @@ export async function getDashboardSummary() {
         deletedAt: null,
         status: ProjectStatus.FABRICATION,
       }).exec(),
+      // Count draft/returned visit reports for the current user (sales staff KPI)
+      userId
+        ? VisitReport.countDocuments({
+            salesStaffId: userId,
+            status: { $in: ['draft', 'returned'] },
+          }).exec()
+        : Promise.resolve(0),
     ]);
 
     const revenueThisMonth = revenueResult?.[0]?.total ?? 0;
@@ -418,6 +433,7 @@ export async function getDashboardSummary() {
       todayAppointments: totalAppointmentsToday,
       fabricationInProgress,
       conversionRate,
+      pendingVisitReports,
     };
   } catch (error) {
     console.error('getDashboardSummary error:', error);
@@ -434,6 +450,7 @@ export async function getDashboardSummary() {
       todayAppointments: 0,
       fabricationInProgress: 0,
       conversionRate: 0,
+      pendingVisitReports: 0,
     };
   }
 }

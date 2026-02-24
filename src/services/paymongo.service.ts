@@ -123,6 +123,7 @@ export async function createCheckoutSession(opts: {
 
 export async function retrieveCheckoutSession(sessionId: string): Promise<CheckoutSession> {
   const response = await fetch(`${PAYMONGO_BASE}/checkout_sessions/${sessionId}`, {
+    method: 'GET',
     headers: {
       Authorization: authHeader(),
       Accept: 'application/json',
@@ -132,6 +133,68 @@ export async function retrieveCheckoutSession(sessionId: string): Promise<Checko
   if (!response.ok) {
     const errBody = await response.text();
     logger.error('PayMongo retrieve checkout session failed', { status: response.status, body: errBody });
+    throw new Error(`PayMongo API error (${response.status}): ${errBody}`);
+  }
+
+  const json = await parseJson<{ data: CheckoutSession }>(response);
+  return json.data;
+}
+
+// ── Create Stage Checkout Session (for project payment stages) ──
+
+export async function createStageCheckoutSession(opts: {
+  amount: number; // in PHP
+  description: string;
+  stageId: string;
+  projectId: string;
+  customerId: string;
+  successUrl: string;
+  cancelUrl: string;
+}): Promise<CheckoutSession> {
+  const amountCentavos = Math.round(opts.amount * 100);
+
+  const body = {
+    data: {
+      attributes: {
+        send_email_receipt: false,
+        show_description: true,
+        show_line_items: true,
+        description: opts.description,
+        line_items: [
+          {
+            currency: 'PHP',
+            amount: amountCentavos,
+            name: opts.description,
+            quantity: 1,
+            description: opts.description,
+          },
+        ],
+        payment_method_types: ['qrph'],
+        success_url: opts.successUrl,
+        cancel_url: opts.cancelUrl,
+        metadata: {
+          stage_id: opts.stageId,
+          project_id: opts.projectId,
+          customer_id: opts.customerId,
+          type: 'project_payment',
+        },
+      },
+    },
+  };
+
+  const response = await fetch(`${PAYMONGO_BASE}/checkout_sessions`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: authHeader(),
+      Accept: 'application/json',
+    },
+    body: JSON.stringify(body),
+  });
+
+  if (!response.ok) {
+    const errBody = await response.text();
+    logger.error('PayMongo create stage checkout session failed', { status: response.status, body: errBody });
     throw new Error(`PayMongo API error (${response.status}): ${errBody}`);
   }
 

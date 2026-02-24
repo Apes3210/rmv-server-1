@@ -30,7 +30,12 @@ export const requestRevisionSchema = z.object({
   refKeys: z.array(z.string()).max(5).default([]),
 });
 
+export const acceptBlueprintSchema = z.object({
+  paymentType: z.enum(['full', 'installment']),
+});
+
 export type UploadBlueprintInput = z.infer<typeof uploadBlueprintSchema>;
 export type RevisionUploadInput = z.infer<typeof revisionUploadSchema>;
 export type ApproveBlueprintInput = z.infer<typeof approveBlueprintSchema>;
 export type RequestRevisionInput = z.infer<typeof requestRevisionSchema>;
+export type AcceptBlueprintInput = z.infer<typeof acceptBlueprintSchema>;

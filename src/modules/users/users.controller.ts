@@ -52,3 +52,13 @@ export const listCustomers = asyncHandler(async (req: Request, res: Response) =>
   const result = await usersService.listByRole('customer', search);
   res.json({ success: true, data: result });
 });
+
+export const saveSignature = asyncHandler(async (req: Request, res: Response) => {
+  const result = await usersService.saveSignature(req.userId!, req.body.signatureKey);
+  res.json({ success: true, data: result });
+});
+
+export const getSignature = asyncHandler(async (req: Request, res: Response) => {
+  const result = await usersService.getSignature(req.userId!);
+  res.json({ success: true, data: result });
+});

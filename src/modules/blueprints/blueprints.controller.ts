@@ -48,3 +48,14 @@ export const getLatestBlueprint = asyncHandler(async (req: Request, res: Respons
   );
   res.json({ success: true, data: blueprint });
 });
+
+export const acceptBlueprint = asyncHandler(async (req: Request, res: Response) => {
+  const result = await blueprintsService.acceptBlueprint(
+    (req.params.id as string),
+    req.body,
+    req.userId!,
+    req.ip,
+    req.get('user-agent'),
+  );
+  res.json({ success: true, data: result });
+});

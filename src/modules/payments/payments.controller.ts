@@ -64,3 +64,48 @@ export const getPaymentById = asyncHandler(async (req: Request, res: Response) =
   );
   res.json({ success: true, data: payment });
 });
+
+// ── Customer: Create QRPH Checkout for a Stage ──
+export const createStageCheckout = asyncHandler(async (req: Request, res: Response) => {
+  const origin = `${req.protocol}://${req.get('host')}`;
+  const clientOrigin = req.headers.origin || req.headers.referer?.replace(/\/$/, '') || origin;
+  const result = await paymentsService.createStageCheckout(
+    req.params.stageId,
+    req.userId!,
+    clientOrigin,
+  );
+  res.json({ success: true, data: result });
+});
+
+// ⚠️ DEV ONLY: Simulate Stage Payment ──
+export const simulateStagePayment = asyncHandler(async (req: Request, res: Response) => {
+  const result = await paymentsService.simulateStagePayment(
+    req.params.stageId,
+    req.userId!,
+    req.ip,
+    req.get('user-agent'),
+  );
+  res.json({ success: true, data: result });
+});
+
+// ── Cashier: Record Cash Payment ──
+export const recordCashPayment = asyncHandler(async (req: Request, res: Response) => {
+  const result = await paymentsService.recordCashPayment(
+    req.body.stageId,
+    req.body.amountPaid,
+    req.userId!,
+    req.ip,
+    req.get('user-agent'),
+  );
+  res.json({ success: true, data: result });
+});
+
+// ── Get Receipt Download URL ──
+export const getReceiptDownloadUrl = asyncHandler(async (req: Request, res: Response) => {
+  const result = await paymentsService.getReceiptDownloadUrl(
+    req.params.id as string,
+    req.userId!,
+    req.userRoles!,
+  );
+  res.json({ success: true, data: result });
+});

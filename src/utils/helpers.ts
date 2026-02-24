@@ -37,7 +37,26 @@ export function isValidPHMobile(phone: string): boolean {
 /**
  * Allowed upload file extensions
  */
-export const ALLOWED_FILE_EXTENSIONS = ['pdf', 'jpg', 'jpeg', 'png', 'webp'] as const;
+export const ALLOWED_FILE_EXTENSIONS = [
+  'pdf',
+  'jpg',
+  'jpeg',
+  'png',
+  'webp',
+  'gif',
+  'bmp',
+  'tif',
+  'tiff',
+  'heic',
+  'heif',
+  'svg',
+  'mp4',
+  'mov',
+  'm4v',
+  'webm',
+  'avi',
+  'mkv',
+] as const;
 export const MAX_FILE_SIZE = 25 * 1024 * 1024; // 25MB
 export const MAX_COMPRESSED_IMAGE_SIZE = 2 * 1024 * 1024; // 2MB target after compression
 

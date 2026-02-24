@@ -9,7 +9,12 @@ import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { r2Client } from '../../config/r2.js';
 import { env } from '../../config/env.js';
 import { AppError } from '../../utils/appError.js';
-import { getFileExtension, isAllowedFileType, MAX_FILE_SIZE } from '../../utils/helpers.js';
+import {
+  ALLOWED_FILE_EXTENSIONS,
+  getFileExtension,
+  isAllowedFileType,
+  MAX_FILE_SIZE,
+} from '../../utils/helpers.js';
 import { logger } from '../../utils/logger.js';
 
 const BUCKET = env.R2_BUCKET_NAME;
@@ -25,7 +30,10 @@ export async function generateUploadUrl(
   maxSize: number = MAX_FILE_SIZE,
 ): Promise<{ uploadUrl: string; key: string }> {
   if (!isAllowedFileType(filename)) {
-    throw AppError.badRequest('File type not allowed');
+    const ext = getFileExtension(filename) || 'unknown';
+    throw AppError.badRequest(
+      `File type not allowed: .${ext}. Allowed: ${ALLOWED_FILE_EXTENSIONS.join(', ')}`,
+    );
   }
 
   const ext = getFileExtension(filename);
@@ -107,4 +115,5 @@ export const R2Folders = {
   VISIT_VIDEOS: 'visit-videos',
   VISIT_SKETCHES: 'visit-sketches',
   VISIT_REFERENCES: 'visit-references',
+  CONTRACTS: 'contracts',
 } as const;

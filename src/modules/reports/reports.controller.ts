@@ -3,7 +3,7 @@ import { asyncHandler } from '../../utils/asyncHandler.js';
 import * as reportsService from './reports.service.js';
 
 export const getDashboardSummary = asyncHandler(async (req: Request, res: Response) => {
-  const data = await reportsService.getDashboardSummary();
+  const data = await reportsService.getDashboardSummary(req.userId, req.userRoles);
   res.json({ success: true, data });
 });
 

@@ -217,6 +217,7 @@ export enum AuditAction {
   VISIT_REPORT_UPDATED = 'visit_report_updated',
   VISIT_REPORT_SUBMITTED = 'visit_report_submitted',
   VISIT_REPORT_RETURNED = 'visit_report_returned',
+  VISIT_REPORT_DELETED = 'visit_report_deleted',
   VISIT_REPORT_COMPLETED = 'visit_report_completed',
 
   // Config

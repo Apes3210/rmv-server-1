@@ -94,8 +94,8 @@ export async function createAndSendNotification(
       const user = await User.findById(userId);
       if (user) {
         const prefKey = category as keyof typeof user.notificationPreferences;
-        if (!user.notificationPreferences[prefKey]) {
-          return; // User has disabled this category — skip entirely
+        if (user.notificationPreferences[prefKey] === false) {
+          return; // User has explicitly disabled this category — skip entirely
         }
       }
     }

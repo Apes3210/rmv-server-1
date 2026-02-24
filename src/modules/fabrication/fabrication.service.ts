@@ -1,9 +1,10 @@
 import {
   FabricationUpdate, Project, User, AuditLog,
 } from '../../models/index.js';
+import { PaymentPlan } from '../../models/Payment.js';
 import { AppError } from '../../utils/appError.js';
 import {
-  FabricationStatus, ProjectStatus, AuditAction, NotificationCategory, Role,
+  FabricationStatus, PaymentStageStatus, ProjectStatus, AuditAction, NotificationCategory, Role,
 } from '../../utils/constants.js';
 import { fabricationStateMachine, projectStateMachine } from '../../utils/stateMachine.js';
 import { createAndSendNotification } from '../notifications/socket.service.js';
@@ -42,6 +43,20 @@ export async function createFabricationUpdate(
 
   // Validate status transition (forward-only)
   fabricationStateMachine.assertTransition(currentStatus, input.status);
+
+  // Payment gate: block delivery/done if payments are not fully verified
+  const GATED_STATUSES = [FabricationStatus.READY_FOR_DELIVERY, FabricationStatus.DONE];
+  if (GATED_STATUSES.includes(input.status)) {
+    const plan = await PaymentPlan.findOne({ projectId: input.projectId });
+    if (plan) {
+      const allPaid = plan.stages.every(s => s.status === PaymentStageStatus.VERIFIED);
+      if (!allPaid) {
+        throw AppError.badRequest(
+          'Cannot transition to this stage — all payment stages must be verified first',
+        );
+      }
+    }
+  }
 
   const update = await FabricationUpdate.create({
     projectId: input.projectId,
@@ -116,43 +131,24 @@ async function assertFabricationProjectAccess(
   actorRoles: Role[],
 ): Promise<void> {
   const project = await Project.findById(projectId)
-    .select('customerId salesStaffId engineerIds fabricationLeadId fabricationAssistantIds');
+    .select('customerId salesStaffId engineerIds fabricationLeadId fabricationAssistantIds status');
   if (!project) throw AppError.notFound('Project not found');
 
-  if (actorRoles.includes(Role.ADMIN)) {
-    return;
-  }
+  if (actorRoles.includes(Role.ADMIN)) return;
 
-  if (
-    actorRoles.includes(Role.CUSTOMER) &&
-    project.customerId.toString() === actorId
-  ) {
-    return;
-  }
+  if (actorRoles.includes(Role.CUSTOMER) && project.customerId.toString() === actorId) return;
+  if (actorRoles.includes(Role.SALES_STAFF) && project.salesStaffId?.toString() === actorId) return;
 
-  if (
-    actorRoles.includes(Role.SALES_STAFF) &&
-    project.salesStaffId?.toString() === actorId
-  ) {
-    return;
-  }
-
-  if (
-    actorRoles.includes(Role.ENGINEER) &&
-    project.engineerIds.some((id) => id.toString() === actorId)
-  ) {
-    return;
+  if (actorRoles.includes(Role.ENGINEER)) {
+    if (project.engineerIds.some((id) => id.toString() === actorId)) return;
+    if (project.status === ProjectStatus.SUBMITTED && project.engineerIds.length === 0) return;
   }
 
   if (
     actorRoles.includes(Role.FABRICATION_STAFF) &&
-    (
-      project.fabricationLeadId?.toString() === actorId ||
-      project.fabricationAssistantIds.some((id) => id.toString() === actorId)
-    )
-  ) {
-    return;
-  }
+    (project.fabricationLeadId?.toString() === actorId ||
+      project.fabricationAssistantIds.some((id) => id.toString() === actorId))
+  ) return;
 
   throw AppError.forbidden('Access denied');
 }
@@ -181,12 +177,22 @@ export async function getLatestFabricationStatus(
     .sort({ createdAt: -1 })
     .populate('updatedBy', 'firstName lastName');
 
+  // Check payment gate
+  const plan = await PaymentPlan.findOne({ projectId });
+  const allPaid = plan ? plan.stages.every(s => s.status === PaymentStageStatus.VERIFIED) : false;
+  const unpaidCount = plan ? plan.stages.filter(s => s.status !== PaymentStageStatus.VERIFIED).length : 0;
+
   return {
     currentStatus: latest?.status || FabricationStatus.QUEUED,
     latestUpdate: latest,
     allowedTransitions: fabricationStateMachine.getAllowed(
       latest?.status || FabricationStatus.QUEUED,
     ),
+    paymentGate: {
+      allPaid,
+      unpaidCount,
+      gatedStatuses: [FabricationStatus.READY_FOR_DELIVERY, FabricationStatus.DONE],
+    },
   };
 }
 

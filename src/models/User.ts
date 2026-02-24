@@ -22,7 +22,9 @@ export interface IUser extends Document {
     payment: boolean;
     blueprint: boolean;
     fabrication: boolean;
+    project: boolean;
   };
+  signatureKey?: string; // R2 key for e-signature PNG
   deletedAt?: Date;
   createdAt: Date;
   updatedAt: Date;
@@ -59,7 +61,9 @@ const userSchema = new Schema<IUser>(
       payment: { type: Boolean, default: true },
       blueprint: { type: Boolean, default: true },
       fabrication: { type: Boolean, default: true },
+      project: { type: Boolean, default: true },
     },
+    signatureKey: { type: String },
     deletedAt: { type: Date, default: null },
   },
   { timestamps: true },

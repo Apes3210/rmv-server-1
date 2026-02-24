@@ -77,3 +77,14 @@ export const returnVisitReport = asyncHandler(async (req: Request, res: Response
   );
   res.json({ success: true, data: report });
 });
+
+// ── Delete Report ──
+export const deleteVisitReport = asyncHandler(async (req: Request, res: Response) => {
+  const result = await visitReportsService.deleteReport(
+    req.params.id as string,
+    req.userId!,
+    req.ip,
+    req.get('user-agent'),
+  );
+  res.json({ success: true, data: result });
+});

@@ -1,15 +1,22 @@
 import { v4 as uuidv4 } from 'uuid';
+import { PutObjectCommand } from '@aws-sdk/client-s3';
 import {
   PaymentPlan, Payment, Project, User, AuditLog, ReceiptCounter, Appointment,
 } from '../../models/index.js';
 import { AppError, ErrorCode } from '../../utils/appError.js';
 import {
-  PaymentStageStatus, ProjectStatus, AuditAction, NotificationCategory, Role,
+  PaymentStageStatus, PaymentMethod, ProjectStatus, AuditAction, NotificationCategory, Role,
 } from '../../utils/constants.js';
 import { paymentStateMachine, projectStateMachine } from '../../utils/stateMachine.js';
 import { createAndSendNotification } from '../notifications/socket.service.js';
 import { sendPaymentVerifiedEmail, sendPaymentDeclinedEmail } from '../notifications/email.service.js';
 import { formatCurrency, generateReceiptNumber } from '../../utils/helpers.js';
+import { createStageCheckoutSession } from '../../services/paymongo.service.js';
+import { generateReceiptPdf, type ReceiptData } from '../../services/receipt.service.js';
+import { r2Client } from '../../config/r2.js';
+import { generateDownloadUrl } from '../uploads/upload.service.js';
+import { env } from '../../config/env.js';
+import { logger } from '../../utils/logger.js';
 import type {
   CreatePaymentPlanInput,
   UpdatePaymentPlanInput,
@@ -17,6 +24,28 @@ import type {
   DeclinePaymentInput,
 } from './payments.validation.js';
 import type { Types } from 'mongoose';
+
+// ── Receipt PDF helper — generate, upload to R2, return key ──
+
+async function generateAndUploadReceipt(data: ReceiptData): Promise<string> {
+  try {
+    const buf = await generateReceiptPdf(data);
+    const key = `receipts/${uuidv4()}-${data.receiptNumber}.pdf`;
+    await r2Client.send(
+      new PutObjectCommand({
+        Bucket: env.R2_BUCKET_NAME,
+        Key: key,
+        Body: buf,
+        ContentType: 'application/pdf',
+      }),
+    );
+    logger.info(`Receipt PDF uploaded: ${key}`);
+    return key;
+  } catch (err) {
+    logger.error('Receipt PDF generation/upload failed', err);
+    return ''; // non-fatal — payment still succeeds
+  }
+}
 
 // ── Cashier: Create Payment Plan ──
 
@@ -262,6 +291,30 @@ export async function verifyPayment(
   payment.verifiedBy = actorId as unknown as Types.ObjectId;
   payment.verifiedAt = new Date();
   payment.receiptNumber = receiptNumber;
+
+  // Generate receipt PDF
+  const customer = await User.findById(project.customerId);
+  const verifier = await User.findById(actorId);
+  const totalPaid = plan.stages.reduce((sum, s) => sum + s.amountPaid, 0);
+  const receiptKey = await generateAndUploadReceipt({
+    receiptNumber,
+    customerName: customer ? `${customer.firstName} ${customer.lastName}` : 'Customer',
+    customerEmail: customer?.email || '',
+    projectTitle: project.title,
+    stageName: stage.label,
+    amountPaid: payment.amountPaid,
+    paymentMethod: payment.method,
+    referenceNumber: payment.referenceNumber,
+    creditApplied: payment.creditFromPrevious,
+    excessCredit: payment.excessCredit,
+    verifiedByName: verifier ? `${verifier.firstName} ${verifier.lastName}` : 'System',
+    verifiedAt: payment.verifiedAt!,
+    totalProjectCost: plan.totalAmount,
+    totalPaid,
+    totalOutstanding: Math.max(0, plan.totalAmount - totalPaid),
+  });
+  if (receiptKey) payment.receiptKey = receiptKey;
+
   await payment.save();
 
   await AuditLog.create({
@@ -273,6 +326,7 @@ export async function verifyPayment(
       stageId: payment.stageId,
       amountPaid: payment.amountPaid,
       receiptNumber,
+      receiptKey,
       excessCredit: payment.excessCredit,
     },
     ipAddress: ip,
@@ -280,7 +334,6 @@ export async function verifyPayment(
   });
 
   // Notify customer
-  const customer = await User.findById(project.customerId);
   if (customer) {
     await createAndSendNotification(
       project.customerId,
@@ -385,32 +438,17 @@ async function assertPaymentProjectAccess(
   actorRoles: Role[],
 ): Promise<void> {
   const project = await Project.findById(projectId)
-    .select('customerId salesStaffId engineerIds');
+    .select('customerId salesStaffId engineerIds status');
   if (!project) throw AppError.notFound('Project not found');
 
-  if (actorRoles.some((role) => [Role.ADMIN, Role.CASHIER].includes(role))) {
-    return;
-  }
+  if (actorRoles.some((role) => [Role.ADMIN, Role.CASHIER].includes(role))) return;
 
-  if (
-    actorRoles.includes(Role.CUSTOMER) &&
-    project.customerId.toString() === actorId
-  ) {
-    return;
-  }
+  if (actorRoles.includes(Role.CUSTOMER) && project.customerId.toString() === actorId) return;
+  if (actorRoles.includes(Role.SALES_STAFF) && project.salesStaffId?.toString() === actorId) return;
 
-  if (
-    actorRoles.includes(Role.SALES_STAFF) &&
-    project.salesStaffId?.toString() === actorId
-  ) {
-    return;
-  }
-
-  if (
-    actorRoles.includes(Role.ENGINEER) &&
-    project.engineerIds.some((id) => id.toString() === actorId)
-  ) {
-    return;
+  if (actorRoles.includes(Role.ENGINEER)) {
+    if (project.engineerIds.some((id) => id.toString() === actorId)) return;
+    if (project.status === ProjectStatus.SUBMITTED && project.engineerIds.length === 0) return;
   }
 
   throw AppError.forbidden('Access denied');
@@ -576,4 +614,412 @@ async function generateNextReceiptNumber(): Promise<string> {
     { upsert: true, new: true },
   );
   return generateReceiptNumber(year, counter.lastSeq);
+}
+
+// ── Customer: Create PayMongo QRPH Checkout for a Stage ──
+
+export async function createStageCheckout(
+  stageId: string,
+  customerId: string,
+  origin: string,
+) {
+  const plan = await PaymentPlan.findOne({ 'stages.stageId': stageId });
+  if (!plan) throw AppError.notFound('Payment stage not found');
+
+  const project = await Project.findById(plan.projectId);
+  if (!project) throw AppError.notFound('Project not found');
+  if (project.customerId.toString() !== customerId) {
+    throw AppError.forbidden('You can only pay for your own projects');
+  }
+
+  const stage = plan.stages.find(s => s.stageId === stageId);
+  if (!stage) throw AppError.notFound('Stage not found');
+
+  if (![PaymentStageStatus.PENDING, PaymentStageStatus.DECLINED].includes(stage.status)) {
+    throw AppError.badRequest('This stage is not accepting payments');
+  }
+
+  const remaining = stage.remainingBalance > 0 ? stage.remainingBalance : stage.amount;
+
+  // Dev override: ₱1 flat for testing (same pattern as ocular fee)
+  const checkoutAmount = env.NODE_ENV === 'production' ? remaining : 1;
+
+  const description = `${project.title} — ${stage.label}`;
+  const session = await createStageCheckoutSession({
+    amount: checkoutAmount,
+    description,
+    stageId,
+    projectId: plan.projectId.toString(),
+    customerId,
+    successUrl: `${origin}/payments?paid=1`,
+    cancelUrl: `${origin}/payments?cancelled=1`,
+  });
+
+  // Store checkout session ID on the stage for webhook lookup
+  stage.checkoutSessionId = session.id;
+  await plan.save();
+
+  logger.info(`Stage checkout session created: ${session.id} for stage ${stageId}`);
+
+  return {
+    checkoutUrl: session.attributes.checkout_url,
+    sessionId: session.id,
+    amount: checkoutAmount,
+  };
+}
+
+// ── Handle PayMongo Webhook for Stage Payments ──
+
+export async function handleStagePaymongoPayment(checkoutSessionId: string) {
+  const plan = await PaymentPlan.findOne({
+    'stages.checkoutSessionId': checkoutSessionId,
+  });
+
+  if (!plan) return null; // Not a stage payment
+
+  const stage = plan.stages.find(s => s.checkoutSessionId === checkoutSessionId);
+  if (!stage) return null;
+
+  // Already verified — idempotent
+  if (stage.status === PaymentStageStatus.VERIFIED) return plan;
+
+  const project = await Project.findById(plan.projectId);
+  if (!project) return null;
+
+  const remaining = stage.remainingBalance > 0 ? stage.remainingBalance : stage.amount;
+  const amountPaid = env.NODE_ENV === 'production' ? remaining : 1;
+
+  // Create Payment record
+  const receiptNumber = await generateNextReceiptNumber();
+  const payment = await Payment.create({
+    projectId: plan.projectId,
+    stageId: stage.stageId,
+    method: PaymentMethod.QRPH,
+    amountPaid,
+    status: PaymentStageStatus.VERIFIED,
+    verifiedAt: new Date(),
+    receiptNumber,
+    creditFromPrevious: 0,
+    excessCredit: 0,
+  });
+
+  // Generate receipt PDF
+  const customer = await User.findById(project.customerId);
+  const totalPaidWebhook = plan.stages.reduce((sum, s) => sum + s.amountPaid, 0) + amountPaid;
+  const receiptKey = await generateAndUploadReceipt({
+    receiptNumber,
+    customerName: customer ? `${customer.firstName} ${customer.lastName}` : 'Customer',
+    customerEmail: customer?.email || '',
+    projectTitle: project.title,
+    stageName: stage.label,
+    amountPaid,
+    paymentMethod: 'qrph',
+    creditApplied: 0,
+    excessCredit: 0,
+    verifiedByName: 'PayMongo (Auto)',
+    verifiedAt: payment.verifiedAt!,
+    totalProjectCost: plan.totalAmount,
+    totalPaid: totalPaidWebhook,
+    totalOutstanding: Math.max(0, plan.totalAmount - totalPaidWebhook),
+  });
+  if (receiptKey) {
+    payment.receiptKey = receiptKey;
+    await payment.save();
+  }
+
+  // Update stage
+  stage.status = PaymentStageStatus.VERIFIED;
+  stage.amountPaid += amountPaid;
+  stage.remainingBalance = Math.max(0, stage.amount - stage.amountPaid);
+
+  if (!plan.isImmutable) plan.isImmutable = true;
+  await plan.save();
+
+  await AuditLog.create({
+    action: AuditAction.PAYMENT_VERIFIED,
+    actorId: project.customerId,
+    targetType: 'payment',
+    targetId: payment._id,
+    details: { stageId: stage.stageId, amountPaid, verifiedVia: 'paymongo_webhook', receiptNumber },
+  });
+
+  // Notify customer
+  await createAndSendNotification(
+    project.customerId,
+    NotificationCategory.PAYMENT,
+    'Payment Confirmed via QR',
+    `Your QRPH payment of ${formatCurrency(amountPaid)} for "${project.title}" — ${stage.label} has been confirmed. Receipt: ${receiptNumber}`,
+    `/projects/${project._id}/payments`,
+  );
+
+  // Notify cashier
+  const cashiers = await User.find({ roles: Role.CASHIER }).select('_id');
+  for (const c of cashiers) {
+    await createAndSendNotification(
+      c._id,
+      NotificationCategory.PAYMENT,
+      'QRPH Payment Auto-Verified',
+      `QRPH payment for "${project.title}" — ${stage.label} was automatically verified. Receipt: ${receiptNumber}`,
+      `/projects/${project._id}/payments`,
+    );
+  }
+
+  // Send email
+  if (customer) {
+    await sendPaymentVerifiedEmail(customer.email, {
+      amount: formatCurrency(amountPaid),
+      stageLabel: stage.label,
+      receiptNumber,
+    });
+  }
+
+  // Check if all stages are verified → transition to fabrication
+  const allVerified = plan.stages.every(s => s.status === PaymentStageStatus.VERIFIED);
+  if (allVerified && project.status === ProjectStatus.PAYMENT_PENDING) {
+    projectStateMachine.assertTransition(project.status, ProjectStatus.FABRICATION);
+    project.status = ProjectStatus.FABRICATION;
+    await project.save();
+
+    await createAndSendNotification(
+      project.customerId,
+      NotificationCategory.SYSTEM,
+      'All Payments Verified',
+      `All payments for "${project.title}" are verified! Your project is now moving to fabrication.`,
+      `/projects/${project._id}`,
+    );
+  }
+
+  return plan;
+}
+
+// ⚠️ DEV ONLY: Simulate Stage Payment ──
+
+export async function simulateStagePayment(
+  stageId: string,
+  actorId: string,
+  ip?: string,
+  ua?: string,
+) {
+  const plan = await PaymentPlan.findOne({ 'stages.stageId': stageId });
+  if (!plan) throw AppError.notFound('Payment stage not found');
+
+  const stage = plan.stages.find(s => s.stageId === stageId);
+  if (!stage) throw AppError.notFound('Stage not found');
+
+  if (![PaymentStageStatus.PENDING, PaymentStageStatus.DECLINED].includes(stage.status)) {
+    throw AppError.badRequest('This stage is not accepting payments');
+  }
+
+  const project = await Project.findById(plan.projectId);
+  if (!project) throw AppError.notFound('Project not found');
+
+  const remaining = stage.remainingBalance > 0 ? stage.remainingBalance : stage.amount;
+
+  const receiptNumber = await generateNextReceiptNumber();
+  const payment = await Payment.create({
+    projectId: plan.projectId,
+    stageId: stage.stageId,
+    method: PaymentMethod.QRPH,
+    amountPaid: remaining,
+    status: PaymentStageStatus.VERIFIED,
+    verifiedBy: actorId as unknown as Types.ObjectId,
+    verifiedAt: new Date(),
+    receiptNumber,
+    creditFromPrevious: 0,
+    excessCredit: 0,
+  });
+
+  // Generate receipt PDF
+  const simCustomer = await User.findById(project.customerId);
+  const simTotalPaid = plan.stages.reduce((sum, s) => sum + s.amountPaid, 0) + remaining;
+  const simReceiptKey = await generateAndUploadReceipt({
+    receiptNumber,
+    customerName: simCustomer ? `${simCustomer.firstName} ${simCustomer.lastName}` : 'Customer',
+    customerEmail: simCustomer?.email || '',
+    projectTitle: project.title,
+    stageName: stage.label,
+    amountPaid: remaining,
+    paymentMethod: 'qrph',
+    creditApplied: 0,
+    excessCredit: 0,
+    verifiedByName: 'System (Simulated)',
+    verifiedAt: payment.verifiedAt!,
+    totalProjectCost: plan.totalAmount,
+    totalPaid: simTotalPaid,
+    totalOutstanding: Math.max(0, plan.totalAmount - simTotalPaid),
+  });
+  if (simReceiptKey) {
+    payment.receiptKey = simReceiptKey;
+    await payment.save();
+  }
+
+  stage.status = PaymentStageStatus.VERIFIED;
+  stage.amountPaid = stage.amount;
+  stage.remainingBalance = 0;
+
+  if (!plan.isImmutable) plan.isImmutable = true;
+  await plan.save();
+
+  await AuditLog.create({
+    action: AuditAction.PAYMENT_VERIFIED,
+    actorId,
+    targetType: 'payment',
+    targetId: payment._id,
+    details: { stageId: stage.stageId, amountPaid: remaining, verifiedVia: 'simulate', receiptNumber },
+    ipAddress: ip,
+    userAgent: ua,
+  });
+
+  // Check if all verified → fabrication
+  const allVerified = plan.stages.every(s => s.status === PaymentStageStatus.VERIFIED);
+  if (allVerified && project.status === ProjectStatus.PAYMENT_PENDING) {
+    projectStateMachine.assertTransition(project.status, ProjectStatus.FABRICATION);
+    project.status = ProjectStatus.FABRICATION;
+    await project.save();
+  }
+
+  return { payment, receiptNumber };
+}
+
+// ── Cashier: Record Cash Payment (auto-verified) ──
+
+export async function recordCashPayment(
+  stageId: string,
+  amountPaid: number,
+  actorId: string,
+  ip?: string,
+  ua?: string,
+) {
+  const plan = await PaymentPlan.findOne({ 'stages.stageId': stageId });
+  if (!plan) throw AppError.notFound('Payment stage not found');
+
+  const stage = plan.stages.find(s => s.stageId === stageId);
+  if (!stage) throw AppError.notFound('Stage not found');
+
+  if (![PaymentStageStatus.PENDING, PaymentStageStatus.DECLINED].includes(stage.status)) {
+    throw AppError.badRequest('This stage is not accepting payments');
+  }
+
+  const project = await Project.findById(plan.projectId);
+  if (!project) throw AppError.notFound('Project not found');
+
+  const receiptNumber = await generateNextReceiptNumber();
+  const payment = await Payment.create({
+    projectId: plan.projectId,
+    stageId: stage.stageId,
+    method: PaymentMethod.CASH,
+    amountPaid,
+    status: PaymentStageStatus.VERIFIED,
+    verifiedBy: actorId as unknown as Types.ObjectId,
+    verifiedAt: new Date(),
+    receiptNumber,
+    creditFromPrevious: 0,
+    excessCredit: 0,
+  });
+
+  // Generate receipt PDF
+  const cashCustomer = await User.findById(project.customerId);
+  const cashVerifier = await User.findById(actorId);
+  const cashTotalPaid = plan.stages.reduce((sum, s) => sum + s.amountPaid, 0) + amountPaid;
+  const cashReceiptKey = await generateAndUploadReceipt({
+    receiptNumber,
+    customerName: cashCustomer ? `${cashCustomer.firstName} ${cashCustomer.lastName}` : 'Customer',
+    customerEmail: cashCustomer?.email || '',
+    projectTitle: project.title,
+    stageName: stage.label,
+    amountPaid,
+    paymentMethod: 'cash',
+    creditApplied: 0,
+    excessCredit: 0,
+    verifiedByName: cashVerifier ? `${cashVerifier.firstName} ${cashVerifier.lastName}` : 'Cashier',
+    verifiedAt: payment.verifiedAt!,
+    totalProjectCost: plan.totalAmount,
+    totalPaid: cashTotalPaid,
+    totalOutstanding: Math.max(0, plan.totalAmount - cashTotalPaid),
+  });
+  if (cashReceiptKey) payment.receiptKey = cashReceiptKey;
+
+  // Update stage
+  const totalPaid = stage.amountPaid + amountPaid;
+  const remaining = stage.amount - totalPaid;
+
+  if (remaining <= 0) {
+    stage.status = PaymentStageStatus.VERIFIED;
+    stage.amountPaid = totalPaid;
+    stage.remainingBalance = 0;
+    const excess = Math.abs(remaining);
+    if (excess > 0) {
+      payment.excessCredit = excess;
+      await payment.save();
+      await applyExcessCredit(plan, excess);
+    }
+  } else {
+    stage.amountPaid = totalPaid;
+    stage.remainingBalance = remaining;
+  }
+
+  if (!plan.isImmutable) plan.isImmutable = true;
+  await plan.save();
+
+  await AuditLog.create({
+    action: AuditAction.PAYMENT_VERIFIED,
+    actorId,
+    targetType: 'payment',
+    targetId: payment._id,
+    details: { stageId: stage.stageId, amountPaid, method: 'cash', receiptNumber },
+    ipAddress: ip,
+    userAgent: ua,
+  });
+
+  // Notify customer
+  await createAndSendNotification(
+    project.customerId,
+    NotificationCategory.PAYMENT,
+    'Cash Payment Recorded',
+    `A cash payment of ${formatCurrency(amountPaid)} for "${project.title}" — ${stage.label} has been recorded. Receipt: ${receiptNumber}`,
+    `/projects/${project._id}/payments`,
+  );
+
+  if (cashCustomer) {
+    await sendPaymentVerifiedEmail(cashCustomer.email, {
+      amount: formatCurrency(amountPaid),
+      stageLabel: stage.label,
+      receiptNumber,
+    });
+  }
+
+  // Check if all verified → fabrication
+  const allVerified = plan.stages.every(s => s.status === PaymentStageStatus.VERIFIED);
+  if (allVerified && project.status === ProjectStatus.PAYMENT_PENDING) {
+    projectStateMachine.assertTransition(project.status, ProjectStatus.FABRICATION);
+    project.status = ProjectStatus.FABRICATION;
+    await project.save();
+
+    await createAndSendNotification(
+      project.customerId,
+      NotificationCategory.SYSTEM,
+      'All Payments Verified',
+      `All payments for "${project.title}" are verified! Your project is now moving to fabrication.`,
+      `/projects/${project._id}`,
+    );
+  }
+
+  return { payment, receiptNumber };
+}
+
+// ── Get Receipt Download URL ──
+
+export async function getReceiptDownloadUrl(
+  paymentId: string,
+  actorId: string,
+  actorRoles: Role[],
+) {
+  const payment = await Payment.findById(paymentId);
+  if (!payment) throw AppError.notFound('Payment not found');
+  if (!payment.receiptKey) throw AppError.badRequest('No receipt available for this payment');
+
+  await assertPaymentProjectAccess(payment.projectId.toString(), actorId, actorRoles);
+
+  const url = await generateDownloadUrl(payment.receiptKey);
+  return { url, key: payment.receiptKey };
 }

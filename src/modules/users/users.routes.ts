@@ -20,7 +20,7 @@ router.post(
 router.get(
   '/admin/users',
   authenticate,
-  authorize(Role.ADMIN),
+  authorize(Role.ADMIN, Role.ENGINEER),
   usersController.listUsers,
 );
 
@@ -83,6 +83,19 @@ router.patch(
   authenticate,
   validate(updateProfileSchema),
   usersController.updateProfile,
+);
+
+// ── E-Signature ──
+router.post(
+  '/signature',
+  authenticate,
+  usersController.saveSignature,
+);
+
+router.get(
+  '/signature',
+  authenticate,
+  usersController.getSignature,
 );
 
 export default router;

@@ -240,4 +240,24 @@ export async function listByRole(role: string, search?: string) {
     .limit(50);
 }
 
+// ── Save E-Signature ──
+
+export async function saveSignature(userId: string, signatureKey: string) {
+  const user = await User.findById(userId);
+  if (!user) throw AppError.notFound('User not found');
+
+  user.signatureKey = signatureKey;
+  await user.save();
+
+  return { signatureKey: user.signatureKey };
+}
+
+// ── Get User Signature ──
+
+export async function getSignature(userId: string) {
+  const user = await User.findById(userId).select('signatureKey');
+  if (!user) throw AppError.notFound('User not found');
+  return { signatureKey: user.signatureKey || null };
+}
+
 

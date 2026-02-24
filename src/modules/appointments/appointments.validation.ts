@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { AppointmentType, PaymentMethod, SLOT_CODES } from '../../utils/constants.js';
+import { AppointmentType, PaymentMethod, ServiceType, MeasurementUnit, Environment, SLOT_CODES } from '../../utils/constants.js';
 
 const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -80,3 +80,44 @@ export type RecordOcularFeeInput = z.infer<typeof recordOcularFeeSchema>;
 export type SubmitOcularFeeProofInput = z.infer<typeof submitOcularFeeProofSchema>;
 export type DeclineOcularFeeInput = z.infer<typeof declineOcularFeeSchema>;
 export type AvailableSlotsQuery = z.infer<typeof availableSlotsQuerySchema>;
+
+// ── Customer Site Details (pre-visit info) ──
+const siteDetailsLineItemSchema = z.object({
+  label: z.string().min(1).max(200).trim(),
+  length: z.number().positive().optional(),
+  width: z.number().positive().optional(),
+  height: z.number().positive().optional(),
+  area: z.number().positive().optional(),
+  thickness: z.number().positive().optional(),
+  quantity: z.number().int().min(1).default(1),
+  notes: z.string().max(500).trim().optional(),
+});
+
+const siteDetailsSiteConditionsSchema = z.object({
+  environment: z.nativeEnum(Environment).default(Environment.INDOOR),
+  floorType: z.string().max(200).trim().optional(),
+  wallMaterial: z.string().max(200).trim().optional(),
+  hasElectrical: z.boolean().optional(),
+  hasPlumbing: z.boolean().optional(),
+  accessNotes: z.string().max(1000).trim().optional(),
+  obstaclesOrConstraints: z.string().max(1000).trim().optional(),
+});
+
+export const submitSiteDetailsSchema = z.object({
+  serviceType: z.nativeEnum(ServiceType).optional(),
+  serviceTypeCustom: z.string().max(200).trim().optional(),
+  measurementUnit: z.nativeEnum(MeasurementUnit).optional(),
+  lineItems: z.array(siteDetailsLineItemSchema).max(50).optional(),
+  siteConditions: siteDetailsSiteConditionsSchema.optional(),
+  materials: z.string().max(1000).trim().optional(),
+  finishes: z.string().max(500).trim().optional(),
+  preferredDesign: z.string().max(1000).trim().optional(),
+  customerRequirements: z.string().max(2000).trim().optional(),
+  notes: z.string().max(3000).trim().optional(),
+  photoKeys: z.array(z.string()).max(20).optional(),
+  videoKeys: z.array(z.string()).max(5).optional(),
+  sketchKeys: z.array(z.string()).max(10).optional(),
+  referenceImageKeys: z.array(z.string()).max(10).optional(),
+});
+
+export type SubmitSiteDetailsInput = z.infer<typeof submitSiteDetailsSchema>;

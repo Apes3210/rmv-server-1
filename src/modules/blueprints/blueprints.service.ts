@@ -1,19 +1,22 @@
 import {
-  Blueprint, Project, User, AuditLog,
+  Blueprint, Project, User, AuditLog, PaymentPlan,
 } from '../../models/index.js';
 import { AppError, ErrorCode } from '../../utils/appError.js';
 import {
   BlueprintStatus, BlueprintComponent, ProjectStatus,
-  AuditAction, NotificationCategory, Role,
+  AuditAction, NotificationCategory, Role, PaymentStageStatus,
 } from '../../utils/constants.js';
 import { blueprintStateMachine, projectStateMachine } from '../../utils/stateMachine.js';
 import { createAndSendNotification } from '../notifications/socket.service.js';
 import { sendBlueprintUploadedEmail } from '../notifications/email.service.js';
+import { getInstallmentConfig } from '../config/config.service.js';
+import { v4 as uuidv4 } from 'uuid';
 import type {
   UploadBlueprintInput,
   RevisionUploadInput,
   ApproveBlueprintInput,
   RequestRevisionInput,
+  AcceptBlueprintInput,
 } from './blueprints.validation.js';
 import type { Types } from 'mongoose';
 
@@ -292,43 +295,26 @@ async function assertBlueprintProjectAccess(
   actorRoles: Role[],
 ): Promise<void> {
   const project = await Project.findById(projectId)
-    .select('customerId salesStaffId engineerIds fabricationLeadId fabricationAssistantIds');
+    .select('customerId salesStaffId engineerIds fabricationLeadId fabricationAssistantIds status');
   if (!project) throw AppError.notFound('Project not found');
 
-  if (actorRoles.includes(Role.ADMIN)) {
-    return;
-  }
+  if (actorRoles.includes(Role.ADMIN)) return;
 
-  if (
-    actorRoles.includes(Role.CUSTOMER) &&
-    project.customerId.toString() === actorId
-  ) {
-    return;
-  }
+  if (actorRoles.includes(Role.CUSTOMER) && project.customerId.toString() === actorId) return;
+  if (actorRoles.includes(Role.SALES_STAFF) && project.salesStaffId?.toString() === actorId) return;
 
-  if (
-    actorRoles.includes(Role.SALES_STAFF) &&
-    project.salesStaffId?.toString() === actorId
-  ) {
-    return;
-  }
-
-  if (
-    actorRoles.includes(Role.ENGINEER) &&
-    project.engineerIds.some((id) => id.toString() === actorId)
-  ) {
-    return;
+  if (actorRoles.includes(Role.ENGINEER)) {
+    // Assigned engineer
+    if (project.engineerIds.some((id) => id.toString() === actorId)) return;
+    // Unassigned submitted projects (engineers can browse these)
+    if (project.status === ProjectStatus.SUBMITTED && project.engineerIds.length === 0) return;
   }
 
   if (
     actorRoles.includes(Role.FABRICATION_STAFF) &&
-    (
-      project.fabricationLeadId?.toString() === actorId ||
-      project.fabricationAssistantIds.some((id) => id.toString() === actorId)
-    )
-  ) {
-    return;
-  }
+    (project.fabricationLeadId?.toString() === actorId ||
+      project.fabricationAssistantIds.some((id) => id.toString() === actorId))
+  ) return;
 
   throw AppError.forbidden('Access denied');
 }
@@ -339,7 +325,7 @@ export async function getBlueprintById(
   actorRoles: Role[],
 ) {
   const blueprint = await Blueprint.findById(blueprintId)
-    .populate('uploadedBy', 'firstName lastName');
+    .populate('uploadedBy', 'firstName lastName phone');
   if (!blueprint) throw AppError.notFound('Blueprint not found');
   await assertBlueprintProjectAccess(blueprint.projectId.toString(), actorId, actorRoles);
   return blueprint;
@@ -354,7 +340,7 @@ export async function listBlueprintsByProject(
 ) {
   await assertBlueprintProjectAccess(projectId, actorId, actorRoles);
   const blueprints = await Blueprint.find({ projectId })
-    .populate('uploadedBy', 'firstName lastName')
+    .populate('uploadedBy', 'firstName lastName phone')
     .sort({ version: -1 });
   return blueprints;
 }
@@ -369,6 +355,144 @@ export async function getLatestBlueprint(
   await assertBlueprintProjectAccess(projectId, actorId, actorRoles);
   const blueprint = await Blueprint.findOne({ projectId })
     .sort({ version: -1 })
-    .populate('uploadedBy', 'firstName lastName');
+    .populate('uploadedBy', 'firstName lastName phone');
   return blueprint;
+}
+
+// ── Customer: Accept Blueprint (approve both + choose payment type + auto-create plan) ──
+
+export async function acceptBlueprint(
+  blueprintId: string,
+  input: AcceptBlueprintInput,
+  customerId: string,
+  ip?: string,
+  ua?: string,
+) {
+  const blueprint = await Blueprint.findById(blueprintId);
+  if (!blueprint) throw AppError.notFound('Blueprint not found');
+
+  const project = await Project.findById(blueprint.projectId);
+  if (!project) throw AppError.notFound('Project not found');
+  if (project.customerId.toString() !== customerId) {
+    throw AppError.forbidden('Only the project customer can accept blueprints');
+  }
+
+  if (![BlueprintStatus.UPLOADED, BlueprintStatus.REVISION_UPLOADED].includes(blueprint.status)) {
+    throw AppError.badRequest('Blueprint is not in a reviewable state');
+  }
+
+  if (!blueprint.quotation || blueprint.quotation.total <= 0) {
+    throw AppError.badRequest('Cannot accept a blueprint without a valid quotation');
+  }
+
+  // Mark both components as approved
+  blueprint.blueprintApproved = true;
+  blueprint.costingApproved = true;
+  blueprint.status = BlueprintStatus.APPROVED;
+  await blueprint.save();
+
+  // Transition project: BLUEPRINT → APPROVED → PAYMENT_PENDING
+  if (project.status === ProjectStatus.BLUEPRINT) {
+    projectStateMachine.assertTransition(project.status, ProjectStatus.APPROVED);
+    project.status = ProjectStatus.APPROVED;
+    await project.save();
+  }
+
+  // Auto-generate payment plan
+  const baseTotal = blueprint.quotation.total;
+  let finalTotal = baseTotal;
+  let isPayInFull = true;
+
+  const installmentConfig = await getInstallmentConfig();
+
+  if (input.paymentType === 'installment') {
+    isPayInFull = false;
+    const surcharge = installmentConfig.surchargePercent;
+    finalTotal = Math.round(baseTotal * (1 + surcharge / 100) * 100) / 100;
+  }
+
+  let stages;
+  if (isPayInFull) {
+    stages = [{
+      stageId: uuidv4(),
+      label: 'Full Payment',
+      percentage: 100,
+      amount: finalTotal,
+      status: PaymentStageStatus.PENDING,
+      amountPaid: 0,
+      creditApplied: 0,
+      remainingBalance: finalTotal,
+    }];
+  } else {
+    stages = installmentConfig.split.map((pct, idx) => {
+      const amount = Math.round((finalTotal * pct / 100) * 100) / 100;
+      return {
+        stageId: uuidv4(),
+        label: installmentConfig.stageLabels[idx] || `Stage ${idx + 1}`,
+        percentage: pct,
+        amount,
+        status: PaymentStageStatus.PENDING,
+        amountPaid: 0,
+        creditApplied: 0,
+        remainingBalance: amount,
+      };
+    });
+  }
+
+  // Check no existing plan
+  const existingPlan = await PaymentPlan.findOne({ projectId: project._id });
+  if (existingPlan) {
+    throw AppError.conflict('A payment plan already exists for this project', ErrorCode.DUPLICATE_ENTRY);
+  }
+
+  const plan = await PaymentPlan.create({
+    projectId: project._id,
+    totalAmount: finalTotal,
+    isPayInFull,
+    stages,
+    createdBy: customerId,
+  });
+
+  // Transition project to PAYMENT_PENDING
+  if (project.status === ProjectStatus.APPROVED) {
+    projectStateMachine.assertTransition(project.status, ProjectStatus.PAYMENT_PENDING);
+    project.status = ProjectStatus.PAYMENT_PENDING;
+    await project.save();
+  }
+
+  await AuditLog.create({
+    action: AuditAction.BLUEPRINT_APPROVED,
+    actorId: customerId,
+    targetType: 'blueprint',
+    targetId: blueprint._id,
+    details: {
+      fullyApproved: true,
+      paymentType: input.paymentType,
+      totalAmount: finalTotal,
+      surchargePercent: isPayInFull ? 0 : installmentConfig.surchargePercent,
+      stages: stages.length,
+    },
+    ipAddress: ip,
+    userAgent: ua,
+  });
+
+  // Notify engineer
+  await createAndSendNotification(
+    blueprint.uploadedBy,
+    NotificationCategory.BLUEPRINT,
+    'Blueprint Accepted',
+    `Customer accepted the blueprint for "${project.title}" and chose ${isPayInFull ? 'full payment' : 'installment payment'}.`,
+    `/projects/${project._id}/blueprint`,
+  );
+
+  // Notify customer
+  await createAndSendNotification(
+    customerId,
+    NotificationCategory.PAYMENT,
+    'Payment Plan Created',
+    `Your payment plan for "${project.title}" is ready. Total: ₱${finalTotal.toLocaleString('en-PH', { minimumFractionDigits: 2 })}.`,
+    `/projects/${project._id}`,
+  );
+
+  return { blueprint, paymentPlan: plan };
 }

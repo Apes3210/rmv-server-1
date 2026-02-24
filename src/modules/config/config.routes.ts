@@ -8,9 +8,9 @@ import { updateConfigSchema, createHolidaySchema, maintenanceToggleSchema, creat
 
 const router = Router();
 
-// All admin only
-router.get('/configs', authenticate, authorize(Role.ADMIN), ctrl.listConfigs);
-router.get('/configs/:key', authenticate, authorize(Role.ADMIN), ctrl.getConfig);
+// Read configs: any authenticated user; write: admin only
+router.get('/configs', authenticate, ctrl.listConfigs);
+router.get('/configs/:key', authenticate, ctrl.getConfig);
 router.put('/configs/:key', authenticate, authorize(Role.ADMIN), validate(updateConfigSchema), ctrl.upsertConfig);
 
 router.get('/holidays', authenticate, authorize(Role.ADMIN, Role.APPOINTMENT_AGENT), ctrl.listHolidays);

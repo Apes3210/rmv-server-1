@@ -219,6 +219,25 @@ export const getAppointmentById = asyncHandler(async (req: Request, res: Respons
   res.json({ success: true, data: formatAppointment(appointment) });
 });
 
+// ── Customer: Submit Site Details ──
+export const submitSiteDetails = asyncHandler(async (req: Request, res: Response) => {
+  const appointment = await appointmentsService.submitSiteDetails(
+    req.params.id as string,
+    req.body,
+    req.userId!,
+  );
+  res.json({ success: true, data: formatAppointment(appointment) });
+});
+
+// ── Customer: Skip Site Details (ocular only) ──
+export const skipSiteDetails = asyncHandler(async (req: Request, res: Response) => {
+  const appointment = await appointmentsService.skipSiteDetails(
+    req.params.id as string,
+    req.userId!,
+  );
+  res.json({ success: true, data: formatAppointment(appointment) });
+});
+
 // ── List ──
 export const listAppointments = asyncHandler(async (req: Request, res: Response) => {
   const result = await appointmentsService.listAppointments(

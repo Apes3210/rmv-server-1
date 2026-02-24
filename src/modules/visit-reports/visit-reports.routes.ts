@@ -54,6 +54,14 @@ router.put(
   ctrl.updateVisitReport,
 );
 
+// ── Delete (Sales Staff removes accidental extra draft/returned report) ──
+router.delete(
+  '/:id',
+  authenticate,
+  authorize(Role.SALES_STAFF),
+  ctrl.deleteVisitReport,
+);
+
 // ── Submit to Engineer ──
 router.post(
   '/:id/submit',

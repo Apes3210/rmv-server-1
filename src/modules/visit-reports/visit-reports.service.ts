@@ -12,32 +12,47 @@ import { createAndSendNotification, notifyRole } from '../notifications/socket.s
 import type { CreateVisitReportInput, UpdateVisitReportInput, ReturnVisitReportInput } from './visit-reports.validation.js';
 import type { Types } from 'mongoose';
 
+import type { ICustomerSiteDetails } from '../../models/Appointment.js';
+
 // ── Auto-create Draft (called when Agent confirms appointment) ──
 // Creates a single initial report. Sales staff can add more via createReport().
+// If customerSiteDetails is provided (customer filled in pre-visit info), pre-populate the report.
 
 export async function autoCreateDraft(
   appointmentId: Types.ObjectId | string,
   customerId: Types.ObjectId | string,
   salesStaffId: Types.ObjectId | string,
   visitType: string,
+  customerSiteDetails?: ICustomerSiteDetails,
 ): Promise<void> {
   // Check if any report already exists for this appointment
   const existing = await VisitReport.findOne({ appointmentId });
   if (existing) return; // idempotent
 
-  const report = await VisitReport.create({
+  // Build report data, pre-populating from customer site details if available
+  const reportData: Record<string, any> = {
     appointmentId,
     customerId,
     salesStaffId,
     status: VisitReportStatus.DRAFT,
     visitType,
-    serviceType: ServiceType.CUSTOM,
-    lineItems: [],
-    photoKeys: [],
-    videoKeys: [],
-    sketchKeys: [],
-    referenceImageKeys: [],
-  });
+    serviceType: customerSiteDetails?.serviceType || ServiceType.CUSTOM,
+    serviceTypeCustom: customerSiteDetails?.serviceTypeCustom,
+    measurementUnit: customerSiteDetails?.measurementUnit,
+    lineItems: customerSiteDetails?.lineItems || [],
+    siteConditions: customerSiteDetails?.siteConditions,
+    materials: customerSiteDetails?.materials,
+    finishes: customerSiteDetails?.finishes,
+    preferredDesign: customerSiteDetails?.preferredDesign,
+    customerRequirements: customerSiteDetails?.customerRequirements,
+    notes: customerSiteDetails?.notes,
+    photoKeys: customerSiteDetails?.photoKeys || [],
+    videoKeys: customerSiteDetails?.videoKeys || [],
+    sketchKeys: customerSiteDetails?.sketchKeys || [],
+    referenceImageKeys: customerSiteDetails?.referenceImageKeys || [],
+  };
+
+  const report = await VisitReport.create(reportData);
 
   await AuditLog.create({
     action: AuditAction.VISIT_REPORT_CREATED,
@@ -358,6 +373,57 @@ export async function submitReport(
   );
 
   return report;
+}
+
+// ── Delete Report (Sales Staff removes accidental extra project) ──
+
+export async function deleteReport(
+  reportId: string,
+  salesStaffId: string,
+  ip?: string,
+  ua?: string,
+) {
+  const report = await VisitReport.findById(reportId);
+  if (!report) throw AppError.notFound('Visit report not found');
+
+  if (report.salesStaffId.toString() !== salesStaffId) {
+    throw AppError.forbidden('You are not assigned to this visit report');
+  }
+
+  if (![VisitReportStatus.DRAFT, VisitReportStatus.RETURNED].includes(report.status)) {
+    throw AppError.badRequest('Only draft or returned reports can be deleted');
+  }
+
+  const hasLinkedProject = await Project.exists({ visitReportId: report._id });
+  if (hasLinkedProject) {
+    throw AppError.badRequest('Cannot delete a report that already has a linked project');
+  }
+
+  const reportCountForAppointment = await VisitReport.countDocuments({
+    appointmentId: report.appointmentId,
+  });
+
+  if (reportCountForAppointment <= 1) {
+    throw AppError.badRequest('At least one visit report must remain for this appointment');
+  }
+
+  const deletedId = report._id.toString();
+  await report.deleteOne();
+
+  await AuditLog.create({
+    action: AuditAction.VISIT_REPORT_DELETED,
+    actorId: salesStaffId,
+    targetType: 'visit_report',
+    targetId: report._id,
+    details: {
+      appointmentId: report.appointmentId.toString(),
+      status: report.status,
+    },
+    ipAddress: ip,
+    userAgent: ua,
+  });
+
+  return { deletedId };
 }
 
 // ── Return Report (Engineer → Sales Staff) ──

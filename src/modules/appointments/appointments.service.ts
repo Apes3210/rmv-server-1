@@ -23,6 +23,7 @@ import type {
   RescheduleCompleteInput,
   RecordOcularFeeInput,
   AvailableSlotsQuery,
+  SubmitSiteDetailsInput,
 } from './appointments.validation.js';
 import type { Types } from 'mongoose';
 
@@ -381,6 +382,17 @@ export async function confirmAppointment(
     );
   }
 
+  // Block confirmation for office appointments if customer hasn't submitted site details
+  if (
+    appointment.type === AppointmentType.OFFICE &&
+    appointment.siteDetailsStatus !== 'submitted'
+  ) {
+    throw AppError.badRequest(
+      'Customer must submit site details before this office appointment can be confirmed.',
+      ErrorCode.VALIDATION_ERROR,
+    );
+  }
+
   // Assign or re-assign sales staff
   const salesStaff = await User.findOne({
     _id: input.salesStaffId,
@@ -448,7 +460,86 @@ export async function confirmAppointment(
     appointment.customerId,
     salesStaff._id,
     appointment.type === AppointmentType.OCULAR ? 'ocular' : 'consultation',
+    appointment.customerSiteDetails || undefined,
   );
+
+  return appointment;
+}
+
+// ── Customer: Submit Site Details ──
+
+export async function submitSiteDetails(
+  appointmentId: string,
+  input: SubmitSiteDetailsInput,
+  customerId: string,
+) {
+  const appointment = await Appointment.findById(appointmentId);
+  if (!appointment) throw AppError.notFound('Appointment not found');
+
+  // Must belong to this customer
+  if (appointment.customerId.toString() !== customerId) {
+    throw AppError.forbidden('You do not own this appointment');
+  }
+
+  // Must be in REQUESTED status (not yet confirmed)
+  if (appointment.status !== AppointmentStatus.REQUESTED) {
+    throw AppError.badRequest('Site details can only be submitted for pending appointments');
+  }
+
+  // Must not already be submitted
+  if (appointment.siteDetailsStatus === 'submitted') {
+    throw AppError.badRequest('Site details have already been submitted for this appointment');
+  }
+
+  // For office appointments, photoKeys and referenceImageKeys are mandatory
+  if (appointment.type === AppointmentType.OFFICE) {
+    if (!input.photoKeys || input.photoKeys.length === 0) {
+      throw AppError.badRequest('At least one site photo is required for office appointments');
+    }
+    if (!input.referenceImageKeys || input.referenceImageKeys.length === 0) {
+      throw AppError.badRequest('At least one reference image is required for office appointments');
+    }
+  }
+
+  appointment.customerSiteDetails = input;
+  appointment.siteDetailsStatus = 'submitted';
+  await appointment.save();
+
+  // Notify appointment agents that site details have been submitted
+  await notifyRole(
+    Role.APPOINTMENT_AGENT,
+    NotificationCategory.APPOINTMENT,
+    'Site Details Submitted',
+    `Customer has submitted site details for ${appointment.type} appointment on ${appointment.date} at ${formatSlotTime(appointment.slotCode)}.`,
+    `/appointments/${appointment._id}`,
+  );
+
+  return appointment;
+}
+
+// ── Customer: Skip Site Details (ocular only) ──
+
+export async function skipSiteDetails(
+  appointmentId: string,
+  customerId: string,
+) {
+  const appointment = await Appointment.findById(appointmentId);
+  if (!appointment) throw AppError.notFound('Appointment not found');
+
+  if (appointment.customerId.toString() !== customerId) {
+    throw AppError.forbidden('You do not own this appointment');
+  }
+
+  if (appointment.type !== AppointmentType.OCULAR) {
+    throw AppError.badRequest('Only ocular appointments can skip site details');
+  }
+
+  if (appointment.status !== AppointmentStatus.REQUESTED) {
+    throw AppError.badRequest('Site details can only be skipped for pending appointments');
+  }
+
+  appointment.siteDetailsStatus = 'skipped';
+  await appointment.save();
 
   return appointment;
 }
@@ -1188,8 +1279,11 @@ export async function listAppointments(query: {
   } else if (
     actorRoles.some(r => [Role.ADMIN, Role.APPOINTMENT_AGENT].includes(r))
   ) {
-    // Hide ocular appointments whose fee hasn't been paid yet
-    filter.ocularFeeStatus = { $ne: 'pending' } as any;
+    // Hide ocular appointments whose fee hasn't been paid yet, but always show office appointments
+    filter.$or = [
+      { type: { $ne: 'ocular' } },
+      { type: 'ocular', ocularFeeStatus: { $ne: 'pending' } },
+    ];
   }
 
   if (query.status) filter.status = query.status;

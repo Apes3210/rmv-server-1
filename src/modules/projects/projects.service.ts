@@ -1,12 +1,17 @@
 import {
   Project, Appointment, User, AuditLog,
 } from '../../models/index.js';
+import { PaymentPlan } from '../../models/Payment.js';
+import { Blueprint } from '../../models/Blueprint.js';
 import { AppError, ErrorCode } from '../../utils/appError.js';
 import {
   ProjectStatus, AppointmentStatus, Role, AuditAction, NotificationCategory,
 } from '../../utils/constants.js';
 import { projectStateMachine } from '../../utils/stateMachine.js';
 import { createAndSendNotification, notifyRole } from '../notifications/socket.service.js';
+import { generateAndUploadContract, type ContractData } from '../../services/contract.service.js';
+import { generateDownloadUrl } from '../uploads/upload.service.js';
+import { logger } from '../../utils/logger.js';
 import type {
   CreateProjectInput,
   UpdateProjectInput,
@@ -299,9 +304,10 @@ export async function getProjectById(
   const project = await Project.findById(projectId)
     .populate('customerId', 'firstName lastName email phone')
     .populate('salesStaffId', 'firstName lastName')
-    .populate('engineerIds', 'firstName lastName')
+    .populate('engineerIds', 'firstName lastName phone')
     .populate('fabricationLeadId', 'firstName lastName')
-    .populate('fabricationAssistantIds', 'firstName lastName');
+    .populate('fabricationAssistantIds', 'firstName lastName')
+    .populate('visitReportId');
 
   if (!project) throw AppError.notFound('Project not found');
 
@@ -345,7 +351,10 @@ export async function listProjects(
   } else if (actorRoles.includes(Role.SALES_STAFF) && !actorRoles.some(r => [Role.ADMIN].includes(r))) {
     filter.salesStaffId = actorId;
   } else if (actorRoles.includes(Role.ENGINEER) && !actorRoles.some(r => [Role.ADMIN, Role.SALES_STAFF].includes(r))) {
-    filter.engineerIds = actorId;
+    filter.$or = [
+      { engineerIds: actorId },
+      { status: ProjectStatus.SUBMITTED, engineerIds: { $size: 0 } },
+    ];
   } else if (actorRoles.includes(Role.FABRICATION_STAFF) && !actorRoles.some(r => [Role.ADMIN, Role.ENGINEER].includes(r))) {
     filter.$or = [
       { fabricationLeadId: actorId },
@@ -383,7 +392,7 @@ export async function listProjects(
     Project.find(filter)
       .populate('customerId', 'firstName lastName email')
       .populate('salesStaffId', 'firstName lastName')
-      .populate('engineerIds', 'firstName lastName')
+      .populate('engineerIds', 'firstName lastName phone')
       .sort({ [sortField]: sortOrder })
       .skip((page - 1) * limit)
       .limit(limit),
@@ -428,4 +437,124 @@ export async function removeMediaKey(
   await project.save();
 
   return project;
+}
+
+// ── Generate Contract PDF ──
+
+export async function generateContract(
+  projectId: string,
+  actorId: string,
+  ip?: string,
+  ua?: string,
+) {
+  const project = await Project.findById(projectId)
+    .populate('customerId', 'firstName lastName email phone address signatureKey')
+    .populate('engineerIds', 'firstName lastName phone');
+
+  if (!project) throw AppError.notFound('Project not found');
+
+  // Must be in PAYMENT_PENDING or later
+  const allowedStatuses = [
+    ProjectStatus.PAYMENT_PENDING,
+    ProjectStatus.FABRICATION,
+    ProjectStatus.COMPLETED,
+  ];
+  if (!allowedStatuses.includes(project.status)) {
+    throw AppError.badRequest('Contract can only be generated after blueprint acceptance');
+  }
+
+  // Get the latest blueprint for quotation
+  const blueprint = await Blueprint.findOne({ projectId })
+    .sort({ version: -1 });
+
+  if (!blueprint?.quotation) {
+    throw AppError.badRequest('No quotation found for this project');
+  }
+
+  // Get payment plan
+  const paymentPlan = await PaymentPlan.findOne({ projectId });
+  if (!paymentPlan) {
+    throw AppError.badRequest('No payment plan found for this project');
+  }
+
+  const customer = project.customerId as any;
+  const engineers = project.engineerIds as any[];
+
+  const contractData: ContractData = {
+    projectTitle: project.title,
+    projectDescription: project.description,
+    siteAddress: project.siteAddress,
+    serviceType: project.serviceType,
+    customerName: `${customer.firstName} ${customer.lastName}`,
+    customerEmail: customer.email,
+    customerPhone: customer.phone,
+    customerAddress: customer.address,
+    engineerNames: engineers.map((e: any) => `${e.firstName} ${e.lastName}`),
+    totalAmount: paymentPlan.totalAmount,
+    paymentType: paymentPlan.isPayInFull ? 'full' : 'installment',
+    stages: paymentPlan.stages.map(s => ({
+      label: s.label,
+      percentage: s.percentage,
+      amount: s.amount,
+    })),
+    estimatedDuration: blueprint.quotation.estimatedDuration,
+    materialType: project.materialType,
+    finishColor: project.finishColor,
+    quantity: project.quantity,
+    customerSignatureKey: customer.signatureKey || null,
+  };
+
+  const { originalKey, copyKey } = await generateAndUploadContract(contractData);
+
+  // Store the original key on the project
+  project.contractKey = originalKey;
+  project.contractGeneratedAt = new Date();
+  await project.save();
+
+  await AuditLog.create({
+    action: AuditAction.PROJECT_UPDATED,
+    actorId,
+    targetType: 'project',
+    targetId: project._id,
+    details: { action: 'contract_generated', originalKey, copyKey },
+    ipAddress: ip,
+    userAgent: ua,
+  });
+
+  // Notify customer
+  await createAndSendNotification(
+    customer._id,
+    NotificationCategory.SYSTEM,
+    'Contract Ready',
+    `The contract for your project "${project.title}" has been generated and is ready for download.`,
+    `/projects/${project._id}`,
+  );
+
+  logger.info(`Contract generated for project ${projectId}: ${originalKey}`);
+
+  return { originalKey, copyKey, project };
+}
+
+// ── Get Contract Download URL ──
+
+export async function getContractDownloadUrl(
+  projectId: string,
+  copy: 'original' | 'copy',
+  actorId: string,
+  actorRoles: Role[],
+) {
+  const project = await Project.findById(projectId);
+  if (!project) throw AppError.notFound('Project not found');
+
+  if (!project.contractKey) {
+    throw AppError.badRequest('No contract has been generated for this project');
+  }
+
+  // Derive copy key from original key
+  const key = copy === 'original'
+    ? project.contractKey
+    : project.contractKey.replace('-original.pdf', '-copy.pdf');
+
+  const url = await generateDownloadUrl(key);
+  return { url, key };
 }

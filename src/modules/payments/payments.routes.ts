@@ -10,6 +10,7 @@ import {
   submitPaymentProofSchema,
   verifyPaymentSchema,
   declinePaymentSchema,
+  recordCashPaymentSchema,
 } from './payments.validation.js';
 
 const router = Router();
@@ -38,6 +39,30 @@ router.post(
   authorize(Role.CUSTOMER),
   validate(submitPaymentProofSchema),
   ctrl.submitPaymentProof,
+);
+
+// ── Customer: Create QRPH Checkout ──
+router.post(
+  '/stages/:stageId/checkout',
+  authenticate,
+  authorize(Role.CUSTOMER),
+  ctrl.createStageCheckout,
+);
+
+// ⚠️ DEV ONLY: Simulate Stage Payment ──
+router.post(
+  '/stages/:stageId/simulate',
+  authenticate,
+  ctrl.simulateStagePayment,
+);
+
+// ── Cashier: Record Cash Payment ──
+router.post(
+  '/record-cash',
+  authenticate,
+  authorize(Role.CASHIER, Role.ADMIN),
+  validate(recordCashPaymentSchema),
+  ctrl.recordCashPayment,
 );
 
 // ── Cashier: Verify / Decline ──
@@ -89,6 +114,12 @@ router.get(
   '/:id',
   authenticate,
   ctrl.getPaymentById,
+);
+
+router.get(
+  '/:id/receipt-url',
+  authenticate,
+  ctrl.getReceiptDownloadUrl,
 );
 
 export default router;
