@@ -1,4 +1,5 @@
 import mongoose, { Schema, Document, Types } from 'mongoose';
+import { ServiceType, MeasurementUnit, Environment } from '../utils/constants.js';
 
 // ── Visit Report Status ──
 export enum VisitReportStatus {
@@ -6,6 +7,29 @@ export enum VisitReportStatus {
   SUBMITTED = 'submitted',
   RETURNED = 'returned',
   COMPLETED = 'completed',
+}
+
+// ── Line Item (per-component measurement) ──
+export interface ILineItem {
+  label: string;           // e.g. "Left panel", "Kitchen counter top"
+  length?: number;
+  width?: number;
+  height?: number;
+  area?: number;
+  thickness?: number;
+  quantity: number;
+  notes?: string;
+}
+
+// ── Site Conditions ──
+export interface ISiteConditions {
+  environment: string;            // indoor | outdoor | semi_covered
+  floorType?: string;             // e.g. "Tile", "Concrete"
+  wallMaterial?: string;          // e.g. "Concrete hollow block"
+  hasElectrical?: boolean;
+  hasPlumbing?: boolean;
+  accessNotes?: string;           // e.g. "Narrow staircase, no elevator"
+  obstaclesOrConstraints?: string;
 }
 
 export interface IVisitReport extends Document {
@@ -18,7 +42,15 @@ export interface IVisitReport extends Document {
   visitType: string; // ocular | consultation
   actualVisitDateTime?: Date;
 
-  // Structured measurements
+  // ── Service Type (what fabrication category this report covers) ──
+  serviceType: string;
+  serviceTypeCustom?: string; // only used when serviceType === 'custom'
+
+  // ── Structured measurements (per-line-item) ──
+  measurementUnit: string;
+  lineItems: ILineItem[];
+
+  // ── Legacy flat measurements (backward compat for old reports) ──
   measurements?: {
     length?: number;
     width?: number;
@@ -26,8 +58,11 @@ export interface IVisitReport extends Document {
     area?: number;
     thickness?: number;
     unit: string;
-    raw?: string; // free-form notes about measurements
+    raw?: string;
   };
+
+  // ── Site conditions ──
+  siteConditions?: ISiteConditions;
 
   materials?: string;
   finishes?: string;
@@ -48,9 +83,38 @@ export interface IVisitReport extends Document {
   updatedAt: Date;
 }
 
+// ── Line Item sub-schema ──
+const lineItemSchema = new Schema<ILineItem>(
+  {
+    label: { type: String, required: true, trim: true },
+    length: { type: Number },
+    width: { type: Number },
+    height: { type: Number },
+    area: { type: Number },
+    thickness: { type: Number },
+    quantity: { type: Number, default: 1, min: 1 },
+    notes: { type: String },
+  },
+  { _id: false },
+);
+
+// ── Site Conditions sub-schema ──
+const siteConditionsSchema = new Schema<ISiteConditions>(
+  {
+    environment: { type: String, enum: Object.values(Environment), default: Environment.INDOOR },
+    floorType: { type: String },
+    wallMaterial: { type: String },
+    hasElectrical: { type: Boolean },
+    hasPlumbing: { type: Boolean },
+    accessNotes: { type: String },
+    obstaclesOrConstraints: { type: String },
+  },
+  { _id: false },
+);
+
 const visitReportSchema = new Schema<IVisitReport>(
   {
-    appointmentId: { type: Schema.Types.ObjectId, ref: 'Appointment', required: true, unique: true },
+    appointmentId: { type: Schema.Types.ObjectId, ref: 'Appointment', required: true },
     customerId: { type: Schema.Types.ObjectId, ref: 'User', required: true },
     salesStaffId: { type: Schema.Types.ObjectId, ref: 'User', required: true },
 
@@ -62,6 +126,24 @@ const visitReportSchema = new Schema<IVisitReport>(
     visitType: { type: String, enum: ['ocular', 'consultation'], default: 'ocular' },
     actualVisitDateTime: { type: Date },
 
+    // Service type
+    serviceType: {
+      type: String,
+      enum: [...Object.values(ServiceType)],
+      required: true,
+      default: ServiceType.CUSTOM,
+    },
+    serviceTypeCustom: { type: String, trim: true },
+
+    // Measurements
+    measurementUnit: {
+      type: String,
+      enum: Object.values(MeasurementUnit),
+      default: MeasurementUnit.CM,
+    },
+    lineItems: { type: [lineItemSchema], default: [] },
+
+    // Legacy flat measurements (kept for backward compat)
     measurements: {
       length: Number,
       width: Number,
@@ -71,6 +153,9 @@ const visitReportSchema = new Schema<IVisitReport>(
       unit: { type: String, default: 'cm' },
       raw: String,
     },
+
+    // Site conditions
+    siteConditions: { type: siteConditionsSchema },
 
     materials: { type: String },
     finishes: { type: String },
@@ -88,6 +173,7 @@ const visitReportSchema = new Schema<IVisitReport>(
   { timestamps: true },
 );
 
+visitReportSchema.index({ appointmentId: 1 }); // no longer unique — multiple reports per appointment
 visitReportSchema.index({ salesStaffId: 1, status: 1 });
 visitReportSchema.index({ status: 1 });
 

@@ -116,6 +116,41 @@ export enum NotificationCategory {
   SYSTEM = 'system',
 }
 
+// ── Service Type (fabrication categories) ──
+export enum ServiceType {
+  RAILINGS = 'railings',
+  GRILLS = 'grills',
+  GATES = 'gates',
+  FENCES = 'fences',
+  KITCHEN_COUNTER = 'kitchen_counter',
+  KITCHEN_CABINET = 'kitchen_cabinet',
+  TABLE = 'table',
+  CHAIR = 'chair',
+  SHELVING = 'shelving',
+  DOOR = 'door',
+  WINDOW_FRAME = 'window_frame',
+  CANOPY = 'canopy',
+  STAIRCASE = 'staircase',
+  BALUSTRADE = 'balustrade',
+  SIGNAGE = 'signage',
+  CUSTOM = 'custom',
+}
+
+// ── Measurement Unit ──
+export enum MeasurementUnit {
+  CM = 'cm',
+  INCHES = 'inches',
+  FEET = 'feet',
+  METERS = 'meters',
+}
+
+// ── Environment / Site Condition ──
+export enum Environment {
+  INDOOR = 'indoor',
+  OUTDOOR = 'outdoor',
+  SEMI_COVERED = 'semi_covered',
+}
+
 // ── Audit Action ──
 export enum AuditAction {
   // Auth

@@ -5,13 +5,15 @@ import { VisitReportStatus } from '../../models/VisitReport.js';
 import { AppError, ErrorCode } from '../../utils/appError.js';
 import {
   AppointmentStatus, ProjectStatus, Role, AuditAction, NotificationCategory,
+  ServiceType,
 } from '../../utils/constants.js';
 import { visitReportStateMachine, appointmentStateMachine } from '../../utils/stateMachine.js';
 import { createAndSendNotification, notifyRole } from '../notifications/socket.service.js';
-import type { UpdateVisitReportInput, ReturnVisitReportInput } from './visit-reports.validation.js';
+import type { CreateVisitReportInput, UpdateVisitReportInput, ReturnVisitReportInput } from './visit-reports.validation.js';
 import type { Types } from 'mongoose';
 
 // ── Auto-create Draft (called when Agent confirms appointment) ──
+// Creates a single initial report. Sales staff can add more via createReport().
 
 export async function autoCreateDraft(
   appointmentId: Types.ObjectId | string,
@@ -19,7 +21,7 @@ export async function autoCreateDraft(
   salesStaffId: Types.ObjectId | string,
   visitType: string,
 ): Promise<void> {
-  // Check if one already exists
+  // Check if any report already exists for this appointment
   const existing = await VisitReport.findOne({ appointmentId });
   if (existing) return; // idempotent
 
@@ -29,6 +31,8 @@ export async function autoCreateDraft(
     salesStaffId,
     status: VisitReportStatus.DRAFT,
     visitType,
+    serviceType: ServiceType.CUSTOM,
+    lineItems: [],
     photoKeys: [],
     videoKeys: [],
     sketchKeys: [],
@@ -44,6 +48,55 @@ export async function autoCreateDraft(
   });
 }
 
+// ── Create Report (Sales Staff adds another project/report to an appointment) ──
+
+export async function createReport(
+  input: CreateVisitReportInput,
+  salesStaffId: string,
+  ip?: string,
+  ua?: string,
+) {
+  // Verify the appointment exists and belongs to this sales staff
+  const appointment = await Appointment.findById(input.appointmentId);
+  if (!appointment) throw AppError.notFound('Appointment not found');
+
+  if (appointment.salesStaffId?.toString() !== salesStaffId) {
+    throw AppError.forbidden('You are not assigned to this appointment');
+  }
+
+  // Appointment must be confirmed or completed to add reports
+  if (![AppointmentStatus.CONFIRMED, AppointmentStatus.COMPLETED].includes(appointment.status as AppointmentStatus)) {
+    throw AppError.badRequest('Appointment must be confirmed to add visit reports');
+  }
+
+  const report = await VisitReport.create({
+    appointmentId: input.appointmentId,
+    customerId: appointment.customerId,
+    salesStaffId,
+    status: VisitReportStatus.DRAFT,
+    visitType: input.visitType || 'ocular',
+    serviceType: input.serviceType,
+    serviceTypeCustom: input.serviceTypeCustom,
+    lineItems: [],
+    photoKeys: [],
+    videoKeys: [],
+    sketchKeys: [],
+    referenceImageKeys: [],
+  });
+
+  await AuditLog.create({
+    action: AuditAction.VISIT_REPORT_CREATED,
+    actorId: salesStaffId,
+    targetType: 'visit_report',
+    targetId: report._id,
+    details: { appointmentId: input.appointmentId, serviceType: input.serviceType },
+    ipAddress: ip,
+    userAgent: ua,
+  });
+
+  return report;
+}
+
 // ── Get by ID ──
 
 export async function getVisitReport(reportId: string) {
@@ -55,14 +108,15 @@ export async function getVisitReport(reportId: string) {
   return report;
 }
 
-// ── Get by Appointment ──
+// ── Get by Appointment (returns ARRAY — multiple reports per appointment) ──
 
 export async function getByAppointment(appointmentId: string) {
-  const report = await VisitReport.findOne({ appointmentId })
+  const reports = await VisitReport.find({ appointmentId })
     .populate('customerId', 'firstName lastName email phone')
     .populate('salesStaffId', 'firstName lastName email')
-    .populate('appointmentId', 'date slotCode type customerAddress');
-  return report; // may be null
+    .populate('appointmentId', 'date slotCode type customerAddress')
+    .sort({ createdAt: 1 });
+  return reports;
 }
 
 // ── List for Sales Staff ──
@@ -216,34 +270,43 @@ export async function submitReport(
     userAgent: ua,
   });
 
-  // ── Auto-complete the appointment ──
+  // ── Auto-complete appointment only when ALL reports for this appointment are submitted ──
   const appointment = await Appointment.findById(report.appointmentId);
   if (appointment && appointment.status === AppointmentStatus.CONFIRMED) {
-    appointmentStateMachine.assertTransition(appointment.status, AppointmentStatus.COMPLETED);
-    appointment.status = AppointmentStatus.COMPLETED;
-    await appointment.save();
-
-    await AuditLog.create({
-      action: AuditAction.APPOINTMENT_COMPLETED,
-      actorId: salesStaffId,
-      targetType: 'appointment',
-      targetId: appointment._id,
-      details: { triggeredBy: 'system', reason: 'visit_report_submitted' },
-      ipAddress: ip,
-      userAgent: ua,
+    const pendingCount = await VisitReport.countDocuments({
+      appointmentId: report.appointmentId,
+      status: { $in: [VisitReportStatus.DRAFT, VisitReportStatus.RETURNED] },
     });
+
+    if (pendingCount === 0) {
+      appointmentStateMachine.assertTransition(appointment.status, AppointmentStatus.COMPLETED);
+      appointment.status = AppointmentStatus.COMPLETED;
+      await appointment.save();
+
+      await AuditLog.create({
+        action: AuditAction.APPOINTMENT_COMPLETED,
+        actorId: salesStaffId,
+        targetType: 'appointment',
+        targetId: appointment._id,
+        details: { triggeredBy: 'system', reason: 'all_visit_reports_submitted' },
+        ipAddress: ip,
+        userAgent: ua,
+      });
+    }
   }
 
-  // ── Auto-create Project (DRAFT → SUBMITTED) ──
+  // ── Auto-create Project (idempotent — use visitReportId) ──
   if (appointment) {
-    const existingProject = await Project.findOne({ appointmentId: report.appointmentId });
+    const existingProject = await Project.findOne({ visitReportId: report._id });
     if (!existingProject) {
+      const serviceLabel = report.serviceTypeCustom || report.serviceType || 'General Fabrication';
       const project = await Project.create({
         appointmentId: report.appointmentId,
+        visitReportId: report._id,
         customerId: report.customerId,
         salesStaffId: report.salesStaffId,
-        title: `Project - ${appointment.customerNotes || 'Visit Report'}`,
-        serviceType: report.preferredDesign || 'General Fabrication',
+        title: `${serviceLabel} - ${appointment.customerNotes || 'Visit Report'}`,
+        serviceType: serviceLabel,
         description: report.customerRequirements || report.notes || 'Created from visit report',
         siteAddress: appointment.customerAddress || 'TBD',
         measurements: report.measurements,
@@ -279,7 +342,7 @@ export async function submitReport(
         report.customerId,
         NotificationCategory.PROJECT,
         'Project Created',
-        `Your project has been created from the visit report. An engineer will be assigned shortly.`,
+        `Your project "${project.title}" has been created from the visit report. An engineer will be assigned shortly.`,
         `/projects/${project._id}`,
       );
     }

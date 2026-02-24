@@ -103,4 +103,8 @@ export const R2Folders = {
   REVISION_REFS: 'revision-refs',
   CASH_PHOTOS: 'cash-photos',
   PROFILE: 'profile',
+  VISIT_PHOTOS: 'visit-photos',
+  VISIT_VIDEOS: 'visit-videos',
+  VISIT_SKETCHES: 'visit-sketches',
+  VISIT_REFERENCES: 'visit-references',
 } as const;

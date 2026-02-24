@@ -4,6 +4,7 @@ import { ProjectStatus } from '../utils/constants.js';
 export interface IProject extends Document {
   _id: Types.ObjectId;
   appointmentId: Types.ObjectId;
+  visitReportId?: Types.ObjectId; // link back to the specific visit report
   customerId: Types.ObjectId;
   salesStaffId: Types.ObjectId;
   engineerIds: Types.ObjectId[]; // Multiple engineers can collaborate
@@ -41,6 +42,7 @@ export interface IProject extends Document {
 const projectSchema = new Schema<IProject>(
   {
     appointmentId: { type: Schema.Types.ObjectId, ref: 'Appointment', required: true },
+    visitReportId: { type: Schema.Types.ObjectId, ref: 'VisitReport' },
     customerId: { type: Schema.Types.ObjectId, ref: 'User', required: true },
     salesStaffId: { type: Schema.Types.ObjectId, ref: 'User', required: true },
     engineerIds: [{ type: Schema.Types.ObjectId, ref: 'User' }],
@@ -83,7 +85,8 @@ projectSchema.index({ customerId: 1, status: 1 });
 projectSchema.index({ salesStaffId: 1 });
 projectSchema.index({ engineerIds: 1 });
 projectSchema.index({ status: 1 });
-projectSchema.index({ appointmentId: 1 }, { unique: true }); // 1:1 with appointment
+projectSchema.index({ appointmentId: 1 }); // no longer unique — multiple projects per appointment
+projectSchema.index({ visitReportId: 1 });
 
 // Soft delete filter
 // eslint-disable-next-line @typescript-eslint/no-explicit-any

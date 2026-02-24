@@ -20,16 +20,27 @@ export const listVisitReports = asyncHandler(async (req: Request, res: Response)
   res.json({ success: true, data: result });
 });
 
+// ── Create Visit Report (+ Add Another Project) ──
+export const createVisitReport = asyncHandler(async (req: Request, res: Response) => {
+  const report = await visitReportsService.createReport(
+    req.body,
+    req.userId!,
+    req.ip,
+    req.get('user-agent'),
+  );
+  res.status(201).json({ success: true, data: report });
+});
+
 // ── Get Visit Report ──
 export const getVisitReport = asyncHandler(async (req: Request, res: Response) => {
   const report = await visitReportsService.getVisitReport(req.params.id as string);
   res.json({ success: true, data: report });
 });
 
-// ── Get by Appointment ──
+// ── Get by Appointment (returns array) ──
 export const getByAppointment = asyncHandler(async (req: Request, res: Response) => {
-  const report = await visitReportsService.getByAppointment(req.params.appointmentId as string);
-  res.json({ success: true, data: report });
+  const reports = await visitReportsService.getByAppointment(req.params.appointmentId as string);
+  res.json({ success: true, data: reports });
 });
 
 // ── Update Report ──

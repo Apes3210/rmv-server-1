@@ -5,6 +5,7 @@ import { authorize } from '../../middleware/rbac.js';
 import { validate } from '../../middleware/validate.js';
 import { Role } from '../../utils/constants.js';
 import {
+  createVisitReportSchema,
   updateVisitReportSchema,
   returnVisitReportSchema,
 } from './visit-reports.validation.js';
@@ -19,7 +20,16 @@ router.get(
   ctrl.listVisitReports,
 );
 
-// ── Get by appointment ──
+// ── Create (Sales Staff adds another project/report to an appointment) ──
+router.post(
+  '/',
+  authenticate,
+  authorize(Role.SALES_STAFF),
+  validate(createVisitReportSchema),
+  ctrl.createVisitReport,
+);
+
+// ── Get by appointment (returns array) ──
 router.get(
   '/appointment/:appointmentId',
   authenticate,
