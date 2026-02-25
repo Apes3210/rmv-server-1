@@ -32,6 +32,7 @@ export const requestRevisionSchema = z.object({
 
 export const acceptBlueprintSchema = z.object({
   paymentType: z.enum(['full', 'installment']),
+  signatureKey: z.string().min(1).optional(),
 });
 
 export type UploadBlueprintInput = z.infer<typeof uploadBlueprintSchema>;

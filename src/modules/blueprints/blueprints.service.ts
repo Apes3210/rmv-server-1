@@ -10,7 +10,9 @@ import { blueprintStateMachine, projectStateMachine } from '../../utils/stateMac
 import { createAndSendNotification } from '../notifications/socket.service.js';
 import { sendBlueprintUploadedEmail } from '../notifications/email.service.js';
 import { getInstallmentConfig } from '../config/config.service.js';
+import { generateAndUploadContract } from '../../services/contract.service.js';
 import { v4 as uuidv4 } from 'uuid';
+import { logger } from '../../utils/logger.js';
 import type {
   UploadBlueprintInput,
   RevisionUploadInput,
@@ -493,6 +495,57 @@ export async function acceptBlueprint(
     `Your payment plan for "${project.title}" is ready. Total: ₱${finalTotal.toLocaleString('en-PH', { minimumFractionDigits: 2 })}.`,
     `/projects/${project._id}`,
   );
+
+  // ── Auto-generate contract PDF ──
+  try {
+    // If customer provided a new signature, save it on the user record
+    if (input.signatureKey) {
+      await User.findByIdAndUpdate(customerId, { signatureKey: input.signatureKey });
+    }
+
+    const customer = await User.findById(customerId).select('firstName lastName email phone address signatureKey');
+    const engineers = await User.find({ _id: { $in: project.engineerIds } }).select('firstName lastName');
+
+    const contractData = {
+      projectTitle: project.title,
+      projectDescription: project.description,
+      siteAddress: project.siteAddress,
+      serviceType: project.serviceType,
+      customerName: customer ? `${customer.firstName} ${customer.lastName}` : 'Customer',
+      customerEmail: customer?.email || '',
+      customerPhone: customer?.phone,
+      customerAddress: customer?.address,
+      engineerNames: engineers.map((e: any) => `${e.firstName} ${e.lastName}`),
+      totalAmount: finalTotal,
+      paymentType: input.paymentType as 'full' | 'installment',
+      stages: stages.map(s => ({ label: s.label, percentage: s.percentage, amount: s.amount })),
+      estimatedDuration: blueprint.quotation.estimatedDuration,
+      materialType: project.materialType,
+      finishColor: project.finishColor,
+      quantity: project.quantity,
+      customerSignatureKey: input.signatureKey || customer?.signatureKey || null,
+    };
+
+    const { originalKey } = await generateAndUploadContract(contractData);
+
+    project.contractKey = originalKey;
+    project.contractGeneratedAt = new Date();
+    await project.save();
+
+    // Notify customer about contract
+    await createAndSendNotification(
+      customerId,
+      NotificationCategory.SYSTEM,
+      'Contract Ready',
+      `The contract for your project "${project.title}" has been generated and is ready for download.`,
+      `/projects/${project._id}`,
+    );
+
+    logger.info(`Auto-generated contract on blueprint accept for project ${project._id}: ${originalKey}`);
+  } catch (err) {
+    // Contract generation failure should NOT block the accept flow
+    logger.error('Failed to auto-generate contract on blueprint accept', err);
+  }
 
   return { blueprint, paymentPlan: plan };
 }

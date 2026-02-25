@@ -350,18 +350,21 @@ export async function verifyPayment(
     });
   }
 
-  // Check if all stages are verified — transition project to fabrication
-  const allVerified = plan.stages.every(s => s.status === PaymentStageStatus.VERIFIED);
-  if (allVerified && project.status === ProjectStatus.PAYMENT_PENDING) {
+  // Check if first stage (down payment / full payment) is verified — transition project to fabrication
+  const firstStageVerified = plan.stages[0]?.status === PaymentStageStatus.VERIFIED;
+  if (firstStageVerified && project.status === ProjectStatus.PAYMENT_PENDING) {
     projectStateMachine.assertTransition(project.status, ProjectStatus.FABRICATION);
     project.status = ProjectStatus.FABRICATION;
     await project.save();
 
+    const allVerified = plan.stages.every(s => s.status === PaymentStageStatus.VERIFIED);
     await createAndSendNotification(
       project.customerId,
       NotificationCategory.SYSTEM,
-      'All Payments Verified',
-      `All payments for "${project.title}" are verified! Your project is now moving to fabrication.`,
+      allVerified ? 'All Payments Verified' : 'Down Payment Verified',
+      allVerified
+        ? `All payments for "${project.title}" are verified! Your project is now moving to fabrication.`
+        : `Your down payment for "${project.title}" has been verified! Your project is now moving to fabrication. Remaining payments can be made during the fabrication phase.`,
       `/projects/${project._id}`,
     );
   }
@@ -773,18 +776,21 @@ export async function handleStagePaymongoPayment(checkoutSessionId: string) {
     });
   }
 
-  // Check if all stages are verified → transition to fabrication
-  const allVerified = plan.stages.every(s => s.status === PaymentStageStatus.VERIFIED);
-  if (allVerified && project.status === ProjectStatus.PAYMENT_PENDING) {
+  // Check if first stage (down payment / full payment) is verified → transition to fabrication
+  const firstStageVerified = plan.stages[0]?.status === PaymentStageStatus.VERIFIED;
+  if (firstStageVerified && project.status === ProjectStatus.PAYMENT_PENDING) {
     projectStateMachine.assertTransition(project.status, ProjectStatus.FABRICATION);
     project.status = ProjectStatus.FABRICATION;
     await project.save();
 
+    const allVerified = plan.stages.every(s => s.status === PaymentStageStatus.VERIFIED);
     await createAndSendNotification(
       project.customerId,
       NotificationCategory.SYSTEM,
-      'All Payments Verified',
-      `All payments for "${project.title}" are verified! Your project is now moving to fabrication.`,
+      allVerified ? 'All Payments Verified' : 'Down Payment Verified',
+      allVerified
+        ? `All payments for "${project.title}" are verified! Your project is now moving to fabrication.`
+        : `Your down payment for "${project.title}" has been verified! Your project is now moving to fabrication. Remaining payments can be made during the fabrication phase.`,
       `/projects/${project._id}`,
     );
   }
@@ -870,9 +876,9 @@ export async function simulateStagePayment(
     userAgent: ua,
   });
 
-  // Check if all verified → fabrication
-  const allVerified = plan.stages.every(s => s.status === PaymentStageStatus.VERIFIED);
-  if (allVerified && project.status === ProjectStatus.PAYMENT_PENDING) {
+  // Check if first stage verified → fabrication
+  const firstStageVerified = plan.stages[0]?.status === PaymentStageStatus.VERIFIED;
+  if (firstStageVerified && project.status === ProjectStatus.PAYMENT_PENDING) {
     projectStateMachine.assertTransition(project.status, ProjectStatus.FABRICATION);
     project.status = ProjectStatus.FABRICATION;
     await project.save();
@@ -988,18 +994,21 @@ export async function recordCashPayment(
     });
   }
 
-  // Check if all verified → fabrication
-  const allVerified = plan.stages.every(s => s.status === PaymentStageStatus.VERIFIED);
-  if (allVerified && project.status === ProjectStatus.PAYMENT_PENDING) {
+  // Check if first stage (down payment / full payment) is verified → fabrication
+  const firstStageVerified = plan.stages[0]?.status === PaymentStageStatus.VERIFIED;
+  if (firstStageVerified && project.status === ProjectStatus.PAYMENT_PENDING) {
     projectStateMachine.assertTransition(project.status, ProjectStatus.FABRICATION);
     project.status = ProjectStatus.FABRICATION;
     await project.save();
 
+    const allVerified = plan.stages.every(s => s.status === PaymentStageStatus.VERIFIED);
     await createAndSendNotification(
       project.customerId,
       NotificationCategory.SYSTEM,
-      'All Payments Verified',
-      `All payments for "${project.title}" are verified! Your project is now moving to fabrication.`,
+      allVerified ? 'All Payments Verified' : 'Down Payment Verified',
+      allVerified
+        ? `All payments for "${project.title}" are verified! Your project is now moving to fabrication.`
+        : `Your down payment for "${project.title}" has been verified! Your project is now moving to fabrication. Remaining payments can be made during the fabrication phase.`,
       `/projects/${project._id}`,
     );
   }
