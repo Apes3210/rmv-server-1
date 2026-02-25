@@ -173,6 +173,8 @@ export const me = asyncHandler(async (req: Request, res: Response) => {
       mustChangePassword: user.mustChangePassword,
       notificationPreferences: user.notificationPreferences,
       twoFactorEnabled: user.twoFactorEnabled,
+      provider: user.provider || 'local',
+      photoURL: user.photoURL,
       createdAt: user.createdAt,
     },
   });
@@ -264,4 +266,58 @@ export const revokeAllSessions = asyncHandler(async (req: Request, res: Response
 export const getLoginHistory = asyncHandler(async (req: Request, res: Response) => {
   const history = await authService.getLoginHistory(req.userId!);
   res.json({ success: true, data: history });
+});
+
+// ── Google Auth ──
+
+export const googleAuth = asyncHandler(async (req: Request, res: Response) => {
+  const result = await authService.googleAuth(
+    req.body,
+    req.ip,
+    req.headers['user-agent'],
+  );
+
+  // New user needs to complete profile
+  if ('needsProfile' in result && result.needsProfile) {
+    res.json({
+      success: true,
+      data: {
+        needsProfile: true,
+        email: result.email,
+        googleName: result.googleName,
+        googlePhoto: result.googlePhoto,
+      },
+    });
+    return;
+  }
+
+  // Existing user → set cookies and return user
+  const loginResult = result as { accessToken: string; refreshToken: string; user: unknown };
+  setAuthCookies(res, loginResult.accessToken, loginResult.refreshToken);
+
+  res.json({
+    success: true,
+    data: {
+      user: loginResult.user,
+      csrfToken: res.locals.csrfToken,
+    },
+  });
+});
+
+export const googleComplete = asyncHandler(async (req: Request, res: Response) => {
+  const result = await authService.googleComplete(
+    req.body,
+    req.ip,
+    req.headers['user-agent'],
+  );
+
+  setAuthCookies(res, result.accessToken, result.refreshToken);
+
+  res.json({
+    success: true,
+    data: {
+      user: result.user,
+      csrfToken: res.locals.csrfToken,
+    },
+  });
 });

@@ -61,6 +61,9 @@ const envSchema = z.object({
 
   // Frontend URL (for redirect URLs)
   FRONTEND_URL: z.string().default('http://localhost:5173'),
+
+  // Firebase (base64-encoded service account JSON)
+  FIREBASE_SERVICE_ACCOUNT_B64: z.string().default(''),
 });
 
 const parsed = envSchema.safeParse(process.env);

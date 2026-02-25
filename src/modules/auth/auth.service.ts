@@ -19,8 +19,11 @@ import type {
   Verify2faInput,
   Resend2faInput,
   Disable2faInput,
+  GoogleAuthInput,
+  GoogleCompleteInput,
 } from './auth.validation.js';
 import type { Types } from 'mongoose';
+import { verifyFirebaseIdToken } from '../../config/firebase.js';
 
 // ── Token Generation ──
 function generateAccessToken(userId: string, roles: Role[]): string {
@@ -697,4 +700,167 @@ export async function getLoginHistory(userId: string) {
     .lean();
 
   return history;
+}
+
+// ── Google Auth ──
+
+export async function googleAuth(input: GoogleAuthInput, ip?: string, ua?: string) {
+  const { idToken } = input;
+
+  // Verify Firebase ID token
+  const decoded = await verifyFirebaseIdToken(idToken).catch(() => {
+    throw AppError.unauthorized('Invalid Google token');
+  });
+
+  const email = decoded.email?.toLowerCase();
+  if (!email) throw AppError.badRequest('Google account has no email');
+
+  const firebaseUid = decoded.uid;
+
+  // 1. Check if user already exists by firebaseUid
+  let user = await User.findOne({ firebaseUid });
+  if (user) {
+    // Existing Google user → just log them in
+    if (!user.isActive) throw AppError.forbidden('Your account has been disabled. Contact support.', ErrorCode.ACCOUNT_DISABLED);
+
+    return issueGoogleLogin(user, ip, ua);
+  }
+
+  // 2. Check if a user with the same email exists (local user)
+  user = await User.findOne({ email });
+  if (user) {
+    if (!user.isActive) throw AppError.forbidden('Your account has been disabled. Contact support.', ErrorCode.ACCOUNT_DISABLED);
+
+    // Link the Google account to the existing local user
+    user.firebaseUid = firebaseUid;
+    user.provider = user.provider === 'google' ? 'google' : 'local'; // keep 'local' if they already had a password
+    if (decoded.picture && !user.photoURL) {
+      user.photoURL = decoded.picture;
+    }
+    if (!user.isEmailVerified) {
+      user.isEmailVerified = true; // Google email is verified
+    }
+    await user.save();
+
+    return issueGoogleLogin(user, ip, ua);
+  }
+
+  // 3. New user → needs to complete profile
+  return {
+    needsProfile: true,
+    email,
+    firebaseUid,
+    googleName: decoded.name || '',
+    googlePhoto: decoded.picture || '',
+  };
+}
+
+export async function googleComplete(input: GoogleCompleteInput, ip?: string, ua?: string) {
+  const { idToken, firstName, lastName, phone } = input;
+
+  // Re-verify Firebase ID token
+  const decoded = await verifyFirebaseIdToken(idToken).catch(() => {
+    throw AppError.unauthorized('Invalid Google token');
+  });
+
+  const email = decoded.email?.toLowerCase();
+  if (!email) throw AppError.badRequest('Google account has no email');
+
+  const firebaseUid = decoded.uid;
+
+  // Make sure user doesn't already exist
+  const existing = await User.findOne({ $or: [{ firebaseUid }, { email }] });
+  if (existing) {
+    // If they somehow already registered, just log them in
+    if (!existing.isActive) throw AppError.forbidden('Your account has been disabled. Contact support.', ErrorCode.ACCOUNT_DISABLED);
+    
+    // Link firebase UID if not yet linked
+    if (!existing.firebaseUid) {
+      existing.firebaseUid = firebaseUid;
+      await existing.save();
+    }
+    
+    return issueGoogleLogin(existing, ip, ua);
+  }
+
+  // Create new user with Google provider (no password needed)
+  const newUser = await User.create({
+    email,
+    firstName,
+    lastName,
+    phone,
+    provider: 'google',
+    firebaseUid,
+    photoURL: decoded.picture || undefined,
+    isEmailVerified: true, // Google accounts are verified
+    roles: [Role.CUSTOMER],
+    isActive: true,
+    mustChangePassword: false,
+  });
+
+  await AuditLog.create({
+    action: AuditAction.USER_CREATED,
+    actorId: newUser._id,
+    actorEmail: email,
+    targetType: 'user',
+    targetId: newUser._id,
+    details: { provider: 'google' },
+    ipAddress: ip,
+    userAgent: ua,
+  });
+
+  return issueGoogleLogin(newUser, ip, ua);
+}
+
+async function issueGoogleLogin(user: InstanceType<typeof User>, ip?: string, ua?: string) {
+  const deviceInfo = parseDevice(ua, ip);
+  const accessToken = generateAccessToken(user._id.toString(), user.roles as Role[]);
+  const refreshTokenValue = generateRefreshToken();
+
+  const refreshExpiryDays = parseInt(env.JWT_REFRESH_EXPIRY) || 7;
+  const refreshExpiresAt = new Date(Date.now() + refreshExpiryDays * 24 * 60 * 60 * 1000);
+
+  await RefreshToken.create({
+    userId: user._id,
+    token: refreshTokenValue,
+    userAgent: ua,
+    ipAddress: ip,
+    expiresAt: refreshExpiresAt,
+  });
+
+  await LoginHistory.record({
+    userId: user._id,
+    ipAddress: ip || '',
+    userAgent: ua || '',
+    browser: deviceInfo.browser,
+    os: deviceInfo.os,
+    device: deviceInfo.device,
+    location: deviceInfo.location,
+    status: 'success',
+  });
+
+  await AuditLog.create({
+    action: AuditAction.LOGIN,
+    actorId: user._id,
+    actorEmail: user.email,
+    targetType: 'user',
+    targetId: user._id,
+    details: { provider: 'google' },
+    ipAddress: ip,
+    userAgent: ua,
+  });
+
+  return {
+    accessToken,
+    refreshToken: refreshTokenValue,
+    user: {
+      id: user._id,
+      email: user.email,
+      firstName: user.firstName,
+      lastName: user.lastName,
+      roles: user.roles,
+      mustChangePassword: false,
+      provider: user.provider,
+    },
+  };
 }

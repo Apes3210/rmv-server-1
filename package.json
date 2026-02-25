@@ -33,6 +33,7 @@
     "exceljs": "^4.4.0",
     "express": "^5.2.1",
     "express-rate-limit": "^8.2.1",
+    "firebase-admin": "^13.6.1",
     "geoip-lite": "^1.4.10",
     "handlebars": "^4.7.8",
     "helmet": "^8.1.0",

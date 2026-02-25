@@ -71,6 +71,18 @@ export const changePasswordSchema = z.object({
     .regex(/[^A-Za-z0-9]/, 'Must contain at least one special character'),
 });
 
+// ── Google Auth Schemas ──
+export const googleAuthSchema = z.object({
+  idToken: z.string().min(1, 'Firebase ID token is required'),
+});
+
+export const googleCompleteSchema = z.object({
+  idToken: z.string().min(1, 'Firebase ID token is required'),
+  firstName: z.string().min(1).max(50).trim(),
+  lastName: z.string().min(1).max(50).trim(),
+  phone: z.string().regex(phoneRegex, 'Must be a valid PH mobile number (09XXXXXXXXX)').transform(v => v.startsWith('09') ? '+63' + v.slice(1) : v),
+});
+
 export type RegisterInput = z.infer<typeof registerSchema>;
 export type VerifyEmailInput = z.infer<typeof verifyEmailSchema>;
 export type LoginInput = z.infer<typeof loginSchema>;
@@ -81,3 +93,5 @@ export type ChangePasswordInput = z.infer<typeof changePasswordSchema>;
 export type Verify2faInput = z.infer<typeof verify2faSchema>;
 export type Resend2faInput = z.infer<typeof resend2faSchema>;
 export type Disable2faInput = z.infer<typeof disable2faSchema>;
+export type GoogleAuthInput = z.infer<typeof googleAuthSchema>;
+export type GoogleCompleteInput = z.infer<typeof googleCompleteSchema>;

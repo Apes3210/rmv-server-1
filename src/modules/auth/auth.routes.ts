@@ -14,6 +14,8 @@ import {
   verify2faSchema,
   resend2faSchema,
   disable2faSchema,
+  googleAuthSchema,
+  googleCompleteSchema,
 } from './auth.validation.js';
 
 const router = Router();
@@ -26,6 +28,10 @@ router.post('/forgot-password', otpLimiter, validate(forgotPasswordSchema), auth
 router.post('/reset-password', otpLimiter, validate(resetPasswordSchema), authController.resetPassword);
 router.post('/resend-otp', otpLimiter, validate(resendOtpSchema), authController.resendOtp);
 router.post('/refresh-token', authController.refreshToken);
+
+// Google auth (public)
+router.post('/google', authLimiter, validate(googleAuthSchema), authController.googleAuth);
+router.post('/google/complete', authLimiter, validate(googleCompleteSchema), authController.googleComplete);
 
 // public 2FA verification (during login)
 router.post('/verify-2fa', otpLimiter, validate(verify2faSchema), authController.verify2fa);

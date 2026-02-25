@@ -25,6 +25,9 @@ export interface IUser extends Document {
     project: boolean;
   };
   signatureKey?: string; // R2 key for e-signature PNG
+  provider: 'local' | 'google';
+  firebaseUid?: string;
+  photoURL?: string;
   deletedAt?: Date;
   createdAt: Date;
   updatedAt: Date;
@@ -39,7 +42,7 @@ const userSchema = new Schema<IUser>(
       lowercase: true,
       trim: true,
     },
-    password: { type: String, required: true, select: false },
+    password: { type: String, select: false },
     firstName: { type: String, required: true, trim: true },
     lastName: { type: String, required: true, trim: true },
     phone: { type: String, trim: true },
@@ -64,6 +67,9 @@ const userSchema = new Schema<IUser>(
       project: { type: Boolean, default: true },
     },
     signatureKey: { type: String },
+    provider: { type: String, enum: ['local', 'google'], default: 'local' },
+    firebaseUid: { type: String, unique: true, sparse: true },
+    photoURL: { type: String },
     deletedAt: { type: Date, default: null },
   },
   { timestamps: true },
