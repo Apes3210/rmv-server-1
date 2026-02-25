@@ -379,12 +379,12 @@ export async function acceptBlueprint(
     throw AppError.forbidden('Only the project customer can accept blueprints');
   }
 
-  if (![BlueprintStatus.UPLOADED, BlueprintStatus.REVISION_UPLOADED].includes(blueprint.status)) {
+  if (![BlueprintStatus.UPLOADED, BlueprintStatus.REVISION_UPLOADED, BlueprintStatus.APPROVED].includes(blueprint.status)) {
     throw AppError.badRequest('Blueprint is not in a reviewable state');
   }
 
   if (!blueprint.quotation || blueprint.quotation.total <= 0) {
-    throw AppError.badRequest('Cannot accept a blueprint without a valid quotation');
+    throw AppError.badRequest('Cannot accept a blueprint without a valid quotation. Please ask the engineer to provide pricing.');
   }
 
   // Mark both components as approved
@@ -392,14 +392,6 @@ export async function acceptBlueprint(
   blueprint.costingApproved = true;
   blueprint.status = BlueprintStatus.APPROVED;
   await blueprint.save();
-
-  // Guard: quotation must exist with a valid total
-  if (!blueprint.quotation || !blueprint.quotation.total || blueprint.quotation.total <= 0) {
-    throw AppError.badRequest(
-      'Cannot accept blueprint: the engineer has not yet provided a quotation with pricing. Please ask the engineer to update the costing.',
-      ErrorCode.VALIDATION_ERROR,
-    );
-  }
 
   // Transition project: BLUEPRINT → APPROVED → PAYMENT_PENDING
   if (project.status === ProjectStatus.BLUEPRINT) {
