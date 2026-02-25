@@ -510,6 +510,7 @@ export async function generateContract(
   // Store the original key on the project
   project.contractKey = originalKey;
   project.contractGeneratedAt = new Date();
+  project.originalContractDownloadedAt = undefined as any; // reset one-time download on regeneration
   await project.save();
 
   await AuditLog.create({
@@ -609,6 +610,7 @@ export async function signContract(
       const { originalKey } = await generateAndUploadContract(contractData);
       project.contractKey = originalKey;
       project.contractGeneratedAt = new Date();
+      project.originalContractDownloadedAt = undefined as any; // reset one-time download
       await project.save();
 
       logger.info(`Contract re-generated with signature for project ${projectId}: ${originalKey}`);
@@ -665,11 +667,25 @@ export async function getContractDownloadUrl(
     throw AppError.badRequest('No contract has been generated for this project');
   }
 
+  // One-time original download enforcement
+  if (copy === 'original' && project.originalContractDownloadedAt) {
+    throw AppError.badRequest(
+      'The original contract has already been downloaded. Please use the copy version.',
+    );
+  }
+
   // Derive copy key from original key
   const key = copy === 'original'
     ? project.contractKey
     : project.contractKey.replace('-original.pdf', '-copy.pdf');
 
   const url = await generateDownloadUrl(key);
-  return { url, key };
+
+  // Mark original as downloaded
+  if (copy === 'original') {
+    project.originalContractDownloadedAt = new Date();
+    await project.save();
+  }
+
+  return { url, key, originalDownloaded: !!project.originalContractDownloadedAt };
 }

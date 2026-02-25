@@ -8,11 +8,11 @@ import { createFabricationUpdateSchema } from './fabrication.validation.js';
 
 const router = Router();
 
-// ── Fabrication Staff: Post Update ──
+// ── Fabrication Staff / Engineer: Post Update ──
 router.post(
   '/',
   authenticate,
-  authorize(Role.FABRICATION_STAFF),
+  authorize(Role.FABRICATION_STAFF, Role.ENGINEER),
   validate(createFabricationUpdateSchema),
   ctrl.createFabricationUpdate,
 );

@@ -78,6 +78,7 @@ export enum FabricationStatus {
   MATERIAL_PREP = 'material_prep',
   CUTTING = 'cutting',
   WELDING = 'welding',
+  ASSEMBLY = 'assembly',
   FINISHING = 'finishing',
   QUALITY_CHECK = 'quality_check',
   READY_FOR_DELIVERY = 'ready_for_delivery',

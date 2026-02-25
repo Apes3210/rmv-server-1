@@ -1,16 +1,16 @@
 import rateLimit from 'express-rate-limit';
 
 /**
- * Rate limiters per the spec:
- * - Login: 5/min
- * - OTP: 3/min
+ * Rate limiters:
+ * - Login: 15/min
+ * - OTP: 5/min
  * - API: 100/min per user
  * - Signed URL: 10/min
  */
 
 export const authLimiter = rateLimit({
   windowMs: 60 * 1000, // 1 minute
-  max: 5,
+  max: 15,
   standardHeaders: true,
   legacyHeaders: false,
   message: {
@@ -24,7 +24,7 @@ export const authLimiter = rateLimit({
 
 export const otpLimiter = rateLimit({
   windowMs: 60 * 1000,
-  max: 3,
+  max: 5,
   standardHeaders: true,
   legacyHeaders: false,
   message: {

@@ -68,17 +68,22 @@ export async function createPaymentPlan(
   if (existing) throw AppError.conflict('Payment plan already exists for this project', ErrorCode.DUPLICATE_ENTRY);
 
   const isPayInFull = input.stages.length === 1;
-  const stages = input.stages.map((s, idx) => ({
-    stageId: uuidv4(),
-    label: isPayInFull ? 'Full Payment' : `Stage ${idx + 1}`,
-    percentage: s.percentage,
-    amount: Math.round((input.totalAmount * s.percentage / 100) * 100) / 100,
-    status: PaymentStageStatus.PENDING,
-    qrCodeKey: s.qrCodeKey,
-    amountPaid: 0,
-    creditApplied: 0,
-    remainingBalance: Math.round((input.totalAmount * s.percentage / 100) * 100) / 100,
-  }));
+  const stages = input.stages.map((s, idx) => {
+    const amount = Math.round((input.totalAmount * s.percentage / 100) * 100) / 100;
+    // Auto-verify ₱0 stages so customers don't need to checkout for nothing
+    const isZero = amount <= 0;
+    return {
+      stageId: uuidv4(),
+      label: isPayInFull ? 'Full Payment' : `Stage ${idx + 1}`,
+      percentage: s.percentage,
+      amount,
+      status: isZero ? PaymentStageStatus.VERIFIED : PaymentStageStatus.PENDING,
+      qrCodeKey: s.qrCodeKey,
+      amountPaid: isZero ? amount : 0,
+      creditApplied: 0,
+      remainingBalance: isZero ? 0 : amount,
+    };
+  });
 
   const plan = await PaymentPlan.create({
     projectId: input.projectId,
@@ -138,17 +143,21 @@ export async function updatePaymentPlan(
   if (input.stages) {
     const isPayInFull = input.stages.length === 1;
     plan.isPayInFull = isPayInFull;
-    plan.stages = input.stages.map((s, idx) => ({
-      stageId: uuidv4(),
-      label: isPayInFull ? 'Full Payment' : `Stage ${idx + 1}`,
-      percentage: s.percentage,
-      amount: Math.round((plan.totalAmount * s.percentage / 100) * 100) / 100,
-      status: PaymentStageStatus.PENDING,
-      qrCodeKey: s.qrCodeKey,
-      amountPaid: 0,
-      creditApplied: 0,
-      remainingBalance: Math.round((plan.totalAmount * s.percentage / 100) * 100) / 100,
-    }));
+    plan.stages = input.stages.map((s, idx) => {
+      const amount = Math.round((plan.totalAmount * s.percentage / 100) * 100) / 100;
+      const isZero = amount <= 0;
+      return {
+        stageId: uuidv4(),
+        label: isPayInFull ? 'Full Payment' : `Stage ${idx + 1}`,
+        percentage: s.percentage,
+        amount,
+        status: isZero ? PaymentStageStatus.VERIFIED : PaymentStageStatus.PENDING,
+        qrCodeKey: s.qrCodeKey,
+        amountPaid: isZero ? amount : 0,
+        creditApplied: 0,
+        remainingBalance: isZero ? 0 : amount,
+      };
+    });
   }
 
   await plan.save();

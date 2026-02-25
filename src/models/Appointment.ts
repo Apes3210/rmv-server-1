@@ -66,6 +66,10 @@ export interface IAppointment extends Document {
   customerNotes?: string;
   internalNotes?: string;
 
+  // Cancellation
+  cancellationReason?: string;
+  cancelledBy?: Types.ObjectId;
+
   // Rescheduling
   rescheduleCount: number;
   maxReschedules: number;
@@ -128,6 +132,9 @@ const appointmentSchema = new Schema<IAppointment>(
 
     customerNotes: { type: String },
     internalNotes: { type: String },
+
+    cancellationReason: { type: String },
+    cancelledBy: { type: Schema.Types.ObjectId, ref: 'User' },
 
     rescheduleCount: { type: Number, default: 0 },
     maxReschedules: { type: Number, default: 3 },

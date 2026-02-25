@@ -26,11 +26,12 @@ export async function createFabricationUpdate(
     throw AppError.badRequest('Project is not in fabrication phase');
   }
 
-  // Only fabrication staff assigned to this project can update
+  // Only fabrication staff or engineers assigned to this project can update
   const isLead = project.fabricationLeadId?.toString() === actorId;
   const isAssistant = project.fabricationAssistantIds.some(id => id.toString() === actorId);
-  if (!isLead && !isAssistant) {
-    throw AppError.forbidden('You are not assigned to this project fabrication');
+  const isEngineer = project.engineerIds?.some((id: { toString: () => string }) => id.toString() === actorId);
+  if (!isLead && !isAssistant && !isEngineer) {
+    throw AppError.forbidden('You are not assigned to this project');
   }
 
   // Get current fabrication status (from latest update or queued)

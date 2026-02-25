@@ -1,4 +1,4 @@
-import { format, parse, isAfter, isBefore, startOfDay, addMinutes } from 'date-fns';
+import { format, parse, isAfter, isBefore, startOfDay, addMinutes, addDays } from 'date-fns';
 import { toZonedTime } from 'date-fns-tz';
 import {
   Appointment, SlotLock, User, AuditLog, Holiday, SalesAvailability, Config, BlockedSlot,
@@ -63,6 +63,12 @@ async function assertDateAvailable(dateStr: string): Promise<void> {
   const target = parse(dateStr, 'yyyy-MM-dd', new Date());
   if (isBefore(target, startOfDay(now))) {
     throw AppError.badRequest('Cannot book appointments in the past');
+  }
+
+  // Enforce 3-day minimum advance booking
+  const minBookingDate = startOfDay(addDays(now, 3));
+  if (isBefore(target, minBookingDate)) {
+    throw AppError.badRequest('Appointments must be booked at least 3 days in advance');
   }
 
   // Check it's not a weekend (0 = Sun, 6 = Sat)
@@ -785,6 +791,8 @@ export async function cancelAppointment(
   appointmentStateMachine.assertTransition(appointment.status, AppointmentStatus.CANCELLED);
 
   appointment.status = AppointmentStatus.CANCELLED;
+  appointment.cancellationReason = reason || undefined;
+  (appointment as any).cancelledBy = actorId;
   if (reason) appointment.internalNotes = (appointment.internalNotes || '') + ` [Cancelled: ${reason}]`;
   await appointment.save();
 
