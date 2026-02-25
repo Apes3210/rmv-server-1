@@ -13,6 +13,8 @@ export enum Role {
 export enum AppointmentStatus {
   REQUESTED = 'requested',
   CONFIRMED = 'confirmed',
+  PREPARING = 'preparing',
+  ON_THE_WAY = 'on_the_way',
   COMPLETED = 'completed',
   NO_SHOW = 'no_show',
   CANCELLED = 'cancelled',
@@ -203,6 +205,7 @@ export enum AuditAction {
   PAYMENT_DECLINED = 'payment_declined',
   RECEIPT_GENERATED = 'receipt_generated',
   RECEIPT_RESENT = 'receipt_resent',
+  OCULAR_FEE_REFUNDED = 'ocular_fee_refunded',
 
   // Cash
   CASH_COLLECTED = 'cash_collected',

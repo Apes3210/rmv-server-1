@@ -36,6 +36,13 @@ export interface IAppointment extends Document {
   longitude?: number;
   formattedAddress?: string;
   customerAddress?: string;
+  addressStructured?: {
+    street: string;
+    barangay: string;
+    city: string;
+    province: string;
+    zip: string;
+  };
   customerLocation?: {
     lat: number;
     lng: number;
@@ -56,9 +63,12 @@ export interface IAppointment extends Document {
   ocularFeePaid?: boolean;
   ocularFeeProofKey?: string;
   ocularFeeReferenceNumber?: string;
-  ocularFeeStatus?: 'pending' | 'proof_submitted' | 'verified' | 'declined';
+  ocularFeeStatus?: 'pending' | 'proof_submitted' | 'verified' | 'declined' | 'refunded';
   ocularFeeDeclineReason?: string;
   ocularFeeVerifiedBy?: Types.ObjectId;
+  ocularFeeRefundReason?: string;
+  ocularFeeRefundedBy?: Types.ObjectId;
+  ocularFeeRefundedAt?: Date;
   paymongoCheckoutSessionId?: string;
   paymongoCheckoutUrl?: string;
 
@@ -104,6 +114,14 @@ const appointmentSchema = new Schema<IAppointment>(
     longitude: { type: Number },
     formattedAddress: { type: String },
     customerAddress: { type: String },
+    addressStructured: {
+      street: { type: String, trim: true },
+      barangay: { type: String, trim: true },
+      city: { type: String, trim: true },
+      province: { type: String, trim: true },
+      zip: { type: String, trim: true },
+      _id: false,
+    },
     customerLocation: {
       lat: { type: Number },
       lng: { type: Number },
@@ -124,9 +142,12 @@ const appointmentSchema = new Schema<IAppointment>(
     ocularFeePaid: { type: Boolean, default: false },
     ocularFeeProofKey: { type: String },
     ocularFeeReferenceNumber: { type: String },
-    ocularFeeStatus: { type: String, enum: ['pending', 'proof_submitted', 'verified', 'declined'], default: 'pending' },
+    ocularFeeStatus: { type: String, enum: ['pending', 'proof_submitted', 'verified', 'declined', 'refunded'], default: 'pending' },
     ocularFeeDeclineReason: { type: String },
     ocularFeeVerifiedBy: { type: Schema.Types.ObjectId, ref: 'User' },
+    ocularFeeRefundReason: { type: String },
+    ocularFeeRefundedBy: { type: Schema.Types.ObjectId, ref: 'User' },
+    ocularFeeRefundedAt: { type: Date },
     paymongoCheckoutSessionId: { type: String },
     paymongoCheckoutUrl: { type: String },
 

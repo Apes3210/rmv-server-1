@@ -95,7 +95,7 @@ export async function generateContractPdf(
       doc.fontSize(18).font('Helvetica-Bold').fillColor('#1a1a1a')
         .text('RMV STAINLESS STEEL FABRICATION', { align: 'center' });
       doc.fontSize(9).font('Helvetica').fillColor('#555555')
-        .text('Malabon City, Metro Manila, Philippines', { align: 'center' }).moveDown(0.3);
+        .text('Quezon City, Metro Manila, Philippines', { align: 'center' }).moveDown(0.3);
       doc.fontSize(14).font('Helvetica-Bold').fillColor('#1a1a1a')
         .text('SERVICE CONTRACT', { align: 'center' }).moveDown(0.3);
       doc.fontSize(9).font('Helvetica').fillColor('#888888')
@@ -104,12 +104,12 @@ export async function generateContractPdf(
       drawLine(doc);
       doc.moveDown(0.5);
 
-      // ── Section 1: Parties ──
-      sectionHeader(doc, '1. PARTIES');
-      paragraph(doc, `This Service Contract ("Contract") is entered into by and between:`, left, contentWidth);
+      // ── Section 1: Parties & Date ──
+      sectionHeader(doc, '1. PARTIES & DATE');
+      paragraph(doc, `This Service Contract ("Contract") is entered into on ${new Date().toLocaleDateString('en-PH', { year: 'numeric', month: 'long', day: 'numeric', timeZone: 'Asia/Manila' })} by and between:`, left, contentWidth);
       doc.moveDown(0.3);
       field(doc, 'Service Provider', 'RMV Stainless Steel Fabrication', left);
-      field(doc, 'Address', 'Malabon City, Metro Manila, Philippines', left);
+      field(doc, 'Address', 'Quezon City, Metro Manila, Philippines', left);
       doc.moveDown(0.3);
       field(doc, 'Client', data.customerName, left);
       field(doc, 'Email', data.customerEmail, left);
@@ -125,9 +125,12 @@ export async function generateContractPdf(
       field(doc, 'Service Type', data.serviceType.replace(/_/g, ' ').toUpperCase(), left);
       field(doc, 'Description', data.projectDescription, left);
       field(doc, 'Site/Delivery Address', data.siteAddress, left);
-      if (data.materialType) field(doc, 'Material Type', data.materialType, left);
-      if (data.finishColor) field(doc, 'Finish/Color', data.finishColor, left);
       field(doc, 'Quantity', String(data.quantity), left);
+      sectionEnd(doc);
+
+      // ── Section 3: Plans & Specifications ──
+      sectionHeader(doc, '3. PLANS & SPECIFICATIONS');
+      paragraph(doc, 'All fabrication shall be executed in accordance with the approved blueprint and specifications provided by the Service Provider and agreed upon by the Client.', left, contentWidth);
       if (data.lineItems && data.lineItems.length > 0) {
         doc.moveDown(0.3);
         doc.fontSize(10).font('Helvetica-Bold').fillColor('#333333').text('Line Items:', left);
@@ -140,18 +143,14 @@ export async function generateContractPdf(
           doc.moveDown(0.1);
         }
       }
+      bullet(doc, 'Any deviation from the approved plans must be documented as a Change Order (see Section 7).', left, contentWidth);
       sectionEnd(doc);
 
-      // ── Section 3: Contract Price ──
-      sectionHeader(doc, '3. CONTRACT PRICE');
+      // ── Section 4: Contract Price & Payment Terms ──
+      sectionHeader(doc, '4. CONTRACT PRICE & PAYMENT TERMS');
       field(doc, 'Total Contract Amount', formatCurrency(data.totalAmount), left);
       field(doc, 'Payment Type', data.paymentType === 'full' ? 'Full Payment' : 'Installment Plan', left);
-      paragraph(doc, 'The above amount covers all materials, labor, and fabrication costs as outlined in the approved blueprint and quotation.', left, contentWidth);
-      sectionEnd(doc);
-
-      // ── Section 4: Payment Terms ──
-      sectionHeader(doc, '4. PAYMENT TERMS');
-      paragraph(doc, 'The Client agrees to make payments according to the following schedule:', left, contentWidth);
+      paragraph(doc, 'The above amount covers all materials, labor, and fabrication costs as outlined in the approved blueprint and quotation. The Client agrees to make payments according to the following schedule:', left, contentWidth);
       doc.moveDown(0.3);
       for (const stage of data.stages) {
         doc.fontSize(9).font('Helvetica').fillColor('#333333')
@@ -164,19 +163,22 @@ export async function generateContractPdf(
       bullet(doc, 'Failure to make payments on schedule may result in work suspension.', left, contentWidth);
       sectionEnd(doc);
 
-      // ── Section 5: Project Timeline ──
-      sectionHeader(doc, '5. PROJECT TIMELINE');
+      // ── Section 5: Material & Color Selection ──
+      sectionHeader(doc, '5. MATERIAL & COLOR SELECTION');
+      paragraph(doc, 'The following material and finish selections have been agreed upon by both parties. Any changes to material or color after approval may incur additional costs and timeline adjustments.', left, contentWidth);
+      if (data.materialType) field(doc, 'Primary Material', data.materialType, left);
+      if (data.finishColor) field(doc, 'Finish/Color', data.finishColor, left);
+      if (!data.materialType && !data.finishColor) {
+        paragraph(doc, 'Material and color to be specified upon blueprint approval.', left, contentWidth);
+      }
+      sectionEnd(doc);
+
+      // ── Section 6: Timeline & Schedule ──
+      sectionHeader(doc, '6. TIMELINE & SCHEDULE');
       if (data.estimatedDuration) {
         field(doc, 'Estimated Duration', data.estimatedDuration, left);
       }
       paragraph(doc, 'The estimated timeline begins upon receipt of the initial payment and is subject to change based on material availability, design complexity, and site conditions. The Service Provider will notify the Client of any significant delays.', left, contentWidth);
-      sectionEnd(doc);
-
-      // ── Section 6: Materials & Specifications ──
-      sectionHeader(doc, '6. MATERIALS & SPECIFICATIONS');
-      paragraph(doc, 'All materials used shall be of standard quality unless otherwise specified. The Service Provider shall use the materials and specifications as agreed in the approved blueprint and quotation.', left, contentWidth);
-      if (data.materialType) field(doc, 'Primary Material', data.materialType, left);
-      if (data.finishColor) field(doc, 'Finish/Color', data.finishColor, left);
       sectionEnd(doc);
 
       // New page for remaining sections
@@ -195,8 +197,13 @@ export async function generateContractPdf(
       paragraph(doc, 'Any modifications to the scope of work, materials, or design after blueprint approval shall be documented as a Change Order. Change orders may result in additional charges and timeline adjustments, which must be agreed upon by both parties before implementation.', left, contentWidth);
       sectionEnd(doc);
 
-      // ── Section 8: Warranty ──
-      sectionHeader(doc, '8. WARRANTY');
+      // ── Section 8: Permits & Approvals ──
+      sectionHeader(doc, '8. PERMITS & APPROVALS');
+      paragraph(doc, 'The Client shall be responsible for obtaining all necessary permits, clearances, and approvals required for the installation of the fabricated items, unless otherwise agreed in writing. The Service Provider shall cooperate in providing documentation that may be required for such permits.', left, contentWidth);
+      sectionEnd(doc);
+
+      // ── Section 9: Warranties ──
+      sectionHeader(doc, '9. WARRANTIES');
       paragraph(doc, 'The Service Provider warrants all fabricated items against manufacturing defects for a period of one (1) year from the date of completion and delivery, under normal use conditions. This warranty does not cover:', left, contentWidth);
       doc.moveDown(0.2);
       bullet(doc, 'Damage caused by misuse, abuse, or negligence', left, contentWidth);
@@ -205,26 +212,21 @@ export async function generateContractPdf(
       bullet(doc, 'Environmental damage (e.g., excessive moisture, chemical exposure)', left, contentWidth);
       sectionEnd(doc);
 
-      // ── Section 9: Liability ──
-      sectionHeader(doc, '9. LIABILITY');
+      // ── Section 10: Limitation of Liability ──
+      sectionHeader(doc, '10. LIMITATION OF LIABILITY');
       paragraph(doc, 'The Service Provider shall not be held liable for any indirect, incidental, or consequential damages arising from the use of the fabricated items. The Service Provider\'s total liability shall not exceed the total contract amount. The Client is responsible for ensuring that the installation site meets all necessary safety and structural requirements.', left, contentWidth);
       sectionEnd(doc);
 
-      // ── Section 10: Force Majeure ──
-      sectionHeader(doc, '10. FORCE MAJEURE');
-      paragraph(doc, 'Neither party shall be liable for delays or failure to perform obligations due to events beyond their reasonable control, including but not limited to: natural disasters, war, pandemic, government restrictions, labor disputes, or supply chain disruptions. The affected party shall notify the other party within a reasonable timeframe.', left, contentWidth);
-      sectionEnd(doc);
-
-      // ── Section 11: Cancellation & Refund ──
-      sectionHeader(doc, '11. CANCELLATION & REFUND POLICY');
+      // ── Section 11: Cancellation & Termination ──
+      sectionHeader(doc, '11. CANCELLATION & TERMINATION');
       bullet(doc, 'If the Client cancels before fabrication begins, a partial refund may be issued less any costs already incurred for materials and planning.', left, contentWidth);
       bullet(doc, 'If the Client cancels after fabrication has begun, no refund shall be issued for work already completed.', left, contentWidth);
-      bullet(doc, 'The Service Provider reserves the right to cancel the project if the Client fails to meet payment obligations, subject to written notice.', left, contentWidth);
+      bullet(doc, 'The Service Provider reserves the right to terminate the project if the Client fails to meet payment obligations, subject to written notice.', left, contentWidth);
       sectionEnd(doc);
 
-      // ── Section 12: Confidentiality ──
-      sectionHeader(doc, '12. CONFIDENTIALITY');
-      paragraph(doc, 'Both parties agree to keep confidential all information exchanged during the course of this project, including but not limited to: blueprints, designs, pricing, and personal information. This obligation survives the termination of this contract.', left, contentWidth);
+      // ── Section 12: Force Majeure ──
+      sectionHeader(doc, '12. FORCE MAJEURE');
+      paragraph(doc, 'Neither party shall be liable for delays or failure to perform obligations due to events beyond their reasonable control, including but not limited to: natural disasters, war, pandemic, government restrictions, labor disputes, or supply chain disruptions. The affected party shall notify the other party within a reasonable timeframe.', left, contentWidth);
       sectionEnd(doc);
 
       // ── Section 13: Dispute Resolution ──

@@ -8,6 +8,14 @@ const locationSchema = z.object({
   lng: z.number().min(-180).max(180),
 });
 
+const addressStructuredSchema = z.object({
+  street: z.string().max(200).trim(),
+  barangay: z.string().max(100).trim(),
+  city: z.string().max(100).trim(),
+  province: z.string().max(100).trim(),
+  zip: z.string().max(10).trim(),
+});
+
 export const requestAppointmentSchema = z.object({
   type: z.nativeEnum(AppointmentType),
   date: z.string().regex(dateRegex, 'Date must be YYYY-MM-DD'),
@@ -15,6 +23,7 @@ export const requestAppointmentSchema = z.object({
   purpose: z.string().max(500).trim().optional(),
   formattedAddress: z.string().max(500).trim().optional(),
   customerLocation: locationSchema.optional(),
+  addressStructured: addressStructuredSchema.optional(),
 }).refine(
   (data) => data.type !== AppointmentType.OCULAR || !!data.customerLocation,
   {

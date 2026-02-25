@@ -51,7 +51,7 @@ export async function generateReceiptPdf(data: ReceiptData): Promise<Buffer> {
       doc
         .fontSize(10)
         .font('Helvetica')
-        .text('Malabon City, Metro Manila, Philippines', { align: 'center' })
+        .text('Quezon City, Metro Manila, Philippines', { align: 'center' })
         .moveDown(0.5);
 
       doc

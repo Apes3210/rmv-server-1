@@ -96,6 +96,13 @@ router.post(
 );
 
 router.post(
+  '/:id/visit-status/:status',
+  authenticate,
+  authorize(Role.SALES_STAFF),
+  ctrl.updateVisitStatus,
+);
+
+router.post(
   '/:id/no-show',
   authenticate,
   authorize(Role.SALES_STAFF),
@@ -159,6 +166,14 @@ router.post(
   authorize(Role.CASHIER, Role.ADMIN),
   validate(declineOcularFeeSchema),
   ctrl.declineOcularFee,
+);
+
+// ── Admin: Refund Ocular Fee ──
+router.post(
+  '/:id/refund-ocular-fee',
+  authenticate,
+  authorize(Role.ADMIN),
+  ctrl.refundOcularFee,
 );
 
 // ── Cashier: List Pending Ocular Fees ──

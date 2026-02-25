@@ -11,6 +11,37 @@ import { createAndSendNotification } from '../notifications/socket.service.js';
 import { sendFabricationUpdateEmail } from '../notifications/email.service.js';
 import type { CreateFabricationUpdateInput } from './fabrication.validation.js';
 
+// ── Per-stage payment gating helpers ──
+
+const FABRICATION_STAGE_ORDER = [
+  FabricationStatus.MATERIAL_PREP,
+  FabricationStatus.CUTTING,
+  FabricationStatus.WELDING,
+  FabricationStatus.ASSEMBLY,
+  FabricationStatus.FINISHING,
+  FabricationStatus.QUALITY_CHECK,
+  FabricationStatus.READY_FOR_DELIVERY,
+  FabricationStatus.DONE,
+];
+
+/**
+ * For a given target fabrication status and total number of payment stages,
+ * return the minimum number of payment stages that must be verified.
+ * Uses proportional distribution across the fabrication pipeline.
+ */
+function getRequiredPaidStages(targetStatus: FabricationStatus, totalPaymentStages: number): number {
+  if (totalPaymentStages <= 0) return 0;
+
+  const targetIdx = FABRICATION_STAGE_ORDER.indexOf(targetStatus);
+  if (targetIdx === -1) return 0;
+
+  const totalFabStages = FABRICATION_STAGE_ORDER.length; // 8
+  return Math.min(
+    totalPaymentStages,
+    Math.ceil(((targetIdx + 1) / totalFabStages) * totalPaymentStages),
+  );
+}
+
 // ── Fabrication Staff: Create Update ──
 
 export async function createFabricationUpdate(
@@ -45,17 +76,16 @@ export async function createFabricationUpdate(
   // Validate status transition (forward-only)
   fabricationStateMachine.assertTransition(currentStatus, input.status);
 
-  // Payment gate: block delivery/done if payments are not fully verified
-  const GATED_STATUSES = [FabricationStatus.READY_FOR_DELIVERY, FabricationStatus.DONE];
-  if (GATED_STATUSES.includes(input.status)) {
-    const plan = await PaymentPlan.findOne({ projectId: input.projectId });
-    if (plan) {
-      const allPaid = plan.stages.every(s => s.status === PaymentStageStatus.VERIFIED);
-      if (!allPaid) {
-        throw AppError.badRequest(
-          'Cannot transition to this stage — all payment stages must be verified first',
-        );
-      }
+  // Per-stage payment gate: require proportional payment stages to be verified
+  const plan = await PaymentPlan.findOne({ projectId: input.projectId });
+  if (plan && plan.stages.length > 0) {
+    const requiredPaid = getRequiredPaidStages(input.status, plan.stages.length);
+    const actualPaid = plan.stages.filter(s => s.status === PaymentStageStatus.VERIFIED).length;
+    if (actualPaid < requiredPaid) {
+      const nextUnpaid = plan.stages.find(s => s.status !== PaymentStageStatus.VERIFIED);
+      throw AppError.badRequest(
+        `Cannot advance to ${input.status.replace(/_/g, ' ')} — payment stage "${nextUnpaid?.label || `Stage ${actualPaid + 1}`}" must be verified first (${actualPaid}/${requiredPaid} required stages paid)`,
+      );
     }
   }
 
@@ -178,21 +208,43 @@ export async function getLatestFabricationStatus(
     .sort({ createdAt: -1 })
     .populate('updatedBy', 'firstName lastName');
 
-  // Check payment gate
+  // Check payment gate — per-stage info
   const plan = await PaymentPlan.findOne({ projectId });
-  const allPaid = plan ? plan.stages.every(s => s.status === PaymentStageStatus.VERIFIED) : false;
-  const unpaidCount = plan ? plan.stages.filter(s => s.status !== PaymentStageStatus.VERIFIED).length : 0;
+  const totalStages = plan ? plan.stages.length : 0;
+  const paidCount = plan ? plan.stages.filter(s => s.status === PaymentStageStatus.VERIFIED).length : 0;
+  const allPaid = totalStages > 0 && paidCount === totalStages;
+  const unpaidCount = totalStages - paidCount;
+
+  // Build per-transition gate requirements
+  const allowedTransitions = fabricationStateMachine.getAllowed(
+    latest?.status || FabricationStatus.QUEUED,
+  );
+
+  const stageGates: Record<string, { requiredPaid: number; currentPaid: number; blocked: boolean; nextUnpaidLabel?: string }> = {};
+  if (totalStages > 0) {
+    for (const transition of allowedTransitions) {
+      const requiredPaid = getRequiredPaidStages(transition as FabricationStatus, totalStages);
+      const blocked = paidCount < requiredPaid;
+      const nextUnpaid = blocked ? plan!.stages.find(s => s.status !== PaymentStageStatus.VERIFIED) : undefined;
+      stageGates[transition] = {
+        requiredPaid,
+        currentPaid: paidCount,
+        blocked,
+        nextUnpaidLabel: nextUnpaid?.label,
+      };
+    }
+  }
 
   return {
     currentStatus: latest?.status || FabricationStatus.QUEUED,
     latestUpdate: latest,
-    allowedTransitions: fabricationStateMachine.getAllowed(
-      latest?.status || FabricationStatus.QUEUED,
-    ),
+    allowedTransitions,
     paymentGate: {
       allPaid,
       unpaidCount,
-      gatedStatuses: [FabricationStatus.READY_FOR_DELIVERY, FabricationStatus.DONE],
+      paidCount,
+      totalStages,
+      stageGates,
     },
   };
 }

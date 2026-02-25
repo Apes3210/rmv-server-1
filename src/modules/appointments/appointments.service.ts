@@ -270,6 +270,7 @@ export async function requestAppointment(
     ocularFeeBreakdown: ocularVisitData?.ocularFeeBreakdown,
     ocularFeeStatus: isOutsideNcr ? 'pending' : undefined,
     customerNotes: input.purpose,
+    addressStructured: input.addressStructured,
     bookedBy: customerId,
   });
 
@@ -332,6 +333,7 @@ export async function agentCreateAppointment(
     ocularFee: ocularVisitData?.ocularFee,
     ocularFeeBreakdown: ocularVisitData?.ocularFeeBreakdown,
     customerNotes: input.purpose,
+    addressStructured: input.addressStructured,
     bookedBy: agentId,
   });
 
@@ -596,6 +598,45 @@ export async function completeAppointment(
     NotificationCategory.APPOINTMENT,
     'Appointment Completed',
     `${appointment.type.charAt(0).toUpperCase() + appointment.type.slice(1)} appointment on ${appointment.date} at ${formatSlotTime(appointment.slotCode)} has been completed.`,
+    `/appointments/${appointment._id}`,
+  );
+
+  return appointment;
+}
+
+// ── Update Visit Status (Preparing / On The Way) ──
+
+export async function updateVisitStatus(
+  appointmentId: string,
+  newStatus: AppointmentStatus.PREPARING | AppointmentStatus.ON_THE_WAY,
+  actorId: string,
+  ip?: string,
+  ua?: string,
+) {
+  const appointment = await Appointment.findById(appointmentId);
+  if (!appointment) throw AppError.notFound('Appointment not found');
+
+  appointmentStateMachine.assertTransition(appointment.status, newStatus);
+
+  appointment.status = newStatus;
+  await appointment.save();
+
+  await AuditLog.create({
+    action: newStatus === AppointmentStatus.PREPARING ? 'appointment_preparing' : 'appointment_on_the_way',
+    actorId,
+    targetType: 'appointment',
+    targetId: appointment._id,
+    ipAddress: ip,
+    userAgent: ua,
+  });
+
+  const statusLabel = newStatus === AppointmentStatus.PREPARING ? 'preparing for your visit' : 'on the way to your location';
+
+  await createAndSendNotification(
+    appointment.customerId,
+    NotificationCategory.APPOINTMENT,
+    newStatus === AppointmentStatus.PREPARING ? 'Staff Preparing' : 'Staff On The Way',
+    `Your sales staff is ${statusLabel} for your ${appointment.type} appointment on ${appointment.date}.`,
     `/appointments/${appointment._id}`,
   );
 
@@ -1409,6 +1450,68 @@ export async function listAppointments(query: {
     total,
     hasMore: page * limit < total,
   };
+}
+
+// ── Refund Ocular Fee (Admin only) ──
+
+export async function refundOcularFee(
+  appointmentId: string,
+  reason: string,
+  actorId: string,
+  ip?: string,
+  ua?: string,
+) {
+  const appointment = await Appointment.findById(appointmentId);
+  if (!appointment) throw AppError.notFound('Appointment not found');
+
+  if (appointment.type !== AppointmentType.OCULAR) {
+    throw AppError.badRequest('Refunds only apply to ocular appointments');
+  }
+
+  if (!appointment.ocularFeePaid && appointment.ocularFeeStatus !== 'verified') {
+    throw AppError.badRequest('Ocular fee has not been paid / verified yet');
+  }
+
+  if (appointment.ocularFeeStatus === 'refunded') {
+    throw AppError.badRequest('Ocular fee has already been refunded');
+  }
+
+  // Block refund if sales staff is already on the way or visit is completed
+  if (
+    [AppointmentStatus.ON_THE_WAY, AppointmentStatus.COMPLETED].includes(appointment.status as AppointmentStatus)
+  ) {
+    throw AppError.badRequest(
+      'Cannot refund — sales staff is already on the way or the visit has been completed',
+    );
+  }
+
+  appointment.ocularFeeStatus = 'refunded';
+  appointment.ocularFeePaid = false;
+  appointment.ocularFeeRefundReason = reason;
+  appointment.ocularFeeRefundedBy = actorId as unknown as Types.ObjectId;
+  appointment.ocularFeeRefundedAt = new Date();
+  await appointment.save();
+
+  await AuditLog.create({
+    action: AuditAction.OCULAR_FEE_REFUNDED,
+    actorId,
+    targetType: 'appointment',
+    targetId: appointment._id,
+    details: { reason, refundedAmount: appointment.ocularFee },
+    ipAddress: ip,
+    userAgent: ua,
+  });
+
+  // Notify customer
+  await createAndSendNotification({
+    recipientId: appointment.customerId.toString(),
+    title: 'Ocular Fee Refunded',
+    message: `Your ocular fee of ₱${appointment.ocularFee?.toLocaleString()} has been refunded. Reason: ${reason}`,
+    category: NotificationCategory.PAYMENT,
+    relatedId: appointment._id.toString(),
+  });
+
+  return appointment;
 }
 
 // ── Auto-assign sales staff (round-robin based on least appointments for that date) ──

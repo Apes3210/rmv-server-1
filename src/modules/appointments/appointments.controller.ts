@@ -1,7 +1,7 @@
 import type { Request, Response } from 'express';
 import { asyncHandler } from '../../utils/asyncHandler.js';
 import * as appointmentsService from './appointments.service.js';
-import { Role } from '../../utils/constants.js';
+import { AppointmentStatus, Role } from '../../utils/constants.js';
 
 /** Map populated appointment to the shape the frontend expects */
 function formatAppointment(appt: any) {
@@ -72,6 +72,19 @@ export const confirmAppointment = asyncHandler(async (req: Request, res: Respons
 export const completeAppointment = asyncHandler(async (req: Request, res: Response) => {
   const appointment = await appointmentsService.completeAppointment(
     (req.params.id as string),
+    req.userId!,
+    req.ip,
+    req.get('user-agent'),
+  );
+  res.json({ success: true, data: appointment });
+});
+
+// ── Update Visit Status (Preparing / On The Way) ──
+export const updateVisitStatus = asyncHandler(async (req: Request, res: Response) => {
+  const newStatus = req.params.status as AppointmentStatus.PREPARING | AppointmentStatus.ON_THE_WAY;
+  const appointment = await appointmentsService.updateVisitStatus(
+    req.params.id as string,
+    newStatus,
     req.userId!,
     req.ip,
     req.get('user-agent'),
@@ -216,6 +229,18 @@ export const declineOcularFee = asyncHandler(async (req: Request, res: Response)
 export const listPendingOcularFees = asyncHandler(async (_req: Request, res: Response) => {
   const appointments = await appointmentsService.listPendingOcularFees();
   res.json({ success: true, data: appointments.map(formatAppointment) });
+});
+
+// ── Admin: Refund Ocular Fee ──
+export const refundOcularFee = asyncHandler(async (req: Request, res: Response) => {
+  const appointment = await appointmentsService.refundOcularFee(
+    req.params.id as string,
+    req.body.reason,
+    req.userId!,
+    req.ip,
+    req.get('user-agent'),
+  );
+  res.json({ success: true, data: formatAppointment(appointment) });
 });
 
 // ── Get By ID ──
