@@ -393,6 +393,14 @@ export async function acceptBlueprint(
   blueprint.status = BlueprintStatus.APPROVED;
   await blueprint.save();
 
+  // Guard: quotation must exist with a valid total
+  if (!blueprint.quotation || !blueprint.quotation.total || blueprint.quotation.total <= 0) {
+    throw AppError.badRequest(
+      'Cannot accept blueprint: the engineer has not yet provided a quotation with pricing. Please ask the engineer to update the costing.',
+      ErrorCode.VALIDATION_ERROR,
+    );
+  }
+
   // Transition project: BLUEPRINT → APPROVED → PAYMENT_PENDING
   if (project.status === ProjectStatus.BLUEPRINT) {
     projectStateMachine.assertTransition(project.status, ProjectStatus.APPROVED);
