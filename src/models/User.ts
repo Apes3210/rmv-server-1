@@ -1,6 +1,18 @@
 import mongoose, { Schema, Document, Types } from 'mongoose';
 import { Role } from '../utils/constants.js';
 
+export interface IUserAddress {
+  street?: string;
+  barangay?: string;
+  city?: string;
+  province?: string;
+  zip?: string;
+  country?: string;
+  lat?: number;
+  lng?: number;
+  formattedAddress?: string;
+}
+
 export interface IUser extends Document {
   _id: Types.ObjectId;
   email: string;
@@ -8,7 +20,8 @@ export interface IUser extends Document {
   firstName: string;
   lastName: string;
   phone: string;
-  address?: string;
+  address?: string;          // Legacy plain-text address (kept for backwards compat)
+  addressData?: IUserAddress; // Structured address with map pin
   roles: Role[];
   isEmailVerified: boolean;
   isActive: boolean;
@@ -47,6 +60,23 @@ const userSchema = new Schema<IUser>(
     lastName: { type: String, required: true, trim: true },
     phone: { type: String, trim: true },
     address: { type: String, trim: true },
+    addressData: {
+      type: new Schema(
+        {
+          street: { type: String, trim: true },
+          barangay: { type: String, trim: true },
+          city: { type: String, trim: true },
+          province: { type: String, trim: true },
+          zip: { type: String, trim: true },
+          country: { type: String, trim: true, default: 'Philippines' },
+          lat: { type: Number },
+          lng: { type: Number },
+          formattedAddress: { type: String, trim: true },
+        },
+        { _id: false },
+      ),
+      default: undefined,
+    },
     roles: {
       type: [{ type: String, enum: Object.values(Role) }],
       required: true,

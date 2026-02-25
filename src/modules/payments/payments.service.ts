@@ -310,10 +310,14 @@ export async function verifyPayment(
   const customer = await User.findById(project.customerId);
   const verifier = await User.findById(actorId);
   const totalPaid = plan.stages.reduce((sum, s) => sum + s.amountPaid, 0);
+  const customerAddr = customer?.addressData
+    ? [customer.addressData.street, customer.addressData.barangay, customer.addressData.city, customer.addressData.province, customer.addressData.zip].filter(Boolean).join(', ')
+    : (customer as any)?.address || '';
   const receiptKey = await generateAndUploadReceipt({
     receiptNumber,
     customerName: customer ? `${customer.firstName} ${customer.lastName}` : 'Customer',
     customerEmail: customer?.email || '',
+    customerAddress: customerAddr,
     projectTitle: project.title,
     stageName: stage.label,
     amountPaid: payment.amountPaid,
@@ -723,10 +727,14 @@ export async function handleStagePaymongoPayment(checkoutSessionId: string) {
   // Generate receipt PDF
   const customer = await User.findById(project.customerId);
   const totalPaidWebhook = plan.stages.reduce((sum, s) => sum + s.amountPaid, 0) + amountPaid;
+  const whCustomerAddr = customer?.addressData
+    ? [customer.addressData.street, customer.addressData.barangay, customer.addressData.city, customer.addressData.province, customer.addressData.zip].filter(Boolean).join(', ')
+    : (customer as any)?.address || '';
   const receiptKey = await generateAndUploadReceipt({
     receiptNumber,
     customerName: customer ? `${customer.firstName} ${customer.lastName}` : 'Customer',
     customerEmail: customer?.email || '',
+    customerAddress: whCustomerAddr,
     projectTitle: project.title,
     stageName: stage.label,
     amountPaid,
@@ -852,10 +860,14 @@ export async function simulateStagePayment(
   // Generate receipt PDF
   const simCustomer = await User.findById(project.customerId);
   const simTotalPaid = plan.stages.reduce((sum, s) => sum + s.amountPaid, 0) + remaining;
+  const simCustomerAddr = simCustomer?.addressData
+    ? [simCustomer.addressData.street, simCustomer.addressData.barangay, simCustomer.addressData.city, simCustomer.addressData.province, simCustomer.addressData.zip].filter(Boolean).join(', ')
+    : (simCustomer as any)?.address || '';
   const simReceiptKey = await generateAndUploadReceipt({
     receiptNumber,
     customerName: simCustomer ? `${simCustomer.firstName} ${simCustomer.lastName}` : 'Customer',
     customerEmail: simCustomer?.email || '',
+    customerAddress: simCustomerAddr,
     projectTitle: project.title,
     stageName: stage.label,
     amountPaid: remaining,
@@ -941,10 +953,14 @@ export async function recordCashPayment(
   const cashCustomer = await User.findById(project.customerId);
   const cashVerifier = await User.findById(actorId);
   const cashTotalPaid = plan.stages.reduce((sum, s) => sum + s.amountPaid, 0) + amountPaid;
+  const cashCustomerAddr = cashCustomer?.addressData
+    ? [cashCustomer.addressData.street, cashCustomer.addressData.barangay, cashCustomer.addressData.city, cashCustomer.addressData.province, cashCustomer.addressData.zip].filter(Boolean).join(', ')
+    : (cashCustomer as any)?.address || '';
   const cashReceiptKey = await generateAndUploadReceipt({
     receiptNumber,
     customerName: cashCustomer ? `${cashCustomer.firstName} ${cashCustomer.lastName}` : 'Customer',
     customerEmail: cashCustomer?.email || '',
+    customerAddress: cashCustomerAddr,
     projectTitle: project.title,
     stageName: stage.label,
     amountPaid,

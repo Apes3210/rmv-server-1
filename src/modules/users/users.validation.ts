@@ -30,6 +30,17 @@ export const updateProfileSchema = z.object({
   lastName: z.string().min(1).max(50).trim().optional(),
   phone: z.string().regex(phoneRegex).optional(),
   address: z.string().max(500).trim().optional(),
+  addressData: z.object({
+    street: z.string().max(200).trim().optional().or(z.literal('')),
+    barangay: z.string().max(100).trim().optional().or(z.literal('')),
+    city: z.string().max(100).trim().optional().or(z.literal('')),
+    province: z.string().max(100).trim().optional().or(z.literal('')),
+    zip: z.string().max(10).trim().optional().or(z.literal('')),
+    country: z.string().max(50).trim().optional().or(z.literal('')),
+    lat: z.number().optional(),
+    lng: z.number().optional(),
+    formattedAddress: z.string().max(500).trim().optional().or(z.literal('')),
+  }).optional(),
   notificationPreferences: z.object({
     appointment: z.boolean().optional(),
     payment: z.boolean().optional(),

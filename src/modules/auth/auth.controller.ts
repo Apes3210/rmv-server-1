@@ -176,6 +176,7 @@ export const me = asyncHandler(async (req: Request, res: Response) => {
       lastName: user.lastName,
       phone: user.phone,
       address: user.address,
+      addressData: (user as any).addressData,
       roles: user.roles,
       isEmailVerified: user.isEmailVerified,
       mustChangePassword: user.mustChangePassword,

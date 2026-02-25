@@ -187,6 +187,7 @@ export async function updateProfile(userId: string, input: UpdateProfileInput) {
   if (input.lastName) user.lastName = input.lastName;
   if (input.phone) user.phone = input.phone;
   if (input.address !== undefined) user.address = input.address;
+  if (input.addressData !== undefined) (user as any).addressData = input.addressData;
   if (input.notificationPreferences) {
     user.notificationPreferences = {
       ...user.notificationPreferences,
