@@ -496,14 +496,9 @@ export async function acceptBlueprint(
     `/projects/${project._id}`,
   );
 
-  // ── Auto-generate contract PDF ──
+  // ── Auto-generate contract PDF (without customer signature — they sign later) ──
   try {
-    // If customer provided a new signature, save it on the user record
-    if (input.signatureKey) {
-      await User.findByIdAndUpdate(customerId, { signatureKey: input.signatureKey });
-    }
-
-    const customer = await User.findById(customerId).select('firstName lastName email phone address signatureKey');
+    const customer = await User.findById(customerId).select('firstName lastName email phone address');
     const engineers = await User.find({ _id: { $in: project.engineerIds } }).select('firstName lastName');
 
     const contractData = {
@@ -523,7 +518,7 @@ export async function acceptBlueprint(
       materialType: project.materialType,
       finishColor: project.finishColor,
       quantity: project.quantity,
-      customerSignatureKey: input.signatureKey || customer?.signatureKey || null,
+      customerSignatureKey: null, // Signature will be added when customer signs the contract
     };
 
     const { originalKey } = await generateAndUploadContract(contractData);
@@ -532,12 +527,12 @@ export async function acceptBlueprint(
     project.contractGeneratedAt = new Date();
     await project.save();
 
-    // Notify customer about contract
+    // Notify customer about contract — tell them to review and sign
     await createAndSendNotification(
       customerId,
       NotificationCategory.SYSTEM,
-      'Contract Ready',
-      `The contract for your project "${project.title}" has been generated and is ready for download.`,
+      'Contract Ready for Signing',
+      `The contract for your project "${project.title}" has been generated. Please review and e-sign it before making any payments.`,
       `/projects/${project._id}`,
     );
 

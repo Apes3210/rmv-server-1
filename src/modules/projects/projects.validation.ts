@@ -55,8 +55,13 @@ export const transitionProjectSchema = z.object({
   cancelReason: z.string().max(500).trim().optional(),
 });
 
+export const signContractSchema = z.object({
+  signatureKey: z.string().min(1, 'Signature is required'),
+});
+
 export type CreateProjectInput = z.infer<typeof createProjectSchema>;
 export type UpdateProjectInput = z.infer<typeof updateProjectSchema>;
 export type AssignEngineersInput = z.infer<typeof assignEngineersSchema>;
 export type AssignFabricationInput = z.infer<typeof assignFabricationSchema>;
 export type TransitionProjectInput = z.infer<typeof transitionProjectSchema>;
+export type SignContractInput = z.infer<typeof signContractSchema>;

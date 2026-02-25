@@ -67,3 +67,14 @@ export const getContractDownloadUrl = asyncHandler(async (req: Request, res: Res
   );
   res.json({ success: true, data: result });
 });
+
+export const signContract = asyncHandler(async (req: Request, res: Response) => {
+  const project = await projectsService.signContract(
+    req.params.id as string,
+    req.body,
+    req.userId!,
+    req.ip,
+    req.get('user-agent'),
+  );
+  res.json({ success: true, data: project });
+});

@@ -185,6 +185,11 @@ export async function submitPaymentProof(
     throw AppError.forbidden('You can only submit payments for your own projects');
   }
 
+  // Contract must be signed before payment
+  if (!project.contractSignedAt) {
+    throw AppError.badRequest('You must sign the project contract before making any payments');
+  }
+
   const stage = plan.stages.find(s => s.stageId === input.stageId);
   if (!stage) throw AppError.notFound('Stage not found');
 

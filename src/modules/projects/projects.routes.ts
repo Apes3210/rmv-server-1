@@ -10,6 +10,7 @@ import {
   assignEngineersSchema,
   assignFabricationSchema,
   transitionProjectSchema,
+  signContractSchema,
 } from './projects.validation.js';
 
 const router = Router();
@@ -84,6 +85,14 @@ router.get(
   '/:id/contract-url',
   authenticate,
   ctrl.getContractDownloadUrl,
+);
+
+router.post(
+  '/:id/sign-contract',
+  authenticate,
+  authorize(Role.CUSTOMER),
+  validate(signContractSchema),
+  ctrl.signContract,
 );
 
 // ── Read ──

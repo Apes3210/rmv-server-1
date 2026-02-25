@@ -35,6 +35,8 @@ export interface IProject extends Document {
   mediaKeys: string[]; // R2 keys for reference photos/files
   contractKey?: string; // R2 key for generated contract PDF
   contractGeneratedAt?: Date;
+  contractSignedAt?: Date;
+  contractSignatureKey?: string;
 
   deletedAt?: Date;
   createdAt: Date;
@@ -79,6 +81,8 @@ const projectSchema = new Schema<IProject>(
     mediaKeys: [{ type: String }],
     contractKey: { type: String },
     contractGeneratedAt: { type: Date },
+    contractSignedAt: { type: Date },
+    contractSignatureKey: { type: String },
 
     deletedAt: { type: Date, default: null },
   },

@@ -18,6 +18,7 @@ import type {
   AssignEngineersInput,
   AssignFabricationInput,
   TransitionProjectInput,
+  SignContractInput,
 } from './projects.validation.js';
 import type { Types } from 'mongoose';
 
@@ -533,6 +534,120 @@ export async function generateContract(
   logger.info(`Contract generated for project ${projectId}: ${originalKey}`);
 
   return { originalKey, copyKey, project };
+}
+
+// ── Sign Contract (Customer) ──
+
+export async function signContract(
+  projectId: string,
+  input: SignContractInput,
+  actorId: string,
+  ip?: string,
+  ua?: string,
+) {
+  const project = await Project.findById(projectId)
+    .populate('customerId', 'firstName lastName email phone address signatureKey')
+    .populate('engineerIds', 'firstName lastName phone');
+
+  if (!project) throw AppError.notFound('Project not found');
+
+  // Only the customer can sign
+  if (String(project.customerId._id ?? project.customerId) !== actorId) {
+    throw AppError.forbidden('Only the project customer can sign the contract');
+  }
+
+  // Must have a contract generated already
+  if (!project.contractKey) {
+    throw AppError.badRequest('No contract has been generated for this project yet');
+  }
+
+  // Must not already be signed
+  if (project.contractSignedAt) {
+    throw AppError.badRequest('Contract has already been signed');
+  }
+
+  // Save signature key on the user record
+  await User.findByIdAndUpdate(actorId, { signatureKey: input.signatureKey });
+
+  // Save signature key + signed timestamp on the project
+  project.contractSignatureKey = input.signatureKey;
+  project.contractSignedAt = new Date();
+  await project.save();
+
+  // Re-generate contract PDF with the signature embedded
+  try {
+    const blueprint = await Blueprint.findOne({ projectId }).sort({ version: -1 });
+    const paymentPlan = await PaymentPlan.findOne({ projectId });
+    const customer = project.customerId as any;
+    const engineers = project.engineerIds as any[];
+
+    if (blueprint?.quotation && paymentPlan) {
+      const contractData: ContractData = {
+        projectTitle: project.title,
+        projectDescription: project.description,
+        siteAddress: project.siteAddress,
+        serviceType: project.serviceType,
+        customerName: `${customer.firstName} ${customer.lastName}`,
+        customerEmail: customer.email,
+        customerPhone: customer.phone,
+        customerAddress: customer.address,
+        engineerNames: engineers.map((e: any) => `${e.firstName} ${e.lastName}`),
+        totalAmount: paymentPlan.totalAmount,
+        paymentType: paymentPlan.isPayInFull ? 'full' : 'installment',
+        stages: paymentPlan.stages.map(s => ({
+          label: s.label,
+          percentage: s.percentage,
+          amount: s.amount,
+        })),
+        estimatedDuration: blueprint.quotation.estimatedDuration,
+        materialType: project.materialType,
+        finishColor: project.finishColor,
+        quantity: project.quantity,
+        customerSignatureKey: input.signatureKey,
+      };
+
+      const { originalKey } = await generateAndUploadContract(contractData);
+      project.contractKey = originalKey;
+      project.contractGeneratedAt = new Date();
+      await project.save();
+
+      logger.info(`Contract re-generated with signature for project ${projectId}: ${originalKey}`);
+    }
+  } catch (err) {
+    logger.error('Failed to re-generate contract with signature', err);
+  }
+
+  await AuditLog.create({
+    action: AuditAction.PROJECT_UPDATED,
+    actorId,
+    targetType: 'project',
+    targetId: project._id,
+    details: { action: 'contract_signed', signatureKey: input.signatureKey },
+    ipAddress: ip,
+    userAgent: ua,
+  });
+
+  // Notify engineer(s) and admin
+  const engineerIds = (project.engineerIds as any[]).map((e: any) => e._id ?? e);
+  for (const engId of engineerIds) {
+    await createAndSendNotification(
+      engId,
+      NotificationCategory.SYSTEM,
+      'Contract Signed',
+      `Customer signed the contract for project "${project.title}". Payments can now proceed.`,
+      `/projects/${project._id}`,
+    );
+  }
+
+  await notifyRole(
+    Role.ADMIN,
+    NotificationCategory.SYSTEM,
+    'Contract Signed',
+    `Contract for project "${project.title}" has been signed by the customer.`,
+    `/projects/${project._id}`,
+  );
+
+  return project;
 }
 
 // ── Get Contract Download URL ──
