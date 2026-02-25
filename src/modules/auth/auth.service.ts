@@ -8,6 +8,7 @@ import { Role, OtpPurpose, AuditAction } from '../../utils/constants.js';
 import { generateOtp } from '../../utils/helpers.js';
 import { sendOtpEmail, sendPasswordResetEmail, send2faEmail } from '../notifications/email.service.js';
 import { parseDevice } from '../../utils/deviceInfo.js';
+import type { ClientHints } from '../../utils/deviceInfo.js';
 import type {
   RegisterInput,
   VerifyEmailInput,
@@ -186,7 +187,7 @@ export async function register(input: RegisterInput, ip?: string, ua?: string) {
   return { message: 'Registration successful. Please verify your email.' };
 }
 
-export async function verifyEmail(input: VerifyEmailInput, ip?: string, ua?: string) {
+export async function verifyEmail(input: VerifyEmailInput, ip?: string, ua?: string, hints?: ClientHints) {
   const { email, otp } = input;
 
   await verifyOtp(email, otp, OtpPurpose.EMAIL_VERIFICATION);
@@ -209,6 +210,7 @@ export async function verifyEmail(input: VerifyEmailInput, ip?: string, ua?: str
     token: refreshTokenValue,
     userAgent: ua,
     ipAddress: ip,
+    clientHints: hints,
     expiresAt: refreshExpiresAt,
   });
 
@@ -240,9 +242,10 @@ export async function login(
   input: LoginInput,
   ip?: string,
   ua?: string,
+  hints?: ClientHints,
 ) {
   const { email, password } = input;
-  const deviceInfo = parseDevice(ua, ip);
+  const deviceInfo = parseDevice(ua, ip, hints);
 
   const user = await User.findOne({ email }).select('+password');
   if (!user) {
@@ -326,6 +329,7 @@ export async function login(
     token: refreshTokenValue,
     userAgent: ua,
     ipAddress: ip,
+    clientHints: hints,
     expiresAt: refreshExpiresAt,
   });
 
@@ -486,7 +490,7 @@ export async function changePassword(userId: string, input: ChangePasswordInput,
 
 // ── 2FA Verification (after login) ──
 
-export async function verify2fa(input: Verify2faInput, ip?: string, ua?: string) {
+export async function verify2fa(input: Verify2faInput, ip?: string, ua?: string, hints?: ClientHints) {
   const { tempToken, otp } = input;
   const { userId } = verifyTempToken(tempToken);
 
@@ -495,7 +499,7 @@ export async function verify2fa(input: Verify2faInput, ip?: string, ua?: string)
 
   await verifyOtp(user.email, otp, OtpPurpose.LOGIN_2FA);
 
-  const deviceInfo = parseDevice(ua, ip);
+  const deviceInfo = parseDevice(ua, ip, hints);
 
   // Now issue full tokens
   const accessToken = generateAccessToken(user._id.toString(), user.roles as Role[]);
@@ -509,6 +513,7 @@ export async function verify2fa(input: Verify2faInput, ip?: string, ua?: string)
     token: refreshTokenValue,
     userAgent: ua,
     ipAddress: ip,
+    clientHints: hints,
     expiresAt: refreshExpiresAt,
   });
 
@@ -636,7 +641,7 @@ export async function getSessions(userId: string, currentRefreshToken?: string) 
     .lean();
 
   return sessions.map((s) => {
-    const deviceInfo = parseDevice(s.userAgent, s.ipAddress);
+    const deviceInfo = parseDevice(s.userAgent, s.ipAddress, (s as any).clientHints);
     return {
       _id: s._id,
       browser: deviceInfo.browser,
@@ -704,7 +709,7 @@ export async function getLoginHistory(userId: string) {
 
 // ── Google Auth ──
 
-export async function googleAuth(input: GoogleAuthInput, ip?: string, ua?: string) {
+export async function googleAuth(input: GoogleAuthInput, ip?: string, ua?: string, hints?: ClientHints) {
   const { idToken } = input;
 
   // Verify Firebase ID token
@@ -728,7 +733,7 @@ export async function googleAuth(input: GoogleAuthInput, ip?: string, ua?: strin
       return issueGoogle2fa(user);
     }
 
-    return issueGoogleLogin(user, ip, ua);
+    return issueGoogleLogin(user, ip, ua, hints);
   }
 
   // 2. Check if a user with the same email exists (local user)
@@ -752,7 +757,7 @@ export async function googleAuth(input: GoogleAuthInput, ip?: string, ua?: strin
       return issueGoogle2fa(user);
     }
 
-    return issueGoogleLogin(user, ip, ua);
+    return issueGoogleLogin(user, ip, ua, hints);
   }
 
   // 3. New user → needs to complete profile
@@ -765,7 +770,7 @@ export async function googleAuth(input: GoogleAuthInput, ip?: string, ua?: strin
   };
 }
 
-export async function googleComplete(input: GoogleCompleteInput, ip?: string, ua?: string) {
+export async function googleComplete(input: GoogleCompleteInput, ip?: string, ua?: string, hints?: ClientHints) {
   const { idToken, firstName, lastName, phone } = input;
 
   // Re-verify Firebase ID token
@@ -790,7 +795,7 @@ export async function googleComplete(input: GoogleCompleteInput, ip?: string, ua
       await existing.save();
     }
     
-    return issueGoogleLogin(existing, ip, ua);
+    return issueGoogleLogin(existing, ip, ua, hints);
   }
 
   // Create new user with Google provider (no password needed)
@@ -819,7 +824,7 @@ export async function googleComplete(input: GoogleCompleteInput, ip?: string, ua
     userAgent: ua,
   });
 
-  return issueGoogleLogin(newUser, ip, ua);
+  return issueGoogleLogin(newUser, ip, ua, hints);
 }
 
 async function issueGoogle2fa(user: InstanceType<typeof User>) {
@@ -837,8 +842,8 @@ async function issueGoogle2fa(user: InstanceType<typeof User>) {
   };
 }
 
-async function issueGoogleLogin(user: InstanceType<typeof User>, ip?: string, ua?: string) {
-  const deviceInfo = parseDevice(ua, ip);
+async function issueGoogleLogin(user: InstanceType<typeof User>, ip?: string, ua?: string, hints?: ClientHints) {
+  const deviceInfo = parseDevice(ua, ip, hints);
   const accessToken = generateAccessToken(user._id.toString(), user.roles as Role[]);
   const refreshTokenValue = generateRefreshToken();
 
@@ -850,6 +855,7 @@ async function issueGoogleLogin(user: InstanceType<typeof User>, ip?: string, ua
     token: refreshTokenValue,
     userAgent: ua,
     ipAddress: ip,
+    clientHints: hints,
     expiresAt: refreshExpiresAt,
   });
 

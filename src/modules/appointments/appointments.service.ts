@@ -1503,13 +1503,12 @@ export async function refundOcularFee(
   });
 
   // Notify customer
-  await createAndSendNotification({
-    recipientId: appointment.customerId.toString(),
-    title: 'Ocular Fee Refunded',
-    message: `Your ocular fee of ₱${appointment.ocularFee?.toLocaleString()} has been refunded. Reason: ${reason}`,
-    category: NotificationCategory.PAYMENT,
-    relatedId: appointment._id.toString(),
-  });
+  await createAndSendNotification(
+    appointment.customerId.toString(),
+    NotificationCategory.PAYMENT,
+    'Ocular Fee Refunded',
+    `Your ocular fee of ₱${appointment.ocularFee?.toLocaleString()} has been refunded. Reason: ${reason}`,
+  );
 
   return appointment;
 }

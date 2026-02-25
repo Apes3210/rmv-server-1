@@ -68,6 +68,15 @@ app.use(
   }),
 );
 
+// ── Request Client Hints for accurate device detection ──
+app.use((_req, res, next) => {
+  res.setHeader(
+    'Accept-CH',
+    'Sec-CH-UA, Sec-CH-UA-Platform, Sec-CH-UA-Platform-Version, Sec-CH-UA-Mobile',
+  );
+  next();
+});
+
 // ── Body Parsing ──
 app.use(express.json({ limit: '5mb' }));
 app.use(express.urlencoded({ extended: true, limit: '5mb' }));

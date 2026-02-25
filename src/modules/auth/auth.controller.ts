@@ -2,6 +2,7 @@ import { Request, Response } from 'express';
 import { asyncHandler } from '../../utils/asyncHandler.js';
 import { env } from '../../config/env.js';
 import { generateCsrfToken } from '../../middleware/csrf.js';
+import { extractClientHints } from '../../utils/deviceInfo.js';
 import * as authService from './auth.service.js';
 
 const COOKIE_OPTIONS = {
@@ -49,11 +50,17 @@ export const register = asyncHandler(async (req: Request, res: Response) => {
   res.status(201).json({ success: true, data: result });
 });
 
+/** Helper: extract client hints from request headers */
+function getHints(req: Request) {
+  return extractClientHints(req.headers as Record<string, string | string[] | undefined>);
+}
+
 export const verifyEmail = asyncHandler(async (req: Request, res: Response) => {
   const result = await authService.verifyEmail(
     req.body,
     req.ip,
     req.headers['user-agent'],
+    getHints(req),
   );
 
   setAuthCookies(res, result.accessToken, result.refreshToken);
@@ -66,6 +73,7 @@ export const login = asyncHandler(async (req: Request, res: Response) => {
     req.body,
     req.ip,
     req.headers['user-agent'],
+    getHints(req),
   );
 
   // 2FA required — return temp token without setting auth cookies
@@ -187,6 +195,7 @@ export const verify2fa = asyncHandler(async (req: Request, res: Response) => {
     req.body,
     req.ip,
     req.headers['user-agent'],
+    getHints(req),
   );
 
   setAuthCookies(res, result.accessToken, result.refreshToken);
@@ -275,6 +284,7 @@ export const googleAuth = asyncHandler(async (req: Request, res: Response) => {
     req.body,
     req.ip,
     req.headers['user-agent'],
+    getHints(req),
   );
 
   // New user needs to complete profile
@@ -322,6 +332,7 @@ export const googleComplete = asyncHandler(async (req: Request, res: Response) =
     req.body,
     req.ip,
     req.headers['user-agent'],
+    getHints(req),
   );
 
   setAuthCookies(res, result.accessToken, result.refreshToken);
