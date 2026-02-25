@@ -13,8 +13,9 @@ import { createAndSendNotification, notifyRole } from '../notifications/socket.s
 import { sendAppointmentConfirmedEmail } from '../notifications/email.service.js';
 import { autoCreateDraft as autoCreateVisitReport } from '../visit-reports/visit-reports.service.js';
 import { computeOcularFee, reverseGeocode } from '../maps/maps.service.js';
-import { createCheckoutSession } from '../../services/paymongo.service.js';
+import { createCheckoutSession, retrieveCheckoutSession } from '../../services/paymongo.service.js';
 import { env } from '../../config/env.js';
+import { logger } from '../../utils/logger.js';
 import type {
   RequestAppointmentInput,
   AgentCreateAppointmentInput,
@@ -926,6 +927,76 @@ export async function simulateOcularFeePayment(appointmentId: string, customerId
   return appointment;
 }
 // ⚠️ END TESTING ONLY
+
+// ── Customer: Actively verify ocular fee payment via PayMongo API ──
+
+export async function verifyOcularFeeCheckout(appointmentId: string, customerId: string) {
+  const appointment = await Appointment.findById(appointmentId)
+    .populate('customerId', 'firstName lastName email');
+  if (!appointment) throw AppError.notFound('Appointment not found');
+  if (appointment.customerId._id?.toString() !== customerId && appointment.customerId.toString() !== customerId) {
+    throw AppError.forbidden('You can only verify your own appointments');
+  }
+
+  // Already verified
+  if (appointment.ocularFeePaid && appointment.ocularFeeStatus === 'verified') {
+    return { verified: true, appointment };
+  }
+
+  // No checkout session to check
+  if (!appointment.paymongoCheckoutSessionId) {
+    return { verified: false, appointment };
+  }
+
+  // Actively query PayMongo for the checkout session status
+  try {
+    const session = await retrieveCheckoutSession(appointment.paymongoCheckoutSessionId);
+    const payments = session.attributes.payments;
+
+    // Check if any payment succeeded
+    const hasPaid = payments && payments.length > 0 && payments.some(
+      (p: { attributes?: { status?: string } }) => p.attributes?.status === 'paid',
+    );
+
+    if (hasPaid) {
+      // Mark as verified — same logic as webhook handler
+      appointment.ocularFeePaid = true;
+      appointment.ocularFeeStatus = 'verified';
+      appointment.ocularFeeDeclineReason = undefined;
+      await appointment.save();
+
+      await AuditLog.create({
+        action: AuditAction.PAYMENT_VERIFIED,
+        actorId: appointment.customerId._id ?? appointment.customerId,
+        targetType: 'appointment',
+        targetId: appointment._id,
+        details: { ocularFee: appointment.ocularFee, verifiedVia: 'paymongo_polling' },
+      });
+
+      await createAndSendNotification(
+        appointment.customerId._id ?? appointment.customerId,
+        NotificationCategory.PAYMENT,
+        'Ocular Fee Payment Confirmed',
+        `Your ocular fee payment of ₱${appointment.ocularFee?.toLocaleString()} has been confirmed via PayMongo. An appointment agent will assign your sales staff shortly.`,
+        `/appointments/${appointment._id}`,
+      );
+
+      await notifyRole(
+        Role.APPOINTMENT_AGENT,
+        NotificationCategory.PAYMENT,
+        'Ocular Fee Payment Received',
+        `A customer has paid the ocular fee of ₱${appointment.ocularFee?.toLocaleString()} for appointment on ${appointment.date}.`,
+        `/admin/appointments/${appointment._id}`,
+      );
+
+      return { verified: true, appointment };
+    }
+  } catch (err) {
+    logger.error('Failed to verify checkout session with PayMongo', { err, appointmentId });
+  }
+
+  return { verified: false, appointment };
+}
 
 // ── Handle PayMongo Webhook: Payment Paid ──
 

@@ -723,6 +723,11 @@ export async function googleAuth(input: GoogleAuthInput, ip?: string, ua?: strin
     // Existing Google user → just log them in
     if (!user.isActive) throw AppError.forbidden('Your account has been disabled. Contact support.', ErrorCode.ACCOUNT_DISABLED);
 
+    // Check 2FA
+    if (user.twoFactorEnabled) {
+      return issueGoogle2fa(user);
+    }
+
     return issueGoogleLogin(user, ip, ua);
   }
 
@@ -741,6 +746,11 @@ export async function googleAuth(input: GoogleAuthInput, ip?: string, ua?: strin
       user.isEmailVerified = true; // Google email is verified
     }
     await user.save();
+
+    // Check 2FA
+    if (user.twoFactorEnabled) {
+      return issueGoogle2fa(user);
+    }
 
     return issueGoogleLogin(user, ip, ua);
   }
@@ -810,6 +820,21 @@ export async function googleComplete(input: GoogleCompleteInput, ip?: string, ua
   });
 
   return issueGoogleLogin(newUser, ip, ua);
+}
+
+async function issueGoogle2fa(user: InstanceType<typeof User>) {
+  await createAndSendOtp(user.email, OtpPurpose.LOGIN_2FA);
+  const tempToken = generateTempToken(user._id.toString());
+
+  return {
+    requires2FA: true,
+    tempToken,
+    user: {
+      id: user._id,
+      email: user.email,
+      firstName: user.firstName,
+    },
+  };
 }
 
 async function issueGoogleLogin(user: InstanceType<typeof User>, ip?: string, ua?: string) {

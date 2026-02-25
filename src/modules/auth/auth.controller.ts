@@ -291,6 +291,19 @@ export const googleAuth = asyncHandler(async (req: Request, res: Response) => {
     return;
   }
 
+  // 2FA required — return temp token (no cookies yet)
+  if ('requires2FA' in result && result.requires2FA) {
+    res.json({
+      success: true,
+      data: {
+        requires2FA: true,
+        tempToken: (result as { tempToken: string }).tempToken,
+        user: (result as { user: unknown }).user,
+      },
+    });
+    return;
+  }
+
   // Existing user → set cookies and return user
   const loginResult = result as { accessToken: string; refreshToken: string; user: unknown };
   setAuthCookies(res, loginResult.accessToken, loginResult.refreshToken);

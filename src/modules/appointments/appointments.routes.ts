@@ -120,6 +120,14 @@ router.post(
 );
 // ⚠️ END TESTING ONLY
 
+// ── Customer: Actively verify ocular fee payment via PayMongo ──
+router.post(
+  '/:id/ocular-fee-verify-checkout',
+  authenticate,
+  authorize(Role.CUSTOMER),
+  ctrl.verifyOcularFeeCheckout,
+);
+
 // ── Customer: Create PayMongo Checkout Session ──
 router.post(
   '/:id/ocular-fee-checkout',

@@ -151,6 +151,15 @@ export const simulateOcularFeePayment = asyncHandler(async (req: Request, res: R
 });
 // ⚠️ END TESTING ONLY
 
+// ── Customer: Verify Ocular Fee Checkout via PayMongo API ──
+export const verifyOcularFeeCheckout = asyncHandler(async (req: Request, res: Response) => {
+  const result = await appointmentsService.verifyOcularFeeCheckout(
+    req.params.id as string,
+    req.userId!,
+  );
+  res.json({ success: true, data: { verified: result.verified, appointment: result.appointment } });
+});
+
 // ── Customer: Create PayMongo Checkout for Ocular Fee ──
 export const createOcularFeeCheckout = asyncHandler(async (req: Request, res: Response) => {
   const result = await appointmentsService.createOcularFeeCheckout(
