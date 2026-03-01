@@ -367,6 +367,21 @@ export async function getDashboardSummary(userId?: string, userRoles?: string[])
     const todayStr = now.toISOString().split('T')[0];
     const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
 
+    // Determine if the caller is a pure customer (no staff/admin roles)
+    const isCustomerOnly = userRoles?.includes(Role.CUSTOMER)
+      && !userRoles?.some(r => [Role.ADMIN, Role.APPOINTMENT_AGENT, Role.SALES_STAFF, Role.ENGINEER, Role.CASHIER].includes(r as Role));
+
+    // Appointment filter: scope to the customer's own appointments when applicable
+    const appointmentBaseFilter = isCustomerOnly && userId ? { customerId: userId } : {};
+
+    // Project filter for customer-scoped counts
+    const customerProjectFilter = isCustomerOnly && userId ? { customerId: userId } : {};
+
+    // For customer-scoped pending payments, we need to find the customer's project IDs first
+    const customerProjectIds = isCustomerOnly && userId
+      ? (await Project.find({ customerId: userId, deletedAt: null }).distinct('_id').exec())
+      : null;
+
     const [
       totalProjects,
       activeProjects,
@@ -378,7 +393,7 @@ export async function getDashboardSummary(userId?: string, userRoles?: string[])
       fabricationInProgress,
       pendingVisitReports,
     ] = await Promise.all([
-      Project.countDocuments({ deletedAt: null }).exec(),
+      Project.countDocuments({ deletedAt: null, ...customerProjectFilter }).exec(),
       Project.countDocuments({
         deletedAt: null,
         status: { $nin: [ProjectStatus.COMPLETED, ProjectStatus.CANCELLED] },
@@ -390,22 +405,28 @@ export async function getDashboardSummary(userId?: string, userRoles?: string[])
               ? { customerId: userId }
               : {}),
       }).exec(),
-      Project.countDocuments({ deletedAt: null, status: ProjectStatus.COMPLETED }).exec(),
-      Payment.countDocuments({ status: PaymentStageStatus.PROOF_SUBMITTED }).exec(),
+      Project.countDocuments({ deletedAt: null, status: ProjectStatus.COMPLETED, ...customerProjectFilter }).exec(),
+      // For customers, only count payments linked to their projects
+      customerProjectIds
+        ? Payment.countDocuments({ status: PaymentStageStatus.PROOF_SUBMITTED, projectId: { $in: customerProjectIds } }).exec()
+        : Payment.countDocuments({ status: PaymentStageStatus.PROOF_SUBMITTED }).exec(),
       Payment.aggregate([
         { $match: { status: PaymentStageStatus.VERIFIED, verifiedAt: { $gte: monthStart } } },
         { $group: { _id: null, total: { $sum: '$amountPaid' } } },
       ]).exec(),
       Appointment.countDocuments({
+        ...appointmentBaseFilter,
         status: { $in: [AppointmentStatus.REQUESTED, AppointmentStatus.RESCHEDULE_REQUESTED] },
       }).exec(),
       Appointment.countDocuments({
+        ...appointmentBaseFilter,
         date: todayStr,
         status: { $in: [AppointmentStatus.CONFIRMED, AppointmentStatus.REQUESTED] },
       }).exec(),
       Project.countDocuments({
         deletedAt: null,
         status: ProjectStatus.FABRICATION,
+        ...(isCustomerOnly && userId ? { customerId: userId } : {}),
       }).exec(),
       // Count draft/returned visit reports for the current user (sales staff KPI)
       userId

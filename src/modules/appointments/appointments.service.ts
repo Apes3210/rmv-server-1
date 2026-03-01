@@ -500,15 +500,8 @@ export async function submitSiteDetails(
     throw AppError.badRequest('Site details have already been submitted for this appointment');
   }
 
-  // For office appointments, photoKeys and referenceImageKeys are mandatory
-  if (appointment.type === AppointmentType.OFFICE) {
-    if (!input.photoKeys || input.photoKeys.length === 0) {
-      throw AppError.badRequest('At least one site photo is required for office appointments');
-    }
-    if (!input.referenceImageKeys || input.referenceImageKeys.length === 0) {
-      throw AppError.badRequest('At least one reference image is required for office appointments');
-    }
-  }
+  // Office appointments: photos & reference images are recommended but not mandatory
+  // Customers can update them later from the site details page
 
   appointment.customerSiteDetails = input;
   appointment.siteDetailsStatus = 'submitted';
