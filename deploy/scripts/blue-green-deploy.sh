@@ -12,10 +12,19 @@
 DEPLOY_DIR="/opt/rmv/rmv-server/deploy"
 COMPOSE_FILE="$DEPLOY_DIR/docker-compose.prod.yml"
 UPSTREAM_FILE="$DEPLOY_DIR/nginx/upstream.conf"
+LOCK_FILE="/var/lock/rmv-deploy.lock"
 
 TARGET="${1:-both}"  # api, web, or both
 
-# ── Read per-service active colors ───────────────────────────────
+# ── Acquire exclusive deploy lock (prevents cross-repo races) ────
+# Both rmv-server and rmv-web CI/CD call this script; flock ensures
+# only one deploy runs at a time on the VPS.
+exec 200>"$LOCK_FILE"
+echo "Waiting for deploy lock..."
+flock -w 600 200 || { echo "FATAL: another deploy is running (lock timeout after 600s)"; exit 1; }
+echo "Deploy lock acquired."
+
+# ── Read per-service active colors (AFTER lock to avoid stale reads) ─
 read_color() {
   local file="/opt/rmv/.color-$1"
   if [ -f "$file" ]; then cat "$file"; else echo "none"; fi
