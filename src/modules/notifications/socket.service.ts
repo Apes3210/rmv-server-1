@@ -24,14 +24,16 @@ export function initializeSocket(server: HttpServer): SocketServer {
 
   io.use(async (socket: Socket, next) => {
     try {
-      // Read access token from cookie header, auth payload, or query param
+      // Read access token from auth payload first (sessionStorage-based), then cookie fallback
       let token: string | undefined;
-      const cookieHeader = socket.handshake.headers?.cookie;
-      if (cookieHeader) {
-        const match = cookieHeader.match(/(?:^|;\s*)accessToken=([^;]+)/);
-        if (match) token = match[1];
+      token = socket.handshake.auth?.token || socket.handshake.query?.token;
+      if (!token) {
+        const cookieHeader = socket.handshake.headers?.cookie;
+        if (cookieHeader) {
+          const match = cookieHeader.match(/(?:^|;\s*)accessToken=([^;]+)/);
+          if (match) token = match[1];
+        }
       }
-      if (!token) token = socket.handshake.auth?.token || socket.handshake.query?.token;
       if (!token) {
         next(new Error('Authentication required'));
         return;

@@ -24,19 +24,19 @@ interface JwtPayload {
 }
 
 /**
- * Authenticate user via access token (httpOnly cookie or Authorization header).
+ * Authenticate user via access token (Authorization header preferred, cookie fallback).
  */
 export const authenticate = async (req: Request, _res: Response, next: NextFunction): Promise<void> => {
   try {
     let token: string | undefined;
 
-    // 1. Check httpOnly cookie
-    if (req.cookies?.accessToken) {
-      token = req.cookies.accessToken;
-    }
-    // 2. Check Authorization header
-    else if (req.headers.authorization?.startsWith('Bearer ')) {
+    // 1. Prefer Authorization header (per-tab sessionStorage token)
+    if (req.headers.authorization?.startsWith('Bearer ')) {
       token = req.headers.authorization.split(' ')[1];
+    }
+    // 2. Fallback to httpOnly cookie (legacy / during migration)
+    else if (req.cookies?.accessToken) {
+      token = req.cookies.accessToken;
     }
 
     if (!token) {
@@ -102,10 +102,11 @@ export const optionalAuth = async (req: Request, _res: Response, next: NextFunct
   try {
     let token: string | undefined;
 
-    if (req.cookies?.accessToken) {
-      token = req.cookies.accessToken;
-    } else if (req.headers.authorization?.startsWith('Bearer ')) {
+    // Prefer Authorization header, fallback to cookie
+    if (req.headers.authorization?.startsWith('Bearer ')) {
       token = req.headers.authorization.split(' ')[1];
+    } else if (req.cookies?.accessToken) {
+      token = req.cookies.accessToken;
     }
 
     if (token) {

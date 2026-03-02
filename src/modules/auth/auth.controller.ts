@@ -20,12 +20,10 @@ const CSRF_COOKIE_OPTIONS = {
   path: '/',
 };
 
-/** Set access + refresh + CSRF cookies and store csrfToken in res.locals */
+/** Set refresh + CSRF cookies and store tokens in res.locals.
+ *  Access token is returned in JSON body (stored in sessionStorage per-tab). */
 function setAuthCookies(res: Response, accessToken: string, refreshToken: string) {
-  res.cookie('accessToken', accessToken, {
-    ...COOKIE_OPTIONS,
-    maxAge: 15 * 60 * 1000,
-  });
+  // Access token is NOT set as a cookie — returned in body for per-tab sessionStorage
   res.cookie('refreshToken', refreshToken, {
     ...COOKIE_OPTIONS,
     maxAge: 7 * 24 * 60 * 60 * 1000,
@@ -39,6 +37,7 @@ function setAuthCookies(res: Response, accessToken: string, refreshToken: string
     maxAge: 7 * 24 * 60 * 60 * 1000,
   });
   res.locals.csrfToken = csrfToken;
+  res.locals.accessToken = accessToken;
 }
 
 export const register = asyncHandler(async (req: Request, res: Response) => {
@@ -65,7 +64,7 @@ export const verifyEmail = asyncHandler(async (req: Request, res: Response) => {
 
   setAuthCookies(res, result.accessToken, result.refreshToken);
 
-  res.json({ success: true, data: { message: result.message, user: result.user } });
+  res.json({ success: true, data: { message: result.message, user: result.user, accessToken: res.locals.accessToken } });
 });
 
 export const login = asyncHandler(async (req: Request, res: Response) => {
@@ -97,6 +96,7 @@ export const login = asyncHandler(async (req: Request, res: Response) => {
     data: {
       user: result.user,
       csrfToken: res.locals.csrfToken,
+      accessToken: res.locals.accessToken,
     },
   });
 });
@@ -110,12 +110,8 @@ export const refreshToken = asyncHandler(async (req: Request, res: Response) => 
 
   const result = await authService.refreshAccessToken(token);
 
-  res.cookie('accessToken', result.accessToken, {
-    ...COOKIE_OPTIONS,
-    maxAge: 15 * 60 * 1000,
-  });
-
-  res.json({ success: true, data: { message: 'Token refreshed' } });
+  // Access token returned in body for sessionStorage — not set as cookie
+  res.json({ success: true, data: { message: 'Token refreshed', accessToken: result.accessToken } });
 });
 
 export const logout = asyncHandler(async (req: Request, res: Response) => {
@@ -127,10 +123,10 @@ export const logout = asyncHandler(async (req: Request, res: Response) => {
     req.headers['user-agent'],
   );
 
-  res.clearCookie('accessToken', COOKIE_OPTIONS);
   res.clearCookie('refreshToken', { ...COOKIE_OPTIONS, path: '/api/v1/auth' });
   res.clearCookie('csrfToken', { path: '/' });
   res.clearCookie('csrfToken', { ...CSRF_COOKIE_OPTIONS });
+  // accessToken is in sessionStorage — cleared client-side
 
   res.json({ success: true, data: { message: 'Logged out successfully' } });
 });
@@ -206,6 +202,7 @@ export const verify2fa = asyncHandler(async (req: Request, res: Response) => {
     data: {
       user: result.user,
       csrfToken: res.locals.csrfToken,
+      accessToken: res.locals.accessToken,
     },
   });
 });
@@ -324,6 +321,7 @@ export const googleAuth = asyncHandler(async (req: Request, res: Response) => {
     data: {
       user: loginResult.user,
       csrfToken: res.locals.csrfToken,
+      accessToken: res.locals.accessToken,
     },
   });
 });
@@ -343,6 +341,7 @@ export const googleComplete = asyncHandler(async (req: Request, res: Response) =
     data: {
       user: result.user,
       csrfToken: res.locals.csrfToken,
+      accessToken: res.locals.accessToken,
     },
   });
 });
