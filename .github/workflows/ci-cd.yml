@@ -30,7 +30,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: ci
     concurrency:
-      group: vps-deploy-backend
+      group: vps-deploy
       cancel-in-progress: false
     steps:
       - name: Deploy to VPS
@@ -40,13 +40,15 @@ jobs:
           username: ${{ secrets.VPS_USERNAME }}
           password: ${{ secrets.VPS_PASSWORD }}
           command_timeout: 15m
-          script_stop: true
+          script_stop: false
           script: |
             set -e
 
+            echo "========== BACKEND DEPLOY START =========="
+
             # ── Cross-repo deploy lock (mkdir is atomic) ──────────────
             LOCKDIR="/tmp/rmv-deploy.lock"
-            cleanup() { rm -rf "$LOCKDIR"; }
+            cleanup() { rm -rf "$LOCKDIR" 2>/dev/null; }
             trap cleanup EXIT
 
             acquired=false
@@ -56,28 +58,41 @@ jobs:
                 lock_age=$(( $(date +%s) - $(stat -c %Y "$LOCKDIR") ))
                 if [ "$lock_age" -gt 900 ]; then
                   echo "Breaking stale lock (${lock_age}s old)"
-                  rm -rf "$LOCKDIR"; mkdir "$LOCKDIR"; acquired=true; break
+                  rm -rf "$LOCKDIR"
+                  mkdir "$LOCKDIR"
+                  acquired=true
+                  break
                 fi
               fi
               echo "Waiting for deploy lock ($i/60)..."
               sleep 5
             done
-            [ "$acquired" = true ] || { echo "Failed to acquire deploy lock"; exit 1; }
+            if [ "$acquired" != "true" ]; then
+              echo "FATAL: Failed to acquire deploy lock after 5 minutes"
+              exit 1
+            fi
             echo "Deploy lock acquired"
 
             # ── Helper: wait for container health ─────────────────────
             wait_for_health() {
-              local c="$1" retries="${2:-60}" delay="${3:-3}"
-              for i in $(seq 1 "$retries"); do
-                s=$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$c" 2>/dev/null || true)
+              local c="$1"
+              local retries="${2:-60}"
+              local delay="${3:-3}"
+              local i=1
+              while [ "$i" -le "$retries" ]; do
+                local s=""
+                s=$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$c" 2>/dev/null) || s="not-found"
                 echo "  [$i/$retries] $c -> $s"
-                [ "$s" = "healthy" ] && return 0
+                if [ "$s" = "healthy" ]; then
+                  return 0
+                fi
                 if [ "$s" = "unhealthy" ]; then
                   echo "!! $c is unhealthy — recent logs:"
                   docker logs --tail 30 "$c" 2>&1 || true
                   return 1
                 fi
                 sleep "$delay"
+                i=$((i + 1))
               done
               echo "Timeout waiting for $c"
               docker logs --tail 30 "$c" 2>&1 || true
@@ -90,31 +105,43 @@ jobs:
             [ -d /opt/rmv/rmv-web/.git ]    || git clone https://github.com/potatsukki/rmv-web.git    /opt/rmv/rmv-web
 
             # ── Pull ONLY backend code ────────────────────────────────
-            echo "Pulling latest backend code..."
+            echo ">>> Pulling latest backend code..."
             git -C /opt/rmv/rmv-server fetch --all
             git -C /opt/rmv/rmv-server reset --hard origin/main
+            echo "Backend code pulled: $(git -C /opt/rmv/rmv-server log --oneline -1)"
+
+            # ── Also pull nginx config (lives in rmv-server) ──────────
+            echo ">>> Syncing nginx config..."
 
             # ── Build new image WHILE old container keeps serving ─────
             cd /opt/rmv/rmv-server/deploy
-            echo "Building new api image (old container still running)..."
+            echo ">>> Building new api image (old container still running)..."
             docker compose -f docker-compose.prod.yml build --no-cache api
+            echo ">>> Build complete"
 
             # ── Swap container (near-instant) ─────────────────────────
-            echo "Swapping api container..."
+            echo ">>> Swapping api container..."
             docker compose -f docker-compose.prod.yml up -d --no-deps --force-recreate api
+            echo ">>> Container swapped, waiting 5s for startup..."
+            sleep 5
 
             # ── Health check ──────────────────────────────────────────
-            echo "Waiting for health check..."
+            echo ">>> Running health check..."
             wait_for_health rmv-api 60 3
+            echo ">>> Health check passed"
 
-            # ── Smoke test ────────────────────────────────────────────
-            echo "Running smoke test..."
-            docker exec rmv-nginx wget -qO/dev/null --tries=3 --spider http://api:5000/api/v1/health || echo "Smoke test warning (non-fatal)"
+            # ── Reload nginx so it resolves new container IP ──────────
+            echo ">>> Reloading nginx..."
+            docker exec rmv-nginx nginx -s reload 2>&1 || true
 
-            # ── Restart nginx to pick up any config changes ───────────
-            echo "Reloading nginx..."
-            docker exec rmv-nginx nginx -s reload || true
+            # ═══ Non-critical cleanup (don't fail deploy) ═════════════
+            set +e
+            echo ">>> Smoke test..."
+            docker exec rmv-nginx wget -qO/dev/null --tries=3 --timeout=5 --spider http://api:5000/api/v1/health 2>&1
+            echo ">>> Container status:"
+            docker compose -f docker-compose.prod.yml ps 2>&1
+            echo ">>> Pruning old images..."
+            docker image prune -f 2>&1
 
-            echo "Backend deploy successful"
-            docker compose -f docker-compose.prod.yml ps
-            docker image prune -f
+            echo "========== BACKEND DEPLOY SUCCESS =========="
+            exit 0
