@@ -1,9 +1,12 @@
-﻿services:
-  api:
+services:
+  # ═══════════════════════════════════════════════════════════════
+  # BLUE environment
+  # ═══════════════════════════════════════════════════════════════
+  api-blue:
     build:
       context: ..
       dockerfile: Dockerfile
-    container_name: rmv-api
+    container_name: rmv-api-blue
     restart: unless-stopped
     env_file:
       - ../.env
@@ -19,12 +22,13 @@
       start_period: 30s
     networks:
       - rmv-net
+    profiles: ["blue"]
 
-  web:
+  web-blue:
     build:
       context: ../../rmv-web
       dockerfile: Dockerfile
-    container_name: rmv-web
+    container_name: rmv-web-blue
     restart: unless-stopped
     expose:
       - "80"
@@ -36,21 +40,64 @@
       start_period: 10s
     networks:
       - rmv-net
+    profiles: ["blue"]
 
+  # ═══════════════════════════════════════════════════════════════
+  # GREEN environment
+  # ═══════════════════════════════════════════════════════════════
+  api-green:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    container_name: rmv-api-green
+    restart: unless-stopped
+    env_file:
+      - ../.env
+    environment:
+      - NODE_ENV=production
+    expose:
+      - "5000"
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:5000/api/v1/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - rmv-net
+    profiles: ["green"]
+
+  web-green:
+    build:
+      context: ../../rmv-web
+      dockerfile: Dockerfile
+    container_name: rmv-web-green
+    restart: unless-stopped
+    expose:
+      - "80"
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    networks:
+      - rmv-net
+    profiles: ["green"]
+
+  # ═══════════════════════════════════════════════════════════════
+  # INFRASTRUCTURE (always running)
+  # ═══════════════════════════════════════════════════════════════
   nginx:
     image: nginx:1.27-alpine
     container_name: rmv-nginx
     restart: unless-stopped
-    depends_on:
-      api:
-        condition: service_healthy
-      web:
-        condition: service_healthy
     ports:
       - "80:80"
       - "443:443"
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./nginx/upstream.conf:/etc/nginx/conf.d/upstream.conf:ro
       - ./certbot/conf:/etc/letsencrypt
       - ./certbot/www:/var/www/certbot
     networks:
