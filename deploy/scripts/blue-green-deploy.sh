@@ -121,22 +121,28 @@ UP_WEB="$NEXT_WEB"
 # Save backup of current upstream
 cp "$UPSTREAM_FILE" "$UPSTREAM_FILE.bak" 2>/dev/null || true
 
-cat > "$UPSTREAM_FILE" <<EOF
-# api=$UP_API  web=$UP_WEB  (switched at $(date -u +%Y-%m-%dT%H:%M:%SZ))
+UPSTREAM_CONTENT="# api=$UP_API  web=$UP_WEB  (switched at $(date -u +%Y-%m-%dT%H:%M:%SZ))
 upstream api_upstream {
   server api-$UP_API:5000;
 }
 
 upstream web_upstream {
   server web-$UP_WEB:80;
-}
-EOF
+}"
+
+# Write to host file (persists across container restarts)
+echo "$UPSTREAM_CONTENT" > "$UPSTREAM_FILE"
+
+# Write directly into container (bypasses bind-mount inode issues)
+echo "$UPSTREAM_CONTENT" | docker exec -i rmv-nginx tee /etc/nginx/conf.d/upstream.conf > /dev/null
 
 # Config test
 docker exec rmv-nginx nginx -t 2>&1
 if [ $? -ne 0 ]; then
   echo "FATAL: nginx config test failed — rolling back"
   cp "$UPSTREAM_FILE.bak" "$UPSTREAM_FILE" 2>/dev/null || true
+  docker exec rmv-nginx sh -c "cat /etc/nginx/conf.d/upstream.conf.bak > /etc/nginx/conf.d/upstream.conf" 2>/dev/null || \
+    docker cp "$UPSTREAM_FILE" rmv-nginx:/etc/nginx/conf.d/upstream.conf 2>/dev/null || true
   [ "$TARGET" = "api" ] || [ "$TARGET" = "both" ] && docker stop "rmv-api-$NEXT_API" 2>/dev/null
   [ "$TARGET" = "web" ] || [ "$TARGET" = "both" ] && docker stop "rmv-web-$NEXT_WEB" 2>/dev/null
   exit 1
