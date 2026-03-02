@@ -26,12 +26,12 @@ jobs:
         run: npm run build
 
   deploy:
-    name: Deploy Backend (Zero-Downtime)
+    name: Blue-Green Deploy (Backend)
     runs-on: ubuntu-latest
     needs: ci
     concurrency:
-      group: vps-deploy-api
-      cancel-in-progress: true
+      group: vps-deploy
+      cancel-in-progress: false
     steps:
       - name: Deploy to VPS
         uses: appleboy/ssh-action@v1.2.0
@@ -42,9 +42,9 @@ jobs:
           command_timeout: 15m
           script_stop: false
           script: |
-            echo "========== BACKEND DEPLOY START =========="
+            echo "========== BACKEND BLUE-GREEN DEPLOY =========="
 
-            # ── Pull latest backend code ──────────────────────────────
+            # ── Ensure repos exist ────────────────────────────────────
             mkdir -p /opt/rmv
             if [ ! -d /opt/rmv/rmv-server/.git ]; then
               git clone https://github.com/potatsukki/rmv-server.git /opt/rmv/rmv-server
@@ -53,49 +53,15 @@ jobs:
               git clone https://github.com/potatsukki/rmv-web.git /opt/rmv/rmv-web
             fi
 
+            # ── Pull latest backend code ──────────────────────────────
             cd /opt/rmv/rmv-server
             git fetch --all
             git reset --hard origin/main
             echo "Backend commit: $(git log --oneline -1)"
 
-            # ── Build new image (old container still serves traffic) ──
-            cd /opt/rmv/rmv-server/deploy
-            echo "Building new api image..."
-            docker compose -f docker-compose.prod.yml build --no-cache api
-            BUILD_EXIT=$?
-            if [ "$BUILD_EXIT" -ne 0 ]; then
-              echo "FATAL: Docker build failed with exit code $BUILD_EXIT"
-              exit 1
-            fi
-            echo "Build succeeded"
+            # ── Run blue-green deploy ─────────────────────────────────
+            chmod +x /opt/rmv/rmv-server/deploy/scripts/blue-green-deploy.sh
+            /opt/rmv/rmv-server/deploy/scripts/blue-green-deploy.sh api
 
-            # ── Swap container (near-instant) ─────────────────────────
-            echo "Swapping api container..."
-            docker compose -f docker-compose.prod.yml up -d --no-deps --force-recreate api
-            sleep 5
-
-            # ── Health check ──────────────────────────────────────────
-            echo "Waiting for healthy..."
-            for i in $(seq 1 60); do
-              STATUS=$(docker inspect -f '{{.State.Health.Status}}' rmv-api 2>/dev/null || echo "starting")
-              echo "  [$i/60] rmv-api -> $STATUS"
-              if [ "$STATUS" = "healthy" ]; then
-                break
-              fi
-              if [ "$STATUS" = "unhealthy" ]; then
-                echo "Container is unhealthy!"
-                docker logs --tail 20 rmv-api 2>&1 || true
-                break
-              fi
-              sleep 3
-            done
-
-            # ── Reload nginx ──────────────────────────────────────────
-            docker exec rmv-nginx nginx -s reload 2>/dev/null || true
-
-            # ── Cleanup ───────────────────────────────────────────────
-            docker image prune -f 2>/dev/null || true
-            docker compose -f docker-compose.prod.yml ps 2>/dev/null || true
-
-            echo "========== BACKEND DEPLOY COMPLETE =========="
+            echo "========== BACKEND DEPLOY DONE =========="
             exit 0
