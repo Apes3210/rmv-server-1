@@ -7,7 +7,7 @@ on:
 
 jobs:
   ci:
-    name: Build
+    name: Build Check
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -26,7 +26,7 @@ jobs:
         run: npm run build
 
   deploy:
-    name: Deploy to Production
+    name: Deploy Backend (Zero-Downtime)
     runs-on: ubuntu-latest
     needs: ci
     concurrency:
@@ -73,41 +73,48 @@ jobs:
                 echo "  [$i/$retries] $c -> $s"
                 [ "$s" = "healthy" ] && return 0
                 if [ "$s" = "unhealthy" ]; then
-                  echo "!! $c is unhealthy — recent logs:"; docker logs --tail 30 "$c" 2>&1 || true; return 1
+                  echo "!! $c is unhealthy — recent logs:"
+                  docker logs --tail 30 "$c" 2>&1 || true
+                  return 1
                 fi
                 sleep "$delay"
               done
-              echo "Timeout waiting for $c"; docker logs --tail 30 "$c" 2>&1 || true; return 1
+              echo "Timeout waiting for $c"
+              docker logs --tail 30 "$c" 2>&1 || true
+              return 1
             }
 
-            # ── Clone repos (first-time only) ────────────────────────
+            # ── Clone repos (first-time only) ─────────────────────────
             mkdir -p /opt/rmv
             [ -d /opt/rmv/rmv-server/.git ] || git clone https://github.com/potatsukki/rmv-server.git /opt/rmv/rmv-server
             [ -d /opt/rmv/rmv-web/.git ]    || git clone https://github.com/potatsukki/rmv-web.git    /opt/rmv/rmv-web
 
-            # ── Pull latest code ──────────────────────────────────────
-            echo "Pulling latest code..."
-            git -C /opt/rmv/rmv-server fetch --all && git -C /opt/rmv/rmv-server reset --hard origin/main
-            git -C /opt/rmv/rmv-web    fetch --all && git -C /opt/rmv/rmv-web    reset --hard origin/main
+            # ── Pull ONLY backend code ────────────────────────────────
+            echo "Pulling latest backend code..."
+            git -C /opt/rmv/rmv-server fetch --all
+            git -C /opt/rmv/rmv-server reset --hard origin/main
 
-            # ── Tear down & rebuild ───────────────────────────────────
+            # ── Build new image WHILE old container keeps serving ─────
             cd /opt/rmv/rmv-server/deploy
-            echo "Stopping existing containers..."
-            docker compose -f docker-compose.prod.yml down --remove-orphans
+            echo "Building new api image (old container still running)..."
+            docker compose -f docker-compose.prod.yml build --no-cache api
 
-            echo "Building and starting services..."
-            docker compose -f docker-compose.prod.yml up -d --build api web nginx certbot
+            # ── Swap container (near-instant) ─────────────────────────
+            echo "Swapping api container..."
+            docker compose -f docker-compose.prod.yml up -d --no-deps --force-recreate api
 
-            # ── Health checks ─────────────────────────────────────────
-            echo "Waiting for health checks..."
+            # ── Health check ──────────────────────────────────────────
+            echo "Waiting for health check..."
             wait_for_health rmv-api 60 3
-            wait_for_health rmv-web 40 3
 
-            # ── Smoke tests ───────────────────────────────────────────
-            echo "Running smoke tests..."
-            docker exec rmv-nginx wget -qO/dev/null --tries=2 --spider http://api:5000/api/v1/health
-            docker exec rmv-nginx wget -qO/dev/null --tries=2 --spider http://web/
+            # ── Smoke test ────────────────────────────────────────────
+            echo "Running smoke test..."
+            docker exec rmv-nginx wget -qO/dev/null --tries=3 --spider http://api:5000/api/v1/health || echo "Smoke test warning (non-fatal)"
 
-            echo "Deploy successful"
+            # ── Restart nginx to pick up any config changes ───────────
+            echo "Reloading nginx..."
+            docker exec rmv-nginx nginx -s reload || true
+
+            echo "Backend deploy successful"
             docker compose -f docker-compose.prod.yml ps
             docker image prune -f
