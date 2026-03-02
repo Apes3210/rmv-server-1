@@ -459,7 +459,7 @@ async function assertPaymentProjectAccess(
   actorRoles: Role[],
 ): Promise<void> {
   const project = await Project.findById(projectId)
-    .select('customerId salesStaffId engineerIds status');
+    .select('customerId salesStaffId engineerIds fabricationLeadId fabricationAssistantIds status');
   if (!project) throw AppError.notFound('Project not found');
 
   if (actorRoles.some((role) => [Role.ADMIN, Role.CASHIER].includes(role))) return;
@@ -472,6 +472,11 @@ async function assertPaymentProjectAccess(
     if (project.status === ProjectStatus.SUBMITTED && project.engineerIds.length === 0) return;
   }
 
+
+  if (actorRoles.includes(Role.FABRICATION_STAFF)) {
+    if (project.fabricationLeadId?.toString() === actorId) return;
+    if (project.fabricationAssistantIds?.some((id) => id.toString() === actorId)) return;
+  }
   throw AppError.forbidden('Access denied');
 }
 

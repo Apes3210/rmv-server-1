@@ -261,4 +261,16 @@ export async function getSignature(userId: string) {
   return { signatureKey: user.signatureKey || null };
 }
 
+// ── Delete E-Signature ──
+
+export async function deleteSignature(userId: string) {
+  const user = await User.findById(userId);
+  if (!user) throw AppError.notFound('User not found');
+
+  user.signatureKey = undefined;
+  await user.save();
+
+  return { signatureKey: null };
+}
+
 

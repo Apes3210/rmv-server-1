@@ -6,7 +6,8 @@ export interface IBlueprint extends Document {
   projectId: Types.ObjectId;
   version: number;
   status: BlueprintStatus;
-  blueprintKey: string;  // R2 key for blueprint PDF
+  blueprintKey: string;  // R2 key for technical blueprint (fabricators)
+  designKey: string;     // R2 key for design/rendering (customer-facing)
   costingKey: string;    // R2 key for costing PDF
   blueprintApproved: boolean;
   costingApproved: boolean;
@@ -19,9 +20,18 @@ export interface IBlueprint extends Document {
     labor: number;
     fees: number;
     total: number;
+    lineItems?: {
+      label: string;
+      quantity: number;
+      materials: number;
+      labor: number;
+      amount: number;
+    }[];
+    validityDays?: number;
     breakdown?: string;
     estimatedDuration?: string;
     engineerNotes?: string;
+    paymentMilestones?: { label: string; description: string }[];
   };
   createdAt: Date;
   updatedAt: Date;
@@ -37,6 +47,7 @@ const blueprintSchema = new Schema<IBlueprint>(
       default: BlueprintStatus.UPLOADED,
     },
     blueprintKey: { type: String, required: true },
+    designKey: { type: String, default: '' },
     costingKey: { type: String, required: true },
     blueprintApproved: { type: Boolean, default: false },
     costingApproved: { type: Boolean, default: false },
@@ -48,9 +59,21 @@ const blueprintSchema = new Schema<IBlueprint>(
       labor: Number,
       fees: Number,
       total: Number,
+      lineItems: [{
+        label: { type: String, required: true },
+        quantity: { type: Number, required: true, min: 1 },
+        materials: { type: Number, required: true, min: 0 },
+        labor: { type: Number, required: true, min: 0 },
+        amount: { type: Number, required: true, min: 0 },
+      }],
+      validityDays: { type: Number, default: 30 },
       breakdown: String,
       estimatedDuration: String,
       engineerNotes: String,
+      paymentMilestones: [{
+        label: { type: String, required: true },
+        description: { type: String, required: true },
+      }],
     },
   },
   { timestamps: true },

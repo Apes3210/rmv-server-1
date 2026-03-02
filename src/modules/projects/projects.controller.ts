@@ -27,6 +27,11 @@ export const transitionProject = asyncHandler(async (req: Request, res: Response
   res.json({ success: true, data: project });
 });
 
+export const getProjectByVisitReportId = asyncHandler(async (req: Request, res: Response) => {
+  const project = await projectsService.getProjectByVisitReportId(req.params.visitReportId as string);
+  res.json({ success: true, data: project });
+});
+
 export const getProjectById = asyncHandler(async (req: Request, res: Response) => {
   const project = await projectsService.getProjectById((req.params.id as string), req.userId!, req.userRoles!);
   res.json({ success: true, data: project });

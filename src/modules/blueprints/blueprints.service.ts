@@ -51,6 +51,7 @@ export async function uploadBlueprint(
     version: 1,
     status: BlueprintStatus.UPLOADED,
     blueprintKey: input.blueprintKey,
+    designKey: input.designKey,
     costingKey: input.costingKey,
     uploadedBy,
     quotation: input.quotation,
@@ -129,6 +130,7 @@ export async function uploadRevision(
     version: newVersion,
     status: BlueprintStatus.UPLOADED,
     blueprintKey: input.blueprintKey,
+    designKey: input.designKey,
     costingKey: input.costingKey,
     uploadedBy,
   });
@@ -418,6 +420,7 @@ export async function acceptBlueprint(
     stages = [{
       stageId: uuidv4(),
       label: 'Full Payment',
+      description: '',
       percentage: 100,
       amount: finalTotal,
       status: PaymentStageStatus.PENDING,
@@ -428,9 +431,11 @@ export async function acceptBlueprint(
   } else {
     stages = installmentConfig.split.map((pct, idx) => {
       const amount = Math.round((finalTotal * pct / 100) * 100) / 100;
+      const milestones = blueprint.quotation?.paymentMilestones;
       return {
         stageId: uuidv4(),
-        label: installmentConfig.stageLabels[idx] || `Stage ${idx + 1}`,
+        label: milestones?.[idx]?.label || installmentConfig.stageLabels[idx] || `Stage ${idx + 1}`,
+        description: milestones?.[idx]?.description || installmentConfig.stageDescriptions[idx] || '',
         percentage: pct,
         amount,
         status: PaymentStageStatus.PENDING,
@@ -513,12 +518,22 @@ export async function acceptBlueprint(
       engineerNames: engineers.map((e: any) => `${e.firstName} ${e.lastName}`),
       totalAmount: finalTotal,
       paymentType: input.paymentType as 'full' | 'installment',
-      stages: stages.map(s => ({ label: s.label, percentage: s.percentage, amount: s.amount })),
+      stages: stages.map(s => ({ label: s.label, percentage: s.percentage, amount: s.amount, description: s.description })),
       estimatedDuration: blueprint.quotation.estimatedDuration,
       materialType: project.materialType,
       finishColor: project.finishColor,
       quantity: project.quantity,
       customerSignatureKey: null, // Signature will be added when customer signs the contract
+      quotationLineItems: blueprint.quotation.lineItems?.map((li: any) => ({
+        label: li.label,
+        quantity: li.quantity,
+        materials: li.materials,
+        labor: li.labor,
+        amount: li.amount,
+      })),
+      quotationFees: blueprint.quotation.fees,
+      quotationValidityDays: blueprint.quotation.validityDays,
+      scopeOfWork: blueprint.quotation.breakdown,
     };
 
     const { originalKey } = await generateAndUploadContract(contractData);

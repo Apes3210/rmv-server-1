@@ -97,6 +97,12 @@ router.post(
 
 // ── Read ──
 router.get(
+  '/by-visit-report/:visitReportId',
+  authenticate,
+  ctrl.getProjectByVisitReportId,
+);
+
+router.get(
   '/',
   authenticate,
   ctrl.listProjects,

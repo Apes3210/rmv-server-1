@@ -98,4 +98,10 @@ router.get(
   usersController.getSignature,
 );
 
+router.delete(
+  '/signature',
+  authenticate,
+  usersController.deleteSignature,
+);
+
 export default router;

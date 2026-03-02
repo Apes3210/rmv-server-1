@@ -32,12 +32,13 @@ export async function getConfigValue<T = unknown>(key: string, fallback: T): Pro
 
 /** Get all payment-related installment config in one call. */
 export async function getInstallmentConfig() {
-  const [surcharge, split, labels] = await Promise.all([
+  const [surcharge, split, labels, descriptions] = await Promise.all([
     getConfigValue<number>('installment_surcharge_percent', 10),
     getConfigValue<number[]>('installment_split', [30, 40, 30]),
     getConfigValue<string[]>('installment_stage_labels', ['Down Payment', 'Mid-Project', 'Final Payment']),
+    getConfigValue<string[]>('installment_stage_descriptions', ['Due upon contract signing', 'Due when fabrication is complete', 'Due after installation & acceptance']),
   ]);
-  return { surchargePercent: surcharge, split, stageLabels: labels };
+  return { surchargePercent: surcharge, split, stageLabels: labels, stageDescriptions: descriptions };
 }
 
 export async function listConfigs() {
@@ -351,6 +352,10 @@ export async function seedDefaultConfigs(): Promise<void> {
     installment_stage_labels: {
       value: ['Down Payment', 'Mid-Project', 'Final Payment'],
       description: 'Labels for each installment stage corresponding to installment_split',
+    },
+    installment_stage_descriptions: {
+      value: ['Due upon contract signing', 'Due when fabrication is complete', 'Due after installation & acceptance'],
+      description: 'Default milestone descriptions for each installment stage',
     },
   };
 

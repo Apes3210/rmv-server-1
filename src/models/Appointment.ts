@@ -142,7 +142,7 @@ const appointmentSchema = new Schema<IAppointment>(
     ocularFeePaid: { type: Boolean, default: false },
     ocularFeeProofKey: { type: String },
     ocularFeeReferenceNumber: { type: String },
-    ocularFeeStatus: { type: String, enum: ['pending', 'proof_submitted', 'verified', 'declined', 'refunded'], default: 'pending' },
+    ocularFeeStatus: { type: String, enum: ['pending', 'proof_submitted', 'verified', 'declined', 'refunded'] },
     ocularFeeDeclineReason: { type: String },
     ocularFeeVerifiedBy: { type: Schema.Types.ObjectId, ref: 'User' },
     ocularFeeRefundReason: { type: String },

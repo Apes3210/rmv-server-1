@@ -327,6 +327,11 @@ export async function getProjectById(
 
 // ── List Projects ──
 
+export async function getProjectByVisitReportId(visitReportId: string) {
+  const project = await Project.findOne({ visitReportId }).select('_id').lean();
+  return project;
+}
+
 export async function listProjects(
   query: {
     status?: string;

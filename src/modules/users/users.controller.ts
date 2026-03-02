@@ -62,3 +62,8 @@ export const getSignature = asyncHandler(async (req: Request, res: Response) => 
   const result = await usersService.getSignature(req.userId!);
   res.json({ success: true, data: result });
 });
+
+export const deleteSignature = asyncHandler(async (req: Request, res: Response) => {
+  const result = await usersService.deleteSignature(req.userId!);
+  res.json({ success: true, data: result });
+});

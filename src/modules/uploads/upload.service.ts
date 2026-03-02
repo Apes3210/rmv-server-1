@@ -37,7 +37,12 @@ export async function generateUploadUrl(
   }
 
   const ext = getFileExtension(filename);
-  const key = `${folder}/${uuidv4()}.${ext}`;
+  // Sanitise original name: keep only alphanumeric, hyphens, underscores; truncate
+  const baseName = filename
+    .replace(/\.[^.]+$/, '')          // strip extension
+    .replace(/[^a-zA-Z0-9_-]/g, '_') // safe chars only
+    .slice(0, 60);                    // limit length
+  const key = `${folder}/${uuidv4()}-${baseName}.${ext}`;
 
   const command = new PutObjectCommand({
     Bucket: BUCKET,

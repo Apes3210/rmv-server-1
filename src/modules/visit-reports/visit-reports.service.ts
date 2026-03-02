@@ -14,6 +14,29 @@ import type { Types } from 'mongoose';
 
 import type { ICustomerSiteDetails } from '../../models/Appointment.js';
 
+/**
+ * Build a filter condition that excludes draft reports whose appointment has been cancelled.
+ * Returns a condition to merge into the Mongo query.
+ */
+async function excludeCancelledDrafts(): Promise<Record<string, unknown>> {
+  const cancelledIds = await Appointment.find(
+    { status: AppointmentStatus.CANCELLED },
+    { _id: 1 },
+  ).lean();
+
+  if (cancelledIds.length === 0) return {};
+
+  // Exclude drafts tied to cancelled appointments; non-draft reports are preserved.
+  return {
+    $nor: [
+      {
+        status: VisitReportStatus.DRAFT,
+        appointmentId: { $in: cancelledIds.map((a) => a._id) },
+      },
+    ],
+  };
+}
+
 // ── Auto-create Draft (called when Agent confirms appointment) ──
 // Creates a single initial report. Sales staff can add more via createReport().
 // If customerSiteDetails is provided (customer filled in pre-visit info), pre-populate the report.
@@ -79,9 +102,9 @@ export async function createReport(
     throw AppError.forbidden('You are not assigned to this appointment');
   }
 
-  // Appointment must be confirmed or completed to add reports
-  if (![AppointmentStatus.CONFIRMED, AppointmentStatus.COMPLETED].includes(appointment.status as AppointmentStatus)) {
-    throw AppError.badRequest('Appointment must be confirmed to add visit reports');
+  // Appointment must be completed to add reports
+  if (appointment.status !== AppointmentStatus.COMPLETED) {
+    throw AppError.badRequest('Appointment must be marked as complete before adding visit reports');
   }
 
   const report = await VisitReport.create({
@@ -143,7 +166,7 @@ export async function listForSalesStaff(salesStaffId: string, query: {
 }) {
   const page = parseInt(query.page || '1');
   const limit = Math.min(parseInt(query.limit || '20'), 100);
-  const filter: Record<string, unknown> = { salesStaffId };
+  const filter: Record<string, unknown> = { salesStaffId, ...(await excludeCancelledDrafts()) };
   if (query.status) filter.status = query.status;
 
   const [reports, total] = await Promise.all([
@@ -193,7 +216,7 @@ export async function listAll(query: {
 }) {
   const page = parseInt(query.page || '1');
   const limit = Math.min(parseInt(query.limit || '20'), 100);
-  const filter: Record<string, unknown> = {};
+  const filter: Record<string, unknown> = { ...(await excludeCancelledDrafts()) };
   if (query.status) filter.status = query.status;
   if (query.salesStaffId) filter.salesStaffId = query.salesStaffId;
 
@@ -271,6 +294,17 @@ export async function submitReport(
     throw AppError.forbidden('You are not assigned to this visit report');
   }
 
+  // Ensure the linked appointment is in a valid status before allowing submission
+  const appt = await Appointment.findById(report.appointmentId);
+  if (!appt) throw AppError.notFound('Linked appointment not found');
+
+  if (appt.status !== AppointmentStatus.COMPLETED) {
+    throw AppError.badRequest(
+      'The appointment must be marked as complete before submitting reports',
+      ErrorCode.VALIDATION_ERROR,
+    );
+  }
+
   visitReportStateMachine.assertTransition(report.status, VisitReportStatus.SUBMITTED);
 
   report.status = VisitReportStatus.SUBMITTED;
@@ -285,45 +319,28 @@ export async function submitReport(
     userAgent: ua,
   });
 
-  // ── Auto-complete appointment only when ALL reports for this appointment are submitted ──
-  const appointment = await Appointment.findById(report.appointmentId);
-  if (appointment && appointment.status === AppointmentStatus.CONFIRMED) {
-    const pendingCount = await VisitReport.countDocuments({
-      appointmentId: report.appointmentId,
-      status: { $in: [VisitReportStatus.DRAFT, VisitReportStatus.RETURNED] },
-    });
-
-    if (pendingCount === 0) {
-      appointmentStateMachine.assertTransition(appointment.status, AppointmentStatus.COMPLETED);
-      appointment.status = AppointmentStatus.COMPLETED;
-      await appointment.save();
-
-      await AuditLog.create({
-        action: AuditAction.APPOINTMENT_COMPLETED,
-        actorId: salesStaffId,
-        targetType: 'appointment',
-        targetId: appointment._id,
-        details: { triggeredBy: 'system', reason: 'all_visit_reports_submitted' },
-        ipAddress: ip,
-        userAgent: ua,
-      });
-    }
-  }
-
   // ── Auto-create Project (idempotent — use visitReportId) ──
-  if (appointment) {
+  {
     const existingProject = await Project.findOne({ visitReportId: report._id });
     if (!existingProject) {
       const serviceLabel = report.serviceTypeCustom || report.serviceType || 'General Fabrication';
+      // Use customer notes as the title if meaningful and not a duplicate of serviceLabel.
+      // The serviceType chip already shows the category, so the title should be the customer's description.
+      const customerNotes = (appt.customerNotes || '').trim();
+      const notesNormalized = customerNotes.toLowerCase();
+      const serviceLabelNormalized = serviceLabel.toLowerCase();
+      const titleBase = customerNotes && notesNormalized !== serviceLabelNormalized
+        ? customerNotes
+        : serviceLabel;
       const project = await Project.create({
         appointmentId: report.appointmentId,
         visitReportId: report._id,
         customerId: report.customerId,
         salesStaffId: report.salesStaffId,
-        title: `${serviceLabel} - ${appointment.customerNotes || 'Visit Report'}`,
+        title: titleBase,
         serviceType: serviceLabel,
         description: report.customerRequirements || report.notes || 'Created from visit report',
-        siteAddress: appointment.customerAddress || 'TBD',
+        siteAddress: appt.customerAddress || 'TBD',
         measurements: report.measurements,
         materialType: report.materials,
         finishColor: report.finishes,

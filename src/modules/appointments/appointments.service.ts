@@ -2,6 +2,7 @@ import { format, parse, isAfter, isBefore, startOfDay, addMinutes, addDays } fro
 import { toZonedTime } from 'date-fns-tz';
 import {
   Appointment, SlotLock, User, AuditLog, Holiday, SalesAvailability, Config, BlockedSlot,
+  VisitReport, VisitReportStatus,
 } from '../../models/index.js';
 import { AppError, ErrorCode } from '../../utils/appError.js';
 import {
@@ -872,6 +873,17 @@ export async function cancelAppointment(
       'Appointment Cancelled by Customer',
       `Customer cancelled their ${appointment.type} appointment on ${appointment.date} at ${formatSlotTime(appointment.slotCode)}.`,
       `/appointments/${appointment._id}`,
+    );
+  }
+
+  // Clean up draft visit reports that were auto-created when the appointment was confirmed
+  const deletedDrafts = await VisitReport.deleteMany({
+    appointmentId: appointment._id,
+    status: VisitReportStatus.DRAFT,
+  });
+  if (deletedDrafts.deletedCount > 0) {
+    logger.info(
+      `Deleted ${deletedDrafts.deletedCount} draft visit report(s) for cancelled appointment ${appointmentId}`,
     );
   }
 
