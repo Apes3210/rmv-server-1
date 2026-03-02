@@ -2,200 +2,186 @@
 # ═══════════════════════════════════════════════════════════════════
 # Blue-Green Deploy Script
 # Usage: ./blue-green-deploy.sh [api|web|both]
+#
+# Tracks api and web colors INDEPENDENTLY so deploying one service
+# never disrupts the other.
+#   /opt/rmv/.color-api   — "blue" or "green"
+#   /opt/rmv/.color-web   — "blue" or "green"
 # ═══════════════════════════════════════════════════════════════════
 
 DEPLOY_DIR="/opt/rmv/rmv-server/deploy"
 COMPOSE_FILE="$DEPLOY_DIR/docker-compose.prod.yml"
 UPSTREAM_FILE="$DEPLOY_DIR/nginx/upstream.conf"
-COLOR_FILE="/opt/rmv/.active-color"
-
-# ── Determine current and next color ─────────────────────────────
-if [ -f "$COLOR_FILE" ]; then
-  CURRENT=$(cat "$COLOR_FILE")
-else
-  CURRENT="none"
-fi
-
-if [ "$CURRENT" = "blue" ]; then
-  NEXT="green"
-else
-  NEXT="blue"
-fi
 
 TARGET="${1:-both}"  # api, web, or both
 
+# ── Read per-service active colors ───────────────────────────────
+read_color() {
+  local file="/opt/rmv/.color-$1"
+  if [ -f "$file" ]; then cat "$file"; else echo "none"; fi
+}
+
+flip_color() {
+  if [ "$1" = "blue" ]; then echo "green"; else echo "blue"; fi
+}
+
+CUR_API=$(read_color api)
+CUR_WEB=$(read_color web)
+
+# Decide next color for whatever we're deploying
+if [ "$TARGET" = "api" ]; then
+  NEXT_API=$(flip_color "$CUR_API"); NEXT_WEB="$CUR_WEB"
+elif [ "$TARGET" = "web" ]; then
+  NEXT_API="$CUR_API"; NEXT_WEB=$(flip_color "$CUR_WEB")
+else
+  NEXT_API=$(flip_color "$CUR_API"); NEXT_WEB=$(flip_color "$CUR_WEB")
+fi
+
 echo "========== BLUE-GREEN DEPLOY =========="
-echo "  Current active : $CURRENT"
-echo "  Deploying to   : $NEXT"
-echo "  Target services: $TARGET"
+echo "  Target : $TARGET"
+echo "  API    : $CUR_API -> $NEXT_API"
+echo "  Web    : $CUR_WEB -> $NEXT_WEB"
 echo "========================================"
 
 cd "$DEPLOY_DIR"
 
-# ── Step 1: Build the NEXT color images ──────────────────────────
-echo ""
-echo "[1/5] Building $NEXT images..."
-if [ "$TARGET" = "api" ] || [ "$TARGET" = "both" ]; then
-  docker compose -f "$COMPOSE_FILE" --profile "$NEXT" build --no-cache "api-$NEXT"
-  if [ $? -ne 0 ]; then
-    echo "FATAL: api-$NEXT build failed"
-    exit 1
-  fi
-fi
+# ── Ensure nginx + certbot are running ───────────────────────────
+docker compose -f "$COMPOSE_FILE" up -d nginx certbot 2>/dev/null
 
+# ── Step 1: Build images ────────────────────────────────────────
+echo ""
+echo "[1/5] Building images..."
+if [ "$TARGET" = "api" ] || [ "$TARGET" = "both" ]; then
+  docker compose -f "$COMPOSE_FILE" --profile "$NEXT_API" build "api-$NEXT_API"
+  if [ $? -ne 0 ]; then echo "FATAL: api-$NEXT_API build failed"; exit 1; fi
+fi
 if [ "$TARGET" = "web" ] || [ "$TARGET" = "both" ]; then
-  docker compose -f "$COMPOSE_FILE" --profile "$NEXT" build --no-cache "web-$NEXT"
-  if [ $? -ne 0 ]; then
-    echo "FATAL: web-$NEXT build failed"
-    exit 1
-  fi
+  docker compose -f "$COMPOSE_FILE" --profile "$NEXT_WEB" build "web-$NEXT_WEB"
+  if [ $? -ne 0 ]; then echo "FATAL: web-$NEXT_WEB build failed"; exit 1; fi
 fi
 echo "Build complete."
 
-# ── Step 2: Start the NEXT color containers ──────────────────────
+# ── Step 2: Start new containers ────────────────────────────────
 echo ""
-echo "[2/5] Starting $NEXT containers..."
-docker compose -f "$COMPOSE_FILE" --profile "$NEXT" up -d
+echo "[2/5] Starting new containers..."
+if [ "$TARGET" = "api" ] || [ "$TARGET" = "both" ]; then
+  docker compose -f "$COMPOSE_FILE" --profile "$NEXT_API" up -d "api-$NEXT_API"
+fi
+if [ "$TARGET" = "web" ] || [ "$TARGET" = "both" ]; then
+  docker compose -f "$COMPOSE_FILE" --profile "$NEXT_WEB" up -d "web-$NEXT_WEB"
+fi
 echo "Containers started."
 
-# ── Step 3: Health check the NEXT color ──────────────────────────
+# ── Step 3: Health check ────────────────────────────────────────
 echo ""
-echo "[3/5] Health checking $NEXT containers..."
+echo "[3/5] Health checking new containers..."
 
 wait_healthy() {
-  local container="$1"
-  local max_attempts="${2:-60}"
-  local i=1
-  while [ "$i" -le "$max_attempts" ]; do
-    local status
-    status=$(docker inspect -f '{{.State.Health.Status}}' "$container" 2>/dev/null || echo "not-found")
-    echo "  [$i/$max_attempts] $container -> $status"
-    if [ "$status" = "healthy" ]; then
-      return 0
+  local container="$1" max="${2:-60}" i=1
+  while [ "$i" -le "$max" ]; do
+    local st
+    st=$(docker inspect -f '{{.State.Health.Status}}' "$container" 2>/dev/null || echo "not-found")
+    echo "  [$i/$max] $container -> $st"
+    [ "$st" = "healthy" ] && return 0
+    if [ "$st" = "unhealthy" ]; then
+      echo "  FAILED: $container unhealthy"; docker logs --tail 20 "$container" 2>&1 || true; return 1
     fi
-    if [ "$status" = "unhealthy" ]; then
-      echo "  FAILED: $container is unhealthy"
-      docker logs --tail 20 "$container" 2>&1 || true
-      return 1
-    fi
-    sleep 3
-    i=$((i + 1))
+    sleep 3; i=$((i + 1))
   done
-  echo "  TIMEOUT: $container did not become healthy"
-  docker logs --tail 20 "$container" 2>&1 || true
-  return 1
+  echo "  TIMEOUT: $container"; docker logs --tail 20 "$container" 2>&1 || true; return 1
 }
 
 HEALTH_OK=true
-
 if [ "$TARGET" = "api" ] || [ "$TARGET" = "both" ]; then
-  if ! wait_healthy "rmv-api-$NEXT" 60; then
-    HEALTH_OK=false
-  fi
+  wait_healthy "rmv-api-$NEXT_API" 60 || HEALTH_OK=false
 fi
-
 if [ "$TARGET" = "web" ] || [ "$TARGET" = "both" ]; then
-  if ! wait_healthy "rmv-web-$NEXT" 40; then
-    HEALTH_OK=false
-  fi
+  wait_healthy "rmv-web-$NEXT_WEB" 40 || HEALTH_OK=false
 fi
 
 if [ "$HEALTH_OK" != "true" ]; then
   echo ""
-  echo "ROLLBACK: Health check failed — stopping $NEXT, keeping $CURRENT active"
-  docker compose -f "$COMPOSE_FILE" --profile "$NEXT" stop 2>/dev/null || true
+  echo "ROLLBACK: Health check failed — stopping new containers"
+  [ "$TARGET" = "api" ] || [ "$TARGET" = "both" ] && docker stop "rmv-api-$NEXT_API" 2>/dev/null
+  [ "$TARGET" = "web" ] || [ "$TARGET" = "both" ] && docker stop "rmv-web-$NEXT_WEB" 2>/dev/null
   exit 1
 fi
+echo "All new containers healthy!"
 
-echo "All $NEXT containers healthy!"
-
-# ── Step 4: Switch nginx upstream (THE ZERO-DOWNTIME MOMENT) ────
+# ── Step 4: Switch nginx upstream (ZERO-DOWNTIME CUTOVER) ───────
 echo ""
-echo "[4/5] Switching nginx upstream to $NEXT..."
+echo "[4/5] Switching nginx upstream..."
 
-if [ "$TARGET" = "both" ]; then
-  cat > "$UPSTREAM_FILE" <<EOF
-# Active color: $NEXT (switched at $(date -u +%Y-%m-%dT%H:%M:%SZ))
+# Resolve colors for upstream (handle first-ever deploy where "none")
+UP_API="$NEXT_API"
+UP_WEB="$NEXT_WEB"
+[ "$NEXT_API" = "none" ] && UP_API="$CUR_API"
+[ "$NEXT_WEB" = "none" ] && UP_WEB="$CUR_WEB"
+
+# Save backup of current upstream
+cp "$UPSTREAM_FILE" "$UPSTREAM_FILE.bak" 2>/dev/null || true
+
+cat > "$UPSTREAM_FILE" <<EOF
+# api=$UP_API  web=$UP_WEB  (switched at $(date -u +%Y-%m-%dT%H:%M:%SZ))
 upstream api_upstream {
-  server api-$NEXT:5000;
+  server api-$UP_API:5000;
 }
 
 upstream web_upstream {
-  server web-$NEXT:80;
+  server web-$UP_WEB:80;
 }
 EOF
-elif [ "$TARGET" = "api" ]; then
-  WEB_COLOR="$CURRENT"
-  if [ "$CURRENT" = "none" ]; then WEB_COLOR="$NEXT"; fi
-  cat > "$UPSTREAM_FILE" <<EOF
-# Active: api=$NEXT, web=$WEB_COLOR (switched at $(date -u +%Y-%m-%dT%H:%M:%SZ))
-upstream api_upstream {
-  server api-$NEXT:5000;
-}
 
-upstream web_upstream {
-  server web-$WEB_COLOR:80;
-}
-EOF
-elif [ "$TARGET" = "web" ]; then
-  API_COLOR="$CURRENT"
-  if [ "$CURRENT" = "none" ]; then API_COLOR="$NEXT"; fi
-  cat > "$UPSTREAM_FILE" <<EOF
-# Active: api=$API_COLOR, web=$NEXT (switched at $(date -u +%Y-%m-%dT%H:%M:%SZ))
-upstream api_upstream {
-  server api-$API_COLOR:5000;
-}
-
-upstream web_upstream {
-  server web-$NEXT:80;
-}
-EOF
-fi
-
-# Reload nginx — this is the instant cutover, zero dropped requests
+# Config test
 docker exec rmv-nginx nginx -t 2>&1
 if [ $? -ne 0 ]; then
-  echo "FATAL: nginx config test failed — rolling back upstream"
-  if [ "$CURRENT" != "none" ]; then
-    cat > "$UPSTREAM_FILE" <<EOF
-# Active color: $CURRENT (rollback)
-upstream api_upstream {
-  server api-$CURRENT:5000;
-}
-
-upstream web_upstream {
-  server web-$CURRENT:80;
-}
-EOF
-  fi
-  docker compose -f "$COMPOSE_FILE" --profile "$NEXT" stop 2>/dev/null || true
+  echo "FATAL: nginx config test failed — rolling back"
+  cp "$UPSTREAM_FILE.bak" "$UPSTREAM_FILE" 2>/dev/null || true
+  [ "$TARGET" = "api" ] || [ "$TARGET" = "both" ] && docker stop "rmv-api-$NEXT_API" 2>/dev/null
+  [ "$TARGET" = "web" ] || [ "$TARGET" = "both" ] && docker stop "rmv-web-$NEXT_WEB" 2>/dev/null
   exit 1
 fi
 
 docker exec rmv-nginx nginx -s reload
-echo "Nginx reloaded — traffic now going to $NEXT!"
+echo "Nginx reloaded — traffic switched!"
 
-# ── Step 5: Stop old color + cleanup ─────────────────────────────
+# ── Step 5: Stop OLD containers (only the ones we replaced) ─────
 echo ""
-echo "[5/5] Stopping old $CURRENT containers..."
-if [ "$CURRENT" != "none" ]; then
-  sleep 5  # Let in-flight requests finish
-  docker compose -f "$COMPOSE_FILE" --profile "$CURRENT" stop 2>/dev/null || true
-  docker compose -f "$COMPOSE_FILE" --profile "$CURRENT" rm -f 2>/dev/null || true
-  echo "Old $CURRENT containers stopped."
-else
-  echo "No old containers to stop (first deploy)."
+echo "[5/5] Cleaning up old containers..."
+sleep 5  # Let in-flight requests finish
+
+if [ "$TARGET" = "api" ] || [ "$TARGET" = "both" ]; then
+  if [ "$CUR_API" != "none" ] && [ "$CUR_API" != "$NEXT_API" ]; then
+    docker stop "rmv-api-$CUR_API" 2>/dev/null || true
+    docker rm -f "rmv-api-$CUR_API" 2>/dev/null || true
+    echo "Stopped api-$CUR_API"
+  fi
+fi
+if [ "$TARGET" = "web" ] || [ "$TARGET" = "both" ]; then
+  if [ "$CUR_WEB" != "none" ] && [ "$CUR_WEB" != "$NEXT_WEB" ]; then
+    docker stop "rmv-web-$CUR_WEB" 2>/dev/null || true
+    docker rm -f "rmv-web-$CUR_WEB" 2>/dev/null || true
+    echo "Stopped web-$CUR_WEB"
+  fi
 fi
 
-# Save the new active color
-echo "$NEXT" > "$COLOR_FILE"
+# Save new active colors
+if [ "$TARGET" = "api" ] || [ "$TARGET" = "both" ]; then
+  echo "$NEXT_API" > "/opt/rmv/.color-api"
+fi
+if [ "$TARGET" = "web" ] || [ "$TARGET" = "both" ]; then
+  echo "$NEXT_WEB" > "/opt/rmv/.color-web"
+fi
 
-# Prune old images
+# Clean up backup + old images
+rm -f "$UPSTREAM_FILE.bak"
 docker image prune -f 2>/dev/null || true
 
 echo ""
 echo "========== DEPLOY COMPLETE =========="
-echo "  Active color: $NEXT"
-echo "  $(docker ps --format 'table {{.Names}}\t{{.Status}}' | grep rmv)"
+echo "  API color: $(cat /opt/rmv/.color-api 2>/dev/null || echo none)"
+echo "  Web color: $(cat /opt/rmv/.color-web 2>/dev/null || echo none)"
+echo "  Running:"
+docker ps --format '  {{.Names}}\t{{.Status}}' | grep rmv
 echo "====================================="
 exit 0
