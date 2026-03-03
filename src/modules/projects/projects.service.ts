@@ -473,12 +473,13 @@ export async function generateContract(
 ) {
   const project = await Project.findById(projectId)
     .populate('customerId', 'firstName lastName email phone address signatureKey')
-    .populate('engineerIds', 'firstName lastName phone');
+    .populate('engineerIds', 'firstName lastName phone signatureKey');
 
   if (!project) throw AppError.notFound('Project not found');
 
-  // Must be in PAYMENT_PENDING or later
+  // Must be in APPROVED or later
   const allowedStatuses = [
+    ProjectStatus.APPROVED,
     ProjectStatus.PAYMENT_PENDING,
     ProjectStatus.FABRICATION,
     ProjectStatus.COMPLETED,
@@ -526,6 +527,8 @@ export async function generateContract(
     finishColor: project.finishColor,
     quantity: project.quantity,
     customerSignatureKey: customer.signatureKey || null,
+    engineerSignatureKey: engineers[0]?.signatureKey || null,
+    contractSignedAt: project.contractSignedAt || null,
   };
 
   const { originalKey, copyKey } = await generateAndUploadContract(contractData);
@@ -571,7 +574,7 @@ export async function signContract(
 ) {
   const project = await Project.findById(projectId)
     .populate('customerId', 'firstName lastName email phone address signatureKey')
-    .populate('engineerIds', 'firstName lastName phone');
+    .populate('engineerIds', 'firstName lastName phone signatureKey');
 
   if (!project) throw AppError.notFound('Project not found');
 
@@ -628,6 +631,8 @@ export async function signContract(
         finishColor: project.finishColor,
         quantity: project.quantity,
         customerSignatureKey: input.signatureKey,
+        engineerSignatureKey: engineers[0]?.signatureKey || null,
+        contractSignedAt: project.contractSignedAt,
       };
 
       const { originalKey } = await generateAndUploadContract(contractData);

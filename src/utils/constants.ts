@@ -173,6 +173,7 @@ export enum AuditAction {
   USER_UPDATED = 'user_updated',
   USER_DISABLED = 'user_disabled',
   USER_ENABLED = 'user_enabled',
+  USER_DELETED = 'user_deleted',
 
   // Appointment
   APPOINTMENT_CREATED = 'appointment_created',

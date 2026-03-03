@@ -1,8 +1,8 @@
 ﻿import bcrypt from 'bcryptjs';
-import { User, AuditLog, RefreshToken, SalesAvailability } from '../../models/index.js';
+import { User, AuditLog, RefreshToken, SalesAvailability, Notification, OtpToken } from '../../models/index.js';
 import { AppError, ErrorCode } from '../../utils/appError.js';
 import { AuditAction, Role } from '../../utils/constants.js';
-import type { CreateUserInput, UpdateUserInput, UpdateProfileInput } from './users.validation.js';
+import type { CreateUserInput, UpdateUserInput, UpdateProfileInput, DeleteAccountInput } from './users.validation.js';
 import type { Types } from 'mongoose';
 
 // Admin: Create user
@@ -271,6 +271,43 @@ export async function deleteSignature(userId: string) {
   await user.save();
 
   return { signatureKey: null };
+}
+
+// Self: Delete own account
+export async function deleteAccount(userId: string, input: DeleteAccountInput, ip?: string, ua?: string) {
+  const user = await User.findById(userId).select('+password +provider');
+  if (!user) throw AppError.notFound('User not found');
+
+  // Local users must confirm with their password
+  if (user.provider !== 'google') {
+    if (!input.password) throw AppError.badRequest('Password is required to delete your account', ErrorCode.VALIDATION_ERROR);
+    const isMatch = await bcrypt.compare(input.password, user.password);
+    if (!isMatch) throw AppError.badRequest('Incorrect password', ErrorCode.INVALID_CREDENTIALS);
+  }
+
+  // Soft-delete: mark inactive and set deletedAt
+  user.isActive = false;
+  user.deletedAt = new Date();
+  await user.save();
+
+  // Revoke all sessions
+  await RefreshToken.deleteMany({ userId: user._id });
+
+  // Delete OTP tokens and notifications
+  await OtpToken.deleteMany({ email: user.email });
+  await Notification.deleteMany({ userId: user._id });
+
+  await AuditLog.create({
+    action: AuditAction.USER_DELETED,
+    actorId: user._id,
+    actorEmail: user.email,
+    targetType: 'user',
+    targetId: user._id,
+    ipAddress: ip,
+    userAgent: ua,
+  });
+
+  return { message: 'Account deleted successfully.' };
 }
 
 

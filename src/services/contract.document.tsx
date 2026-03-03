@@ -119,12 +119,14 @@ export interface ContractDocumentProps {
   data: ContractData;
   watermark: 'ORIGINAL' | 'COPY';
   signatureDataUri?: string | null;
+  engineerSignatureDataUri?: string | null;
 }
 
 export const ContractDocument: React.FC<ContractDocumentProps> = ({
   data,
   watermark,
   signatureDataUri,
+  engineerSignatureDataUri,
 }) => {
   const now = new Date();
   const fmtDate = now.toLocaleDateString('en-PH', {
@@ -396,16 +398,42 @@ export const ContractDocument: React.FC<ContractDocumentProps> = ({
             ) : null}
             <View style={s.sigLine} />
             <Text style={s.sigName}>{data.customerName}</Text>
-            <Text style={s.sigRole}>Date: ____________________</Text>
+            <Text style={s.sigRole}>
+              Date:{' '}
+              {data.contractSignedAt
+                ? new Date(data.contractSignedAt).toLocaleDateString('en-PH', {
+                    year: 'numeric',
+                    month: 'long',
+                    day: 'numeric',
+                    timeZone: 'Asia/Manila',
+                  })
+                : '____________________'}
+            </Text>
           </View>
 
           {/* Company */}
           <View style={s.sigBlock}>
             <Text style={{ fontSize: 9, color: '#555' }}>Service Provider:</Text>
+            {engineerSignatureDataUri ? (
+              <Image
+                src={engineerSignatureDataUri}
+                style={{ width: 150, height: 30, marginTop: 8 }}
+              />
+            ) : null}
             <View style={s.sigLine} />
-            <Text style={s.sigName}>Authorized Representative</Text>
+            <Text style={s.sigName}>{data.engineerNames[0] || 'Authorized Representative'}</Text>
             <Text style={s.sigRole}>RMV Stainless Steel Fabrication</Text>
-            <Text style={s.sigRole}>Date: ____________________</Text>
+            <Text style={s.sigRole}>
+              Date:{' '}
+              {data.contractSignedAt
+                ? new Date(data.contractSignedAt).toLocaleDateString('en-PH', {
+                    year: 'numeric',
+                    month: 'long',
+                    day: 'numeric',
+                    timeZone: 'Asia/Manila',
+                  })
+                : '____________________'}
+            </Text>
           </View>
         </View>
 

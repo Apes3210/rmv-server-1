@@ -54,6 +54,12 @@ export const salesAvailabilitySchema = z.object({
   unavailableDates: z.array(z.string().regex(/^\d{4}-\d{2}-\d{2}$/)),
 });
 
+export const deleteAccountSchema = z.object({
+  password: z.string().optional(),
+  confirmation: z.literal('DELETE', { message: 'Type DELETE to confirm' }),
+});
+
 export type CreateUserInput = z.infer<typeof createUserSchema>;
 export type UpdateUserInput = z.infer<typeof updateUserSchema>;
 export type UpdateProfileInput = z.infer<typeof updateProfileSchema>;
+export type DeleteAccountInput = z.infer<typeof deleteAccountSchema>;

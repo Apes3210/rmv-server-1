@@ -4,7 +4,7 @@ import { authenticate } from '../../middleware/auth.js';
 import { authorize } from '../../middleware/rbac.js';
 import { validate } from '../../middleware/validate.js';
 import { Role } from '../../utils/constants.js';
-import { createUserSchema, updateUserSchema, updateProfileSchema, salesAvailabilitySchema } from './users.validation.js';
+import { createUserSchema, updateUserSchema, updateProfileSchema, salesAvailabilitySchema, deleteAccountSchema } from './users.validation.js';
 
 const router = Router();
 
@@ -102,6 +102,14 @@ router.delete(
   '/signature',
   authenticate,
   usersController.deleteSignature,
+);
+
+// ── Account Deletion ──
+router.delete(
+  '/account',
+  authenticate,
+  validate(deleteAccountSchema),
+  usersController.deleteAccount,
 );
 
 export default router;

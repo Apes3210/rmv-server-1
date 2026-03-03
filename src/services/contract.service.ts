@@ -47,6 +47,8 @@ export interface ContractData {
   finishColor?: string;
   quantity: number;
   customerSignatureKey?: string | null;
+  engineerSignatureKey?: string | null;
+  contractSignedAt?: Date | string | null;
   lineItems?: { label: string; length?: number; width?: number; height?: number; quantity?: number; notes?: string }[];
   measurementUnit?: string;
   quotationLineItems?: { label: string; quantity: number; materials: number; labor: number; amount: number }[];
@@ -70,10 +72,19 @@ export async function generateContractPdf(
     }
   }
 
+  let engineerSignatureDataUri: string | null = null;
+  if (data.engineerSignatureKey) {
+    const buf = await downloadR2Buffer(data.engineerSignatureKey);
+    if (buf) {
+      engineerSignatureDataUri = `data:image/png;base64,${buf.toString('base64')}`;
+    }
+  }
+
   const element = React.createElement(ContractDocument, {
     data,
     watermark,
     signatureDataUri,
+    engineerSignatureDataUri,
   });
 
   const pdfBuffer = await renderToBuffer(element as any);

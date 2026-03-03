@@ -605,16 +605,20 @@ export async function confirmEnable2fa(userId: string, otp: string, ip?: string,
 export async function disable2fa(userId: string, input: Disable2faInput, ip?: string, ua?: string) {
   const { password } = input;
 
-  const user = await User.findById(userId).select('+password');
+  const user = await User.findById(userId).select('+password +provider');
   if (!user) throw AppError.notFound('User not found');
 
   if (!user.twoFactorEnabled) {
     throw AppError.badRequest('Two-factor authentication is not enabled');
   }
 
-  const isMatch = await bcrypt.compare(password, user.password);
-  if (!isMatch) {
-    throw AppError.badRequest('Incorrect password', ErrorCode.INVALID_CREDENTIALS);
+  // Google users have no local password — identity already proven by bearer token
+  if (user.provider !== 'google') {
+    if (!password) throw AppError.badRequest('Password is required', ErrorCode.VALIDATION_ERROR);
+    const isMatch = await bcrypt.compare(password, user.password);
+    if (!isMatch) {
+      throw AppError.badRequest('Incorrect password', ErrorCode.INVALID_CREDENTIALS);
+    }
   }
 
   user.twoFactorEnabled = false;

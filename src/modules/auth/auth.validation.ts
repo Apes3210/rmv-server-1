@@ -57,7 +57,7 @@ export const resend2faSchema = z.object({
 });
 
 export const disable2faSchema = z.object({
-  password: z.string().min(1, 'Password is required'),
+  password: z.string().optional(),
 });
 
 export const changePasswordSchema = z.object({
