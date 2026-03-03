@@ -41,6 +41,31 @@ export async function getInstallmentConfig() {
   return { surchargePercent: surcharge, split, stageLabels: labels, stageDescriptions: descriptions };
 }
 
+/**
+ * Get payment activation config — maps payment stage index to fabrication status triggers.
+ * - activationMap: fabrication status that activates (makes due) each stage. null = activate immediately.
+ * - headsUpMap: fabrication status that sends an advance "prepare" notice. null = no heads-up.
+ * - reminderGraceDays: days after activation before first overdue reminder.
+ * - reminderIntervalDays: days between subsequent reminders.
+ * - escalationAfterReminders: number of customer reminders before notifying the cashier.
+ */
+export async function getPaymentActivationConfig() {
+  const [activationMap, headsUpMap, graceDays, intervalDays, escalationCount] = await Promise.all([
+    getConfigValue<(string | null)[]>('payment_activation_map', [null, 'quality_check', 'done']),
+    getConfigValue<(string | null)[]>('payment_headsup_map', [null, 'finishing', 'ready_for_delivery']),
+    getConfigValue<number>('payment_reminder_grace_days', 3),
+    getConfigValue<number>('payment_reminder_interval_days', 2),
+    getConfigValue<number>('payment_escalation_after_reminders', 3),
+  ]);
+  return {
+    activationMap,
+    headsUpMap,
+    reminderGraceDays: graceDays,
+    reminderIntervalDays: intervalDays,
+    escalationAfterReminders: escalationCount,
+  };
+}
+
 export async function listConfigs() {
   return Config.find().sort({ key: 1 });
 }
@@ -356,6 +381,26 @@ export async function seedDefaultConfigs(): Promise<void> {
     installment_stage_descriptions: {
       value: ['Due upon contract signing', 'Due when fabrication is complete', 'Due after installation & acceptance'],
       description: 'Default milestone descriptions for each installment stage',
+    },
+    payment_activation_map: {
+      value: [null, 'quality_check', 'done'],
+      description: 'Fabrication status that activates (makes due) each payment stage. null = activate immediately. Array index corresponds to stage index.',
+    },
+    payment_headsup_map: {
+      value: [null, 'finishing', 'ready_for_delivery'],
+      description: 'Fabrication status that sends an advance "prepare your payment" notice. null = no heads-up.',
+    },
+    payment_reminder_grace_days: {
+      value: 3,
+      description: 'Days after a payment stage is activated before the first overdue reminder is sent',
+    },
+    payment_reminder_interval_days: {
+      value: 2,
+      description: 'Days between subsequent overdue reminders to the customer',
+    },
+    payment_escalation_after_reminders: {
+      value: 3,
+      description: 'Number of customer reminders sent before escalating to the cashier',
     },
   };
 

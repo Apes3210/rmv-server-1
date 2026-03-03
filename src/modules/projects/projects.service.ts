@@ -406,11 +406,29 @@ export async function listProjects(
   ]);
 
   return {
-    items: projects,
+    items: await enrichWithBlueprintStatus(projects),
     total,
     hasMore: page * limit < total,
     pagination: { page, limit, total, pages: Math.ceil(total / limit) },
   };
+}
+
+/** Attach `latestBlueprintStatus` to each project for the list view */
+async function enrichWithBlueprintStatus(projects: any[]) {
+  if (!projects.length) return projects;
+  const projectIds = projects.map((p) => p._id);
+  // One aggregate: get the latest blueprint per project
+  const latestBlueprints = await Blueprint.aggregate([
+    { $match: { projectId: { $in: projectIds } } },
+    { $sort: { version: -1 } },
+    { $group: { _id: '$projectId', status: { $first: '$status' } } },
+  ]);
+  const bpMap = new Map(latestBlueprints.map((b) => [String(b._id), b.status]));
+  return projects.map((p) => {
+    const obj = p.toObject ? p.toObject() : { ...p };
+    obj.latestBlueprintStatus = bpMap.get(String(obj._id)) || null;
+    return obj;
+  });
 }
 
 // ── Add media keys (reference photos) ──

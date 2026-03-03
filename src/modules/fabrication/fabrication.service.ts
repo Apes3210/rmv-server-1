@@ -8,7 +8,10 @@ import {
 } from '../../utils/constants.js';
 import { fabricationStateMachine, projectStateMachine } from '../../utils/stateMachine.js';
 import { createAndSendNotification } from '../notifications/socket.service.js';
-import { sendFabricationUpdateEmail } from '../notifications/email.service.js';
+import { sendFabricationUpdateEmail, sendPaymentHeadsUpEmail, sendPaymentDueEmail } from '../notifications/email.service.js';
+import { getPaymentActivationConfig } from '../config/config.service.js';
+import { formatCurrency } from '../../utils/helpers.js';
+import { logger } from '../../utils/logger.js';
 import type { CreateFabricationUpdateInput } from './fabrication.validation.js';
 
 // ── Per-stage payment gating helpers ──
@@ -133,6 +136,82 @@ export async function createFabricationUpdate(
       status: statusLabels[input.status] || input.status,
       notes: input.notes,
     });
+  }
+
+  // ── Payment Activation: check if this fabrication status triggers payment stages ──
+  if (plan && plan.stages.length > 1) {
+    try {
+      const activationCfg = await getPaymentActivationConfig();
+      const { activationMap, headsUpMap } = activationCfg;
+      let planDirty = false;
+
+      for (let i = 0; i < plan.stages.length; i++) {
+        const stage = plan.stages[i];
+
+        // Skip already activated, verified, or proof-submitted stages
+        if (stage.activatedAt || stage.status === PaymentStageStatus.VERIFIED || stage.status === PaymentStageStatus.PROOF_SUBMITTED) {
+          continue;
+        }
+
+        // ── Activation trigger: stage becomes due ──
+        const activationTrigger = activationMap[i] ?? null;
+        if (activationTrigger && activationTrigger === input.status) {
+          stage.activatedAt = new Date();
+          planDirty = true;
+
+          // Notify customer: payment is now due
+          if (customer) {
+            await createAndSendNotification(
+              project.customerId,
+              NotificationCategory.PAYMENT,
+              'Payment Now Due',
+              `Payment for "${stage.label}" (${formatCurrency(stage.amount)}) is now due for project "${project.title}".`,
+              `/projects/${project._id}/payments`,
+            );
+            await sendPaymentDueEmail(customer.email, {
+              projectTitle: project.title,
+              stageLabel: stage.label,
+              amount: formatCurrency(stage.amount),
+            });
+          }
+
+          logger.info(`Payment stage ${i} (${stage.label}) activated for project ${project._id} at fabrication status ${input.status}`);
+        }
+
+        // ── Heads-up trigger: advance notice (stage stays locked) ──
+        const headsUpTrigger = headsUpMap[i] ?? null;
+        if (headsUpTrigger && headsUpTrigger === input.status && !stage.headsUpSentAt) {
+          stage.headsUpSentAt = new Date();
+          planDirty = true;
+
+          if (customer) {
+            const statusLabel = input.status.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+            await createAndSendNotification(
+              project.customerId,
+              NotificationCategory.PAYMENT,
+              'Upcoming Payment Notice',
+              `Heads up! Payment for "${stage.label}" (${formatCurrency(stage.amount)}) will be due soon for project "${project.title}".`,
+              `/projects/${project._id}/payments`,
+            );
+            await sendPaymentHeadsUpEmail(customer.email, {
+              projectTitle: project.title,
+              stageLabel: stage.label,
+              amount: formatCurrency(stage.amount),
+              fabricationStatus: statusLabel,
+            });
+          }
+
+          logger.info(`Heads-up sent for payment stage ${i} (${stage.label}) of project ${project._id} at fabrication status ${input.status}`);
+        }
+      }
+
+      if (planDirty) {
+        await plan.save();
+      }
+    } catch (err) {
+      // Payment activation errors should NOT block fabrication updates
+      logger.error('Payment activation check failed', err);
+    }
   }
 
   // If fabrication is done, transition project to completed

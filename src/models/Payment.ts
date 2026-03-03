@@ -14,6 +14,12 @@ export interface IPaymentStage {
   amountPaid: number;
   creditApplied: number;
   remainingBalance: number;
+  // ── Payment Activation (fabrication-driven) ──
+  activatedAt?: Date | null; // When stage became due (null = not yet due)
+  headsUpSentAt?: Date | null; // When the advance "prepare" notice was sent
+  remindersSent: number; // How many overdue reminders sent
+  lastReminderAt?: Date | null; // Prevents duplicate reminders
+  escalatedToCashier: boolean; // Whether cashier has been notified
 }
 
 export interface IPaymentPlan extends Document {
@@ -45,6 +51,12 @@ const paymentStageSchema = new Schema<IPaymentStage>(
     amountPaid: { type: Number, default: 0 },
     creditApplied: { type: Number, default: 0 },
     remainingBalance: { type: Number, default: 0 },
+    // Payment activation fields
+    activatedAt: { type: Date, default: null },
+    headsUpSentAt: { type: Date, default: null },
+    remindersSent: { type: Number, default: 0 },
+    lastReminderAt: { type: Date, default: null },
+    escalatedToCashier: { type: Boolean, default: false },
   },
   { _id: false },
 );

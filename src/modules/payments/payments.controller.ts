@@ -109,3 +109,9 @@ export const getReceiptDownloadUrl = asyncHandler(async (req: Request, res: Resp
   );
   res.json({ success: true, data: result });
 });
+
+// ── Cashier: List Overdue Payments ──
+export const listOverduePayments = asyncHandler(async (_req: Request, res: Response) => {
+  const result = await paymentsService.listOverduePayments();
+  res.json({ success: true, data: result });
+});

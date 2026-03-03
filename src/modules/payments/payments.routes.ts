@@ -97,6 +97,14 @@ router.get(
   ctrl.listPendingPayments,
 );
 
+// ── Cashier: Overdue Payments Queue ──
+router.get(
+  '/overdue',
+  authenticate,
+  authorize(Role.CASHIER, Role.ADMIN),
+  ctrl.listOverduePayments,
+);
+
 // ── Read ──
 router.get(
   '/plan/:projectId',

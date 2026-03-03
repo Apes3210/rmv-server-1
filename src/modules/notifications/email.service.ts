@@ -141,6 +141,58 @@ const templates: Record<string, string> = {
       </div>
     </div>
   `,
+  payment_heads_up: `
+    <div style="font-family: Arial, sans-serif; max-width: 500px; margin: 0 auto; padding: 20px;">
+      <div style="text-align: center; padding: 20px; background: #1a1a2e; color: white; border-radius: 8px 8px 0 0;">
+        <h1 style="margin: 0;">RMV Stainless Steel</h1>
+      </div>
+      <div style="padding: 30px; background: #f9f9f9; border-radius: 0 0 8px 8px;">
+        <h2>Upcoming Payment Notice</h2>
+        <p>Hi! This is a friendly heads-up that a payment for your project <strong>{{projectTitle}}</strong> will be due soon.</p>
+        <div style="background: #fff3cd; border: 1px solid #ffc107; border-radius: 8px; padding: 15px; margin: 15px 0;">
+          <p style="margin: 0;"><strong>{{stageLabel}}</strong></p>
+          <p style="margin: 5px 0 0; font-size: 24px; font-weight: bold; color: #1a1a2e;">{{amount}}</p>
+        </div>
+        <p>Fabrication is currently at <strong>{{fabricationStatus}}</strong>. Once it advances to the next stage, this payment will become due.</p>
+        <p style="color: #666;">Please prepare your payment method so you can pay promptly when notified.</p>
+      </div>
+    </div>
+  `,
+  payment_due: `
+    <div style="font-family: Arial, sans-serif; max-width: 500px; margin: 0 auto; padding: 20px;">
+      <div style="text-align: center; padding: 20px; background: #1a1a2e; color: white; border-radius: 8px 8px 0 0;">
+        <h1 style="margin: 0;">RMV Stainless Steel</h1>
+      </div>
+      <div style="padding: 30px; background: #f9f9f9; border-radius: 0 0 8px 8px;">
+        <h2>Payment Now Due</h2>
+        <p>Your project <strong>{{projectTitle}}</strong> has reached a fabrication milestone, and a payment is now due.</p>
+        <div style="background: #d4edda; border: 1px solid #28a745; border-radius: 8px; padding: 15px; margin: 15px 0;">
+          <p style="margin: 0;"><strong>{{stageLabel}}</strong></p>
+          <p style="margin: 5px 0 0; font-size: 24px; font-weight: bold; color: #1a1a2e;">{{amount}}</p>
+        </div>
+        <p>Please submit your payment proof as soon as possible to keep fabrication moving.</p>
+        <p style="color: #666;">You can pay via GCash, bank transfer, or cash at our office.</p>
+      </div>
+    </div>
+  `,
+  payment_overdue: `
+    <div style="font-family: Arial, sans-serif; max-width: 500px; margin: 0 auto; padding: 20px;">
+      <div style="text-align: center; padding: 20px; background: #1a1a2e; color: white; border-radius: 8px 8px 0 0;">
+        <h1 style="margin: 0;">RMV Stainless Steel</h1>
+      </div>
+      <div style="padding: 30px; background: #f9f9f9; border-radius: 0 0 8px 8px;">
+        <h2>Payment Overdue Reminder</h2>
+        <p>This is reminder #{{reminderNumber}} that a payment for your project <strong>{{projectTitle}}</strong> is overdue.</p>
+        <div style="background: #f8d7da; border: 1px solid #dc3545; border-radius: 8px; padding: 15px; margin: 15px 0;">
+          <p style="margin: 0;"><strong>{{stageLabel}}</strong></p>
+          <p style="margin: 5px 0 0; font-size: 24px; font-weight: bold; color: #dc3545;">{{amount}}</p>
+          <p style="margin: 5px 0 0; color: #666;">Due since {{dueDate}}</p>
+        </div>
+        <p><strong>Please submit your payment immediately.</strong> Continued delays may affect your fabrication timeline.</p>
+        <p style="color: #666;">Contact us if you need assistance with payment arrangements.</p>
+      </div>
+    </div>
+  `,
 };
 
 // Compile templates
@@ -289,6 +341,27 @@ export async function sendFabricationUpdateEmail(
 
 export async function send2faEmail(to: string, otp: string): Promise<void> {
   await sendEmail(to, 'Login Verification Code - RMV Stainless Steel', 'login_2fa', { otp });
+}
+
+export async function sendPaymentHeadsUpEmail(
+  to: string,
+  data: { projectTitle: string; stageLabel: string; amount: string; fabricationStatus: string },
+): Promise<void> {
+  await sendEmail(to, `Upcoming Payment Notice - ${data.projectTitle}`, 'payment_heads_up', data);
+}
+
+export async function sendPaymentDueEmail(
+  to: string,
+  data: { projectTitle: string; stageLabel: string; amount: string },
+): Promise<void> {
+  await sendEmail(to, `Payment Now Due - ${data.projectTitle}`, 'payment_due', data);
+}
+
+export async function sendPaymentOverdueEmail(
+  to: string,
+  data: { projectTitle: string; stageLabel: string; amount: string; dueDate: string; reminderNumber: number },
+): Promise<void> {
+  await sendEmail(to, `Payment Overdue Reminder #${data.reminderNumber} - ${data.projectTitle}`, 'payment_overdue', data);
 }
 
 // Retry processor (called by cron or startup)

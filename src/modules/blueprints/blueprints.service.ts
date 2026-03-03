@@ -124,7 +124,7 @@ export async function uploadRevision(
   currentBlueprint.status = BlueprintStatus.REVISION_UPLOADED;
   await currentBlueprint.save();
 
-  // Create new version
+  // Create new version (carry over quotation if provided, otherwise keep previous)
   const blueprint = await Blueprint.create({
     projectId: currentBlueprint.projectId,
     version: newVersion,
@@ -133,6 +133,7 @@ export async function uploadRevision(
     designKey: input.designKey,
     costingKey: input.costingKey,
     uploadedBy,
+    quotation: input.quotation ?? currentBlueprint.quotation,
   });
 
   await AuditLog.create({
@@ -427,6 +428,7 @@ export async function acceptBlueprint(
       amountPaid: 0,
       creditApplied: 0,
       remainingBalance: finalTotal,
+      activatedAt: new Date(), // Full payment is immediately due
     }];
   } else {
     stages = installmentConfig.split.map((pct, idx) => {
@@ -442,14 +444,15 @@ export async function acceptBlueprint(
         amountPaid: 0,
         creditApplied: 0,
         remainingBalance: amount,
+        activatedAt: idx === 0 ? new Date() : null, // Stage 1 (down payment) is immediately due; others wait for fabrication
       };
     });
   }
 
-  // Check no existing plan
+  // If a plan already exists (e.g. retry / double-submit), return it idempotently
   const existingPlan = await PaymentPlan.findOne({ projectId: project._id });
   if (existingPlan) {
-    throw AppError.conflict('A payment plan already exists for this project', ErrorCode.DUPLICATE_ENTRY);
+    return { blueprint, paymentPlan: existingPlan };
   }
 
   const plan = await PaymentPlan.create({

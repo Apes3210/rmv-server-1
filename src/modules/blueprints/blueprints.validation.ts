@@ -1,38 +1,41 @@
 import { z } from 'zod';
 import { BlueprintComponent } from '../../utils/constants.js';
 
+const quotationSchema = z.object({
+  materials: z.number().min(0),
+  labor: z.number().min(0),
+  fees: z.number().min(0),
+  total: z.number().min(0),
+  lineItems: z.array(z.object({
+    label: z.string().min(1).max(200),
+    quantity: z.number().min(1),
+    materials: z.number().min(0),
+    labor: z.number().min(0),
+    amount: z.number().min(0),
+  })).optional(),
+  validityDays: z.number().min(1).max(365).optional(),
+  breakdown: z.string().max(5000).optional(),
+  estimatedDuration: z.string().max(200).optional(),
+  engineerNotes: z.string().max(3000).optional(),
+  paymentMilestones: z.array(z.object({
+    label: z.string().min(1).max(200),
+    description: z.string().min(1).max(500),
+  })).max(6).optional(),
+});
+
 export const uploadBlueprintSchema = z.object({
   projectId: z.string().min(1),
   blueprintKey: z.string().min(1),
   designKey: z.string().min(1),
   costingKey: z.string().min(1),
-  quotation: z.object({
-    materials: z.number().min(0),
-    labor: z.number().min(0),
-    fees: z.number().min(0),
-    total: z.number().min(0),
-    lineItems: z.array(z.object({
-      label: z.string().min(1).max(200),
-      quantity: z.number().min(1),
-      materials: z.number().min(0),
-      labor: z.number().min(0),
-      amount: z.number().min(0),
-    })).optional(),
-    validityDays: z.number().min(1).max(365).optional(),
-    breakdown: z.string().max(5000).optional(),
-    estimatedDuration: z.string().max(200).optional(),
-    engineerNotes: z.string().max(3000).optional(),
-    paymentMilestones: z.array(z.object({
-      label: z.string().min(1).max(200),
-      description: z.string().min(1).max(500),
-    })).max(6).optional(),
-  }).optional(),
+  quotation: quotationSchema.optional(),
 });
 
 export const revisionUploadSchema = z.object({
   blueprintKey: z.string().min(1),
   designKey: z.string().min(1),
   costingKey: z.string().min(1),
+  quotation: quotationSchema.optional(),
 });
 
 export const approveBlueprintSchema = z.object({

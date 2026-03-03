@@ -82,6 +82,7 @@ export async function createPaymentPlan(
       amountPaid: isZero ? amount : 0,
       creditApplied: 0,
       remainingBalance: isZero ? 0 : amount,
+      activatedAt: (idx === 0 || isZero) ? new Date() : null, // Stage 1 immediately due; others wait for fabrication
     };
   });
 
@@ -156,6 +157,11 @@ export async function updatePaymentPlan(
         amountPaid: isZero ? amount : 0,
         creditApplied: 0,
         remainingBalance: isZero ? 0 : amount,
+        activatedAt: idx === 0 ? new Date() : null,
+        headsUpSentAt: null,
+        remindersSent: 0,
+        lastReminderAt: null,
+        escalatedToCashier: false,
       };
     });
   }
@@ -206,6 +212,9 @@ export async function submitPaymentProof(
   if (![PaymentStageStatus.PENDING, PaymentStageStatus.DECLINED].includes(stage.status)) {
     throw AppError.badRequest('This stage is not accepting payments');
   }
+
+  // If stage isn't activated yet, allow payment but log it as advance
+  // (badges stay informational; customer can pay early)
 
   const payment = await Payment.create({
     projectId: plan.projectId,
@@ -665,6 +674,8 @@ export async function createStageCheckout(
     throw AppError.badRequest('This stage is not accepting payments');
   }
 
+  // Allow advance payments — badges stay informational, no hard block
+
   const remaining = stage.remainingBalance > 0 ? stage.remainingBalance : stage.amount;
 
   // Dev override: ₱1 flat for testing (same pattern as ocular fee)
@@ -1066,4 +1077,73 @@ export async function getReceiptDownloadUrl(
 
   const url = await generateDownloadUrl(payment.receiptKey);
   return { url, key: payment.receiptKey };
+}
+
+// ── Cashier: List Overdue Payments ──
+
+export async function listOverduePayments() {
+  const plans = await PaymentPlan.find({
+    'stages': {
+      $elemMatch: {
+        activatedAt: { $ne: null },
+        status: { $in: [PaymentStageStatus.PENDING, PaymentStageStatus.DECLINED] },
+      },
+    },
+  }).populate('projectId', 'title customerId');
+
+  const overdueStages: Array<{
+    projectId: string;
+    projectTitle: string;
+    customerId: string;
+    customerName: string;
+    stageId: string;
+    stageLabel: string;
+    amount: number;
+    activatedAt: Date;
+    daysSinceActivation: number;
+    remindersSent: number;
+    escalatedToCashier: boolean;
+  }> = [];
+
+  const now = new Date();
+
+  for (const plan of plans) {
+    const project = plan.projectId as any;
+    if (!project?._id) continue;
+
+    const customer = await User.findById(project.customerId).select('firstName lastName');
+    const customerName = customer ? `${customer.firstName} ${customer.lastName}` : 'Unknown';
+
+    for (const stage of plan.stages) {
+      if (
+        !stage.activatedAt ||
+        stage.status === PaymentStageStatus.VERIFIED ||
+        stage.status === PaymentStageStatus.PROOF_SUBMITTED
+      ) {
+        continue;
+      }
+
+      const daysSinceActivation = Math.floor(
+        (now.getTime() - new Date(stage.activatedAt).getTime()) / (1000 * 60 * 60 * 24),
+      );
+
+      overdueStages.push({
+        projectId: project._id.toString(),
+        projectTitle: project.title,
+        customerId: project.customerId.toString(),
+        customerName,
+        stageId: stage.stageId,
+        stageLabel: stage.label,
+        amount: stage.amount,
+        activatedAt: stage.activatedAt,
+        daysSinceActivation,
+        remindersSent: stage.remindersSent,
+        escalatedToCashier: stage.escalatedToCashier,
+      });
+    }
+  }
+
+  // Sort by most overdue first
+  overdueStages.sort((a, b) => b.daysSinceActivation - a.daysSinceActivation);
+  return overdueStages;
 }

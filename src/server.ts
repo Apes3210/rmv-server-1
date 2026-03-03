@@ -4,6 +4,7 @@ import { env } from './config/env.js';
 import { connectDB } from './config/database.js';
 import { initializeSocket } from './modules/notifications/socket.service.js';
 import { processEmailRetries } from './modules/notifications/email.service.js';
+import { processPaymentReminders } from './jobs/paymentReminders.js';
 import { seedDefaultConfigs } from './modules/config/config.service.js';
 import { logger } from './utils/logger.js';
 
@@ -14,6 +15,8 @@ initializeSocket(server);
 
 // ── Email Retry Processor (every 2 minutes) ──
 let emailRetryInterval: NodeJS.Timeout;
+// ── Payment Reminder Processor (every hour) ──
+let paymentReminderInterval: NodeJS.Timeout;
 
 async function startServer(): Promise<void> {
   try {
@@ -32,6 +35,15 @@ async function startServer(): Promise<void> {
         logger.error('Email retry processor error:', error);
       }
     }, 2 * 60 * 1000); // every 2 minutes
+
+    // Start payment reminder processor
+    paymentReminderInterval = setInterval(async () => {
+      try {
+        await processPaymentReminders();
+      } catch (error) {
+        logger.error('Payment reminder processor error:', error);
+      }
+    }, 60 * 60 * 1000); // every hour
 
     // Start HTTP server
     server.listen(env.PORT, () => {
@@ -55,6 +67,9 @@ function gracefulShutdown(signal: string): void {
     // Clear retry interval
     if (emailRetryInterval) {
       clearInterval(emailRetryInterval);
+    }
+    if (paymentReminderInterval) {
+      clearInterval(paymentReminderInterval);
     }
 
     // Close MongoDB connection
