@@ -7,12 +7,12 @@ import {
   FabricationStatus, PaymentStageStatus, ProjectStatus, AuditAction, NotificationCategory, Role,
 } from '../../utils/constants.js';
 import { fabricationStateMachine, projectStateMachine } from '../../utils/stateMachine.js';
-import { createAndSendNotification } from '../notifications/socket.service.js';
-import { sendFabricationUpdateEmail, sendPaymentHeadsUpEmail, sendPaymentDueEmail } from '../notifications/email.service.js';
+import { createAndSendNotification, getIO } from '../notifications/socket.service.js';
+import { sendFabricationUpdateEmail, sendPaymentHeadsUpEmail, sendPaymentDueEmail, sendReadyForDeliveryEmail, sendProjectCompletedEmail } from '../notifications/email.service.js';
 import { getPaymentActivationConfig } from '../config/config.service.js';
 import { formatCurrency } from '../../utils/helpers.js';
 import { logger } from '../../utils/logger.js';
-import type { CreateFabricationUpdateInput } from './fabrication.validation.js';
+import type { CreateFabricationUpdateInput, UpdateFabricationUpdateInput } from './fabrication.validation.js';
 
 // ── Per-stage payment gating helpers ──
 
@@ -123,19 +123,63 @@ export async function createFabricationUpdate(
       [FabricationStatus.DONE]: 'Done',
     };
 
-    await createAndSendNotification(
-      project.customerId,
-      NotificationCategory.FABRICATION,
-      'Fabrication Update',
-      `Your project "${project.title}" is now in: ${statusLabels[input.status] || input.status}`,
-      `/projects/${project._id}/fabrication`,
-    );
+    if (input.status === FabricationStatus.READY_FOR_DELIVERY) {
+      // Dedicated high-priority notification + email with CTA
+      await createAndSendNotification(
+        project.customerId,
+        NotificationCategory.PROJECT,
+        'Your Project is Ready for Delivery!',
+        `"${project.title}" has completed fabrication. Please confirm your installation schedule to proceed.`,
+        `/projects/${project._id}/fabrication`,
+      );
+      await sendReadyForDeliveryEmail(customer.email, { projectTitle: project.title });
+    } else if (input.status === FabricationStatus.DONE) {
+      // Completion notification + email
+      await createAndSendNotification(
+        project.customerId,
+        NotificationCategory.PROJECT,
+        'Project Complete!',
+        `Your project "${project.title}" has been successfully installed and is now complete.`,
+        `/projects/${project._id}`,
+      );
+      await sendProjectCompletedEmail(customer.email, { projectTitle: project.title });
+    } else {
+      // Generic fabrication progress update
+      await createAndSendNotification(
+        project.customerId,
+        NotificationCategory.FABRICATION,
+        'Fabrication Update',
+        `Your project "${project.title}" is now in: ${statusLabels[input.status] || input.status}`,
+        `/projects/${project._id}/fabrication`,
+      );
+      await sendFabricationUpdateEmail(customer.email, {
+        projectTitle: project.title,
+        status: statusLabels[input.status] || input.status,
+        notes: input.notes,
+      });
+    }
+  }
 
-    await sendFabricationUpdateEmail(customer.email, {
-      projectTitle: project.title,
-      status: statusLabels[input.status] || input.status,
-      notes: input.notes,
-    });
+  // ── Emit real-time event to all project stakeholders ──
+  try {
+    const io = getIO();
+    const projectIdStr = String(project._id);
+    const rooms = new Set<string>();
+    rooms.add(`user:${project.customerId}`);
+    if (project.fabricationLeadId && project.fabricationLeadId.toString() !== actorId) {
+      rooms.add(`user:${project.fabricationLeadId}`);
+    }
+    for (const id of (project.fabricationAssistantIds || [])) {
+      if (id.toString() !== actorId) rooms.add(`user:${id}`);
+    }
+    for (const id of ((project as any).engineerIds || [])) {
+      if (id.toString() !== actorId) rooms.add(`user:${id}`);
+    }
+    for (const room of rooms) {
+      io.to(room).emit('fabrication:update', { projectId: projectIdStr });
+    }
+  } catch (err) {
+    logger.warn('Failed to emit fabrication:update socket event', err);
   }
 
   // ── Payment Activation: check if this fabrication status triggers payment stages ──
@@ -216,6 +260,13 @@ export async function createFabricationUpdate(
 
   // If fabrication is done, transition project to completed
   if (input.status === FabricationStatus.DONE) {
+    // ── Installation confirmation gate ──
+    if (!(project as any).installationConfirmedAt) {
+      throw AppError.badRequest(
+        'Customer must confirm the installation schedule before marking the project as Done',
+      );
+    }
+
     projectStateMachine.assertTransition(project.status, ProjectStatus.COMPLETED);
     project.status = ProjectStatus.COMPLETED;
     await project.save();
@@ -231,6 +282,102 @@ export async function createFabricationUpdate(
   }
 
   return update;
+}
+
+// ── Edit a Fabrication Update (notes + photos only, author or admin) ──
+
+export async function updateFabricationUpdate(
+  id: string,
+  input: UpdateFabricationUpdateInput,
+  actorId: string,
+  actorRoles: Role[],
+) {
+  const update = await FabricationUpdate.findById(id);
+  if (!update) throw AppError.notFound('Fabrication update not found');
+
+  const isAdmin = actorRoles.includes(Role.ADMIN);
+  if (!isAdmin && update.updatedBy.toString() !== actorId) {
+    throw AppError.forbidden('You can only edit your own updates');
+  }
+
+  if (input.notes !== undefined) update.notes = input.notes;
+  if (input.photoKeys !== undefined) update.photoKeys = input.photoKeys;
+  await update.save();
+
+  await AuditLog.create({
+    action: AuditAction.FABRICATION_UPDATED,
+    actorId,
+    targetType: 'fabrication_update',
+    targetId: update._id,
+    details: { edited: true, changes: input },
+  });
+
+  // Notify stakeholders in real-time
+  try {
+    const io = getIO();
+    const project = await Project.findById(update.projectId)
+      .select('customerId fabricationLeadId fabricationAssistantIds engineerIds');
+    if (project) {
+      const rooms = new Set<string>();
+      rooms.add(`user:${project.customerId}`);
+      if (project.fabricationLeadId) rooms.add(`user:${project.fabricationLeadId}`);
+      for (const sid of (project.fabricationAssistantIds || [])) rooms.add(`user:${sid}`);
+      for (const sid of ((project as any).engineerIds || [])) rooms.add(`user:${sid}`);
+      rooms.delete(`user:${actorId}`);
+      for (const room of rooms) io.to(room).emit('fabrication:update', { projectId: String(update.projectId) });
+    }
+  } catch (err) {
+    logger.warn('Failed to emit fabrication:update on edit', err);
+  }
+
+  return update;
+}
+
+// ── Delete a Fabrication Update (author or admin only) ──
+
+export async function deleteFabricationUpdate(
+  id: string,
+  actorId: string,
+  actorRoles: Role[],
+) {
+  const update = await FabricationUpdate.findById(id);
+  if (!update) throw AppError.notFound('Fabrication update not found');
+
+  const isAdmin = actorRoles.includes(Role.ADMIN);
+  if (!isAdmin && update.updatedBy.toString() !== actorId) {
+    throw AppError.forbidden('You can only delete your own updates');
+  }
+
+  const projectId = String(update.projectId);
+  await FabricationUpdate.findByIdAndDelete(id);
+
+  await AuditLog.create({
+    action: AuditAction.FABRICATION_UPDATED,
+    actorId,
+    targetType: 'fabrication_update',
+    targetId: update._id,
+    details: { deleted: true },
+  });
+
+  // Notify stakeholders in real-time
+  try {
+    const io = getIO();
+    const project = await Project.findById(projectId)
+      .select('customerId fabricationLeadId fabricationAssistantIds engineerIds');
+    if (project) {
+      const rooms = new Set<string>();
+      rooms.add(`user:${project.customerId}`);
+      if (project.fabricationLeadId) rooms.add(`user:${project.fabricationLeadId}`);
+      for (const sid of (project.fabricationAssistantIds || [])) rooms.add(`user:${sid}`);
+      for (const sid of ((project as any).engineerIds || [])) rooms.add(`user:${sid}`);
+      rooms.delete(`user:${actorId}`);
+      for (const room of rooms) io.to(room).emit('fabrication:update', { projectId });
+    }
+  } catch (err) {
+    logger.warn('Failed to emit fabrication:update on delete', err);
+  }
+
+  return { id };
 }
 
 // ── List Fabrication Updates for a Project ──

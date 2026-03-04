@@ -391,11 +391,13 @@ export async function confirmAppointment(
   appointmentStateMachine.assertTransition(appointment.status, AppointmentStatus.CONFIRMED);
 
   // Block confirmation for non-NCR ocular appointments if the ocular fee hasn't been paid
+  // Exception: if customer chose cash, the sales staff will collect it during the visit
   if (
     appointment.type === AppointmentType.OCULAR &&
     appointment.ocularFeeBreakdown &&
     !appointment.ocularFeeBreakdown.isWithinNCR &&
-    !appointment.ocularFeePaid
+    !appointment.ocularFeePaid &&
+    appointment.ocularFeePaymentChoice !== OcularFeePaymentChoice.CASH
   ) {
     throw AppError.badRequest(
       'Ocular fee must be paid before confirming this appointment. The location is outside Metro Manila.',

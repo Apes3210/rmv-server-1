@@ -1,6 +1,6 @@
 import {
   Project, Payment, PaymentPlan, Appointment,
-  FabricationUpdate, User, CashCollection, AuditLog, VisitReport,
+  FabricationUpdate, User, CashCollection, AuditLog, VisitReport, Blueprint,
 } from '../../models/index.js';
 import {
   ProjectStatus, PaymentStageStatus, FabricationStatus,
@@ -392,6 +392,9 @@ export async function getDashboardSummary(userId?: string, userRoles?: string[])
       totalAppointmentsToday,
       fabricationInProgress,
       pendingVisitReports,
+      pendingCashPayments,
+      totalUsers,
+      pendingBlueprints,
     ] = await Promise.all([
       Project.countDocuments({ deletedAt: null, ...customerProjectFilter }).exec(),
       Project.countDocuments({
@@ -435,6 +438,17 @@ export async function getDashboardSummary(userId?: string, userRoles?: string[])
             status: { $in: ['draft', 'returned'] },
           }).exec()
         : Promise.resolve(0),
+      // Count appointments with pending cash payment (scoped to sales staff)
+      Appointment.countDocuments({
+        ocularFeeStatus: 'cash_pending',
+        ...(userRoles?.includes(Role.SALES_STAFF) && !userRoles?.includes(Role.ADMIN) && userId
+          ? { salesStaffId: userId }
+          : {}),
+      }).exec(),
+      // Admin-only: total active users
+      User.countDocuments({ isActive: true }).exec(),
+      // Admin-only: blueprints pending customer review
+      Blueprint.countDocuments({ status: { $in: ['uploaded', 'revision_uploaded'] } }).exec(),
     ]);
 
     const revenueThisMonth = revenueResult?.[0]?.total ?? 0;
@@ -455,6 +469,9 @@ export async function getDashboardSummary(userId?: string, userRoles?: string[])
       fabricationInProgress,
       conversionRate,
       pendingVisitReports,
+      pendingCashPayments,
+      totalUsers,
+      pendingBlueprints,
     };
   } catch (error) {
     console.error('getDashboardSummary error:', error);
@@ -472,6 +489,9 @@ export async function getDashboardSummary(userId?: string, userRoles?: string[])
       fabricationInProgress: 0,
       conversionRate: 0,
       pendingVisitReports: 0,
+      pendingCashPayments: 0,
+      totalUsers: 0,
+      pendingBlueprints: 0,
     };
   }
 }

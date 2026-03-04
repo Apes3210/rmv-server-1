@@ -95,6 +95,14 @@ router.post(
   ctrl.signContract,
 );
 
+// ── Installation Confirmation ──
+router.post(
+  '/:id/confirm-installation',
+  authenticate,
+  authorize(Role.CUSTOMER, Role.ADMIN),
+  ctrl.confirmInstallation,
+);
+
 // ── Read ──
 router.get(
   '/by-visit-report/:visitReportId',

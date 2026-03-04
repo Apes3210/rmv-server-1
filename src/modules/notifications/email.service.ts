@@ -126,6 +126,45 @@ const templates: Record<string, string> = {
       </div>
     </div>
   `,
+  ready_for_delivery: `
+    <div style="font-family: Arial, sans-serif; max-width: 500px; margin: 0 auto; padding: 20px;">
+      <div style="text-align: center; padding: 20px; background: #1a1a2e; color: white; border-radius: 8px 8px 0 0;">
+        <h1 style="margin: 0;">RMV Stainless Steel</h1>
+      </div>
+      <div style="padding: 30px; background: #f9f9f9; border-radius: 0 0 8px 8px;">
+        <h2 style="color: #1a1a2e;">🎉 Your Project is Ready for Delivery!</h2>
+        <p>Great news! Your project <strong>{{projectTitle}}</strong> has completed fabrication and is now ready for installation.</p>
+        <div style="background: #d4edda; border: 1px solid #28a745; border-radius: 8px; padding: 20px; margin: 20px 0; text-align: center;">
+          <p style="margin: 0; font-size: 18px; font-weight: bold; color: #1a1a2e;">Action Required</p>
+          <p style="margin: 8px 0 0; color: #333;">Please confirm your installation schedule so our team can proceed.</p>
+        </div>
+        <p><strong>What happens next:</strong></p>
+        <ol style="color: #555; line-height: 1.8;">
+          <li>Log in to your project portal</li>
+          <li>Open project <strong>{{projectTitle}}</strong></li>
+          <li>Tap <strong>"Confirm Installation"</strong> on the Fabrication tab</li>
+          <li>Our team will coordinate the installation date with you</li>
+        </ol>
+        <p style="color: #666; font-size: 13px;">We cannot proceed with installation without your confirmation. Please confirm at your earliest convenience.</p>
+      </div>
+    </div>
+  `,
+  project_completed: `
+    <div style="font-family: Arial, sans-serif; max-width: 500px; margin: 0 auto; padding: 20px;">
+      <div style="text-align: center; padding: 20px; background: #1a1a2e; color: white; border-radius: 8px 8px 0 0;">
+        <h1 style="margin: 0;">RMV Stainless Steel</h1>
+      </div>
+      <div style="padding: 30px; background: #f9f9f9; border-radius: 0 0 8px 8px;">
+        <h2 style="color: #1a1a2e;">✅ Project Complete!</h2>
+        <p>Your project <strong>{{projectTitle}}</strong> has been successfully installed and is now complete.</p>
+        <div style="background: #d4edda; border: 1px solid #28a745; border-radius: 8px; padding: 15px; margin: 15px 0; text-align: center;">
+          <p style="margin: 0; font-weight: bold; color: #155724;">Installation Completed</p>
+        </div>
+        <p>Thank you for trusting RMV Stainless Steel for your fabrication needs. We hope you are satisfied with the result!</p>
+        <p style="color: #666; font-size: 13px;">If you have any concerns about the installation, please contact us within 7 days.</p>
+      </div>
+    </div>
+  `,
   login_2fa: `
     <div style="font-family: Arial, sans-serif; max-width: 500px; margin: 0 auto; padding: 20px;">
       <div style="text-align: center; padding: 20px; background: #1a1a2e; color: white; border-radius: 8px 8px 0 0;">
@@ -337,6 +376,20 @@ export async function sendFabricationUpdateEmail(
   data: { projectTitle: string; status: string; notes: string },
 ): Promise<void> {
   await sendEmail(to, 'Fabrication Update - RMV Stainless Steel', 'fabrication_update', data);
+}
+
+export async function sendReadyForDeliveryEmail(
+  to: string,
+  data: { projectTitle: string },
+): Promise<void> {
+  await sendEmail(to, `🎉 Your Project is Ready for Delivery — ${data.projectTitle}`, 'ready_for_delivery', data);
+}
+
+export async function sendProjectCompletedEmail(
+  to: string,
+  data: { projectTitle: string },
+): Promise<void> {
+  await sendEmail(to, `✅ Project Complete — ${data.projectTitle}`, 'project_completed', data);
 }
 
 export async function send2faEmail(to: string, otp: string): Promise<void> {

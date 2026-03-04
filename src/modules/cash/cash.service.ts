@@ -1,8 +1,8 @@
 import {
   CashCollection, CashDiscrepancy, Appointment, AuditLog,
 } from '../../models/index.js';
-import { AppError } from '../../utils/appError.js';
-import { CashCollectionStatus, AuditAction, NotificationCategory, Role } from '../../utils/constants.js';
+import { AppError, ErrorCode } from '../../utils/appError.js';
+import { CashCollectionStatus, AuditAction, NotificationCategory, Role, AppointmentStatus } from '../../utils/constants.js';
 import { createAndSendNotification, notifyRole } from '../notifications/socket.service.js';
 import { formatCurrency } from '../../utils/helpers.js';
 import type {
@@ -22,6 +22,15 @@ export async function recordCashCollection(
 ) {
   const appointment = await Appointment.findById(input.appointmentId);
   if (!appointment) throw AppError.notFound('Appointment not found');
+
+  // Only allow recording when appointment is on_the_way or completed
+  const allowedStatuses = [AppointmentStatus.ON_THE_WAY, AppointmentStatus.COMPLETED];
+  if (!allowedStatuses.includes(appointment.status as AppointmentStatus)) {
+    throw AppError.badRequest(
+      'You can only record cash payment when the appointment status is "On The Way" or "Completed".',
+      ErrorCode.VALIDATION_ERROR,
+    );
+  }
 
   // Hard-block: if this is for a cash_pending ocular fee, amount must match exactly
   if (appointment.ocularFeeStatus === 'cash_pending' && appointment.ocularFee) {
@@ -247,4 +256,45 @@ export async function listDiscrepancies(query: {
   ]);
 
   return discrepancies;
+}
+
+// ── List Pending Cash Appointments (for Sales Staff) ──
+
+export async function listPendingCashAppointments(actorId: string, actorRoles: Role[]) {
+  const filter: Record<string, unknown> = {
+    ocularFeeStatus: 'cash_pending',
+  };
+
+  // Sales staff see only their own assigned appointments
+  if (actorRoles.includes(Role.SALES_STAFF) && !actorRoles.some(r => [Role.ADMIN, Role.CASHIER].includes(r))) {
+    filter.salesStaffId = actorId;
+  }
+
+  const appointments = await Appointment.find(filter)
+    .populate('customerId', 'firstName lastName email phone')
+    .populate('salesStaffId', 'firstName lastName')
+    .sort({ date: 1 })
+    .lean();
+
+  return appointments.map((a: any) => {
+    const customer = a.customerId && typeof a.customerId === 'object' ? a.customerId : null;
+    const salesStaff = a.salesStaffId && typeof a.salesStaffId === 'object' ? a.salesStaffId : null;
+    return {
+      _id: a._id,
+      date: a.date,
+      slotCode: a.slotCode,
+      status: a.status,
+      type: a.type,
+      ocularFee: a.ocularFee,
+      ocularFeeStatus: a.ocularFeeStatus,
+      ocularFeeBreakdown: a.ocularFeeBreakdown,
+      formattedAddress: a.formattedAddress || a.customerAddress,
+      customerId: customer?._id || a.customerId,
+      customerName: customer ? `${customer.firstName} ${customer.lastName}` : undefined,
+      customerEmail: customer?.email,
+      customerPhone: customer?.phone,
+      salesStaffId: salesStaff?._id || a.salesStaffId,
+      salesStaffName: salesStaff ? `${salesStaff.firstName} ${salesStaff.lastName}` : undefined,
+    };
+  });
 }

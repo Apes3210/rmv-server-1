@@ -4,7 +4,7 @@ import { authenticate } from '../../middleware/auth.js';
 import { authorize } from '../../middleware/rbac.js';
 import { validate } from '../../middleware/validate.js';
 import { Role } from '../../utils/constants.js';
-import { createFabricationUpdateSchema } from './fabrication.validation.js';
+import { createFabricationUpdateSchema, updateFabricationUpdateSchema } from './fabrication.validation.js';
 
 const router = Router();
 
@@ -34,6 +34,22 @@ router.get(
   '/:id',
   authenticate,
   ctrl.getFabricationUpdateById,
+);
+
+// ── Edit / Delete ──
+router.patch(
+  '/:id',
+  authenticate,
+  authorize(Role.FABRICATION_STAFF, Role.ENGINEER, Role.ADMIN),
+  validate(updateFabricationUpdateSchema),
+  ctrl.updateFabricationUpdate,
+);
+
+router.delete(
+  '/:id',
+  authenticate,
+  authorize(Role.FABRICATION_STAFF, Role.ENGINEER, Role.ADMIN),
+  ctrl.deleteFabricationUpdate,
 );
 
 export default router;

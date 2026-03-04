@@ -39,6 +39,8 @@ export interface IProject extends Document {
   contractSignatureKey?: string;
   originalContractDownloadedAt?: Date; // one-time original download tracking
 
+  installationConfirmedAt?: Date;
+
   deletedAt?: Date;
   createdAt: Date;
   updatedAt: Date;
@@ -85,6 +87,8 @@ const projectSchema = new Schema<IProject>(
     contractSignedAt: { type: Date },
     contractSignatureKey: { type: String },
     originalContractDownloadedAt: { type: Date, default: null },
+
+    installationConfirmedAt: { type: Date, default: null },
 
     deletedAt: { type: Date, default: null },
   },

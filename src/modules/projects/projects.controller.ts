@@ -83,3 +83,12 @@ export const signContract = asyncHandler(async (req: Request, res: Response) => 
   );
   res.json({ success: true, data: project });
 });
+
+export const confirmInstallation = asyncHandler(async (req: Request, res: Response) => {
+  const project = await projectsService.confirmInstallation(
+    req.params.id as string,
+    req.userId!,
+    req.userRoles!,
+  );
+  res.json({ success: true, data: project });
+});

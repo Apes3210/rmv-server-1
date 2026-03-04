@@ -717,3 +717,67 @@ export async function getContractDownloadUrl(
 
   return { url, key, originalDownloaded: !!project.originalContractDownloadedAt };
 }
+
+// ── Customer: Confirm Installation Schedule ──
+
+export async function confirmInstallation(
+  projectId: string,
+  actorId: string,
+  actorRoles: Role[],
+) {
+  const project = await Project.findById(projectId)
+    .populate('customerId', 'firstName lastName email')
+    .populate('fabricationLeadId', '_id firstName lastName');
+  if (!project) throw AppError.notFound('Project not found');
+
+  if (project.status !== ProjectStatus.FABRICATION) {
+    throw AppError.badRequest('Project is not currently in the fabrication phase');
+  }
+
+  const isAdmin = actorRoles.includes(Role.ADMIN);
+  const isCustomer = actorRoles.includes(Role.CUSTOMER) && project.customerId._id?.toString() === actorId;
+
+  if (!isAdmin && !isCustomer) {
+    throw AppError.forbidden('Only the project customer or an admin can confirm installation');
+  }
+
+  if ((project as any).installationConfirmedAt) {
+    throw AppError.badRequest('Installation has already been confirmed for this project');
+  }
+
+  (project as any).installationConfirmedAt = new Date();
+  await project.save();
+
+  await AuditLog.create({
+    action: AuditAction.PROJECT_UPDATED,
+    actorId,
+    targetType: 'project',
+    targetId: project._id,
+    details: { installationConfirmed: true },
+  });
+
+  // Notify fabrication lead and all admin
+  const customerRef = project.customerId as any;
+  const customerName = `${customerRef.firstName} ${customerRef.lastName}`;
+
+  if (project.fabricationLeadId) {
+    const leadId = (project.fabricationLeadId as any)._id ?? project.fabricationLeadId;
+    await createAndSendNotification(
+      leadId,
+      NotificationCategory.PROJECT,
+      'Installation Confirmed',
+      `Customer ${customerName} has confirmed the installation schedule for project "${project.title}". You may now proceed to mark it as Done.`,
+      `/projects/${project._id}/fabrication`,
+    );
+  }
+
+  await notifyRole(
+    Role.ADMIN,
+    NotificationCategory.PROJECT,
+    'Installation Confirmed',
+    `Customer ${customerName} confirmed installation for project "${project.title}".`,
+    `/projects/${project._id}/fabrication`,
+  );
+
+  return project;
+}

@@ -1,6 +1,7 @@
 import type { Request, Response } from 'express';
 import { asyncHandler } from '../../utils/asyncHandler.js';
 import * as fabricationService from './fabrication.service.js';
+import type { UpdateFabricationUpdateInput } from './fabrication.validation.js';
 
 export const createFabricationUpdate = asyncHandler(async (req: Request, res: Response) => {
   const update = await fabricationService.createFabricationUpdate(req.body, req.userId!, req.ip, req.get('user-agent'));
@@ -32,4 +33,23 @@ export const getFabricationUpdateById = asyncHandler(async (req: Request, res: R
     req.userRoles!,
   );
   res.json({ success: true, data: update });
+});
+
+export const updateFabricationUpdate = asyncHandler(async (req: Request, res: Response) => {
+  const update = await fabricationService.updateFabricationUpdate(
+    req.params.id as string,
+    req.body as UpdateFabricationUpdateInput,
+    req.userId!,
+    req.userRoles!,
+  );
+  res.json({ success: true, data: update });
+});
+
+export const deleteFabricationUpdate = asyncHandler(async (req: Request, res: Response) => {
+  const result = await fabricationService.deleteFabricationUpdate(
+    req.params.id as string,
+    req.userId!,
+    req.userRoles!,
+  );
+  res.json({ success: true, data: result });
 });

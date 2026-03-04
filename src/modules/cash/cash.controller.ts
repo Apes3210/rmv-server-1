@@ -26,3 +26,8 @@ export const listDiscrepancies = asyncHandler(async (req: Request, res: Response
   const result = await cashService.listDiscrepancies(req.query as any);
   res.json({ success: true, data: result });
 });
+
+export const listPendingCashAppointments = asyncHandler(async (req: Request, res: Response) => {
+  const result = await cashService.listPendingCashAppointments(req.userId!, req.userRoles!);
+  res.json({ success: true, data: result });
+});

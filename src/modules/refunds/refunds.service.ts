@@ -89,13 +89,35 @@ export async function submitRefundRequest(
 
 // ── Cashier/Admin: List Refund Requests ──
 
-export async function listRefundRequests(query: { status?: string; page?: string; limit?: string }) {
+export async function listRefundRequests(query: { status?: string; search?: string; page?: string; limit?: string }) {
   const filter: Record<string, unknown> = {};
   if (query.status) filter.status = query.status;
 
   const page = Math.max(1, parseInt(query.page || '1'));
   const limit = Math.min(50, Math.max(1, parseInt(query.limit || '20')));
   const skip = (page - 1) * limit;
+
+  // If search is provided, first find matching customer IDs then add to filter
+  if (query.search) {
+    const { User } = await import('../../models/index.js');
+    const escapedSearch = query.search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const regex = new RegExp(escapedSearch, 'i');
+
+    const matchingUsers = await User.find({
+      $or: [
+        { firstName: regex },
+        { lastName: regex },
+        { email: regex },
+      ],
+    }).select('_id').lean();
+
+    const userIds = matchingUsers.map((u) => u._id);
+    filter.$or = [
+      { customerId: { $in: userIds } },
+      { reason: regex },
+      { accountName: regex },
+    ];
+  }
 
   const [requests, total] = await Promise.all([
     RefundRequest.find(filter)

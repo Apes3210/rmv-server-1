@@ -41,6 +41,13 @@ router.post(
 
 // ── Read ──
 router.get(
+  '/pending-appointments',
+  authenticate,
+  authorize(Role.SALES_STAFF, Role.CASHIER, Role.ADMIN),
+  ctrl.listPendingCashAppointments,
+);
+
+router.get(
   '/collections',
   authenticate,
   authorize(Role.SALES_STAFF, Role.CASHIER, Role.ADMIN),

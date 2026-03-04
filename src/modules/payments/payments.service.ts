@@ -8,7 +8,7 @@ import {
   PaymentStageStatus, PaymentMethod, ProjectStatus, AuditAction, NotificationCategory, Role,
 } from '../../utils/constants.js';
 import { paymentStateMachine, projectStateMachine } from '../../utils/stateMachine.js';
-import { createAndSendNotification } from '../notifications/socket.service.js';
+import { createAndSendNotification, notifyRole } from '../notifications/socket.service.js';
 import { sendPaymentVerifiedEmail, sendPaymentDeclinedEmail } from '../notifications/email.service.js';
 import { formatCurrency, generateReceiptNumber } from '../../utils/helpers.js';
 import { createStageCheckoutSession } from '../../services/paymongo.service.js';
@@ -27,7 +27,7 @@ import type { Types } from 'mongoose';
 
 // ── Receipt PDF helper — generate, upload to R2, return key ──
 
-async function generateAndUploadReceipt(data: ReceiptData): Promise<string> {
+async function generateAndUploadReceipt(data: ReceiptData): Promise<{ key: string; buffer: Buffer }> {
   try {
     const buf = await generateReceiptPdf(data);
     const key = `receipts/${uuidv4()}-${data.receiptNumber}.pdf`;
@@ -40,10 +40,10 @@ async function generateAndUploadReceipt(data: ReceiptData): Promise<string> {
       }),
     );
     logger.info(`Receipt PDF uploaded: ${key}`);
-    return key;
+    return { key, buffer: buf };
   } catch (err) {
     logger.error('Receipt PDF generation/upload failed', err);
-    return ''; // non-fatal — payment still succeeds
+    return { key: '', buffer: Buffer.alloc(0) }; // non-fatal — payment still succeeds
   }
 }
 
@@ -243,13 +243,13 @@ export async function submitPaymentProof(
     userAgent: ua,
   });
 
-  // Notify cashier
-  await createAndSendNotification(
-    plan.createdBy,
+  // Notify all cashiers
+  await notifyRole(
+    Role.CASHIER,
     NotificationCategory.PAYMENT,
     'Payment Proof Submitted',
     `New payment proof submitted for "${project.title}" - ${stage.label} (${formatCurrency(input.amountPaid)})`,
-    `/projects/${project._id}/payments`,
+    `/cashier-queue`,
   );
 
   return payment;
@@ -322,7 +322,7 @@ export async function verifyPayment(
   const customerAddr = customer?.addressData
     ? [customer.addressData.street, customer.addressData.barangay, customer.addressData.city, customer.addressData.province, customer.addressData.zip].filter(Boolean).join(', ')
     : (customer as any)?.address || '';
-  const receiptKey = await generateAndUploadReceipt({
+  const receipt = await generateAndUploadReceipt({
     receiptNumber,
     customerName: customer ? `${customer.firstName} ${customer.lastName}` : 'Customer',
     customerEmail: customer?.email || '',
@@ -340,7 +340,7 @@ export async function verifyPayment(
     totalPaid,
     totalOutstanding: Math.max(0, plan.totalAmount - totalPaid),
   });
-  if (receiptKey) payment.receiptKey = receiptKey;
+  if (receipt.key) payment.receiptKey = receipt.key;
 
   await payment.save();
 
@@ -353,7 +353,7 @@ export async function verifyPayment(
       stageId: payment.stageId,
       amountPaid: payment.amountPaid,
       receiptNumber,
-      receiptKey,
+      receiptKey: receipt.key,
       excessCredit: payment.excessCredit,
     },
     ipAddress: ip,
@@ -374,7 +374,7 @@ export async function verifyPayment(
       amount: formatCurrency(payment.amountPaid),
       stageLabel: stage.label,
       receiptNumber,
-    });
+    }, receipt.buffer.length > 0 ? receipt.buffer : undefined);
   }
 
   // Check if first stage (down payment / full payment) is verified — transition project to fabrication
@@ -525,7 +525,11 @@ export async function listPendingPayments(query: {
 
   const [payments, total] = await Promise.all([
     Payment.find({ status: PaymentStageStatus.PROOF_SUBMITTED })
-      .populate('projectId', 'title customerId')
+      .populate({
+        path: 'projectId',
+        select: 'title customerId',
+        populate: { path: 'customerId', select: 'firstName lastName' },
+      })
       .sort({ createdAt: 1 })
       .skip((page - 1) * limit)
       .limit(limit),
@@ -746,7 +750,7 @@ export async function handleStagePaymongoPayment(checkoutSessionId: string) {
   const whCustomerAddr = customer?.addressData
     ? [customer.addressData.street, customer.addressData.barangay, customer.addressData.city, customer.addressData.province, customer.addressData.zip].filter(Boolean).join(', ')
     : (customer as any)?.address || '';
-  const receiptKey = await generateAndUploadReceipt({
+  const whReceipt = await generateAndUploadReceipt({
     receiptNumber,
     customerName: customer ? `${customer.firstName} ${customer.lastName}` : 'Customer',
     customerEmail: customer?.email || '',
@@ -763,8 +767,8 @@ export async function handleStagePaymongoPayment(checkoutSessionId: string) {
     totalPaid: totalPaidWebhook,
     totalOutstanding: Math.max(0, plan.totalAmount - totalPaidWebhook),
   });
-  if (receiptKey) {
-    payment.receiptKey = receiptKey;
+  if (whReceipt.key) {
+    payment.receiptKey = whReceipt.key;
     await payment.save();
   }
 
@@ -811,7 +815,7 @@ export async function handleStagePaymongoPayment(checkoutSessionId: string) {
       amount: formatCurrency(amountPaid),
       stageLabel: stage.label,
       receiptNumber,
-    });
+    }, whReceipt.buffer.length > 0 ? whReceipt.buffer : undefined);
   }
 
   // Check if first stage (down payment / full payment) is verified → transition to fabrication
@@ -879,7 +883,7 @@ export async function simulateStagePayment(
   const simCustomerAddr = simCustomer?.addressData
     ? [simCustomer.addressData.street, simCustomer.addressData.barangay, simCustomer.addressData.city, simCustomer.addressData.province, simCustomer.addressData.zip].filter(Boolean).join(', ')
     : (simCustomer as any)?.address || '';
-  const simReceiptKey = await generateAndUploadReceipt({
+  const simReceipt = await generateAndUploadReceipt({
     receiptNumber,
     customerName: simCustomer ? `${simCustomer.firstName} ${simCustomer.lastName}` : 'Customer',
     customerEmail: simCustomer?.email || '',
@@ -896,8 +900,8 @@ export async function simulateStagePayment(
     totalPaid: simTotalPaid,
     totalOutstanding: Math.max(0, plan.totalAmount - simTotalPaid),
   });
-  if (simReceiptKey) {
-    payment.receiptKey = simReceiptKey;
+  if (simReceipt.key) {
+    payment.receiptKey = simReceipt.key;
     await payment.save();
   }
 
@@ -972,7 +976,7 @@ export async function recordCashPayment(
   const cashCustomerAddr = cashCustomer?.addressData
     ? [cashCustomer.addressData.street, cashCustomer.addressData.barangay, cashCustomer.addressData.city, cashCustomer.addressData.province, cashCustomer.addressData.zip].filter(Boolean).join(', ')
     : (cashCustomer as any)?.address || '';
-  const cashReceiptKey = await generateAndUploadReceipt({
+  const cashReceipt = await generateAndUploadReceipt({
     receiptNumber,
     customerName: cashCustomer ? `${cashCustomer.firstName} ${cashCustomer.lastName}` : 'Customer',
     customerEmail: cashCustomer?.email || '',
@@ -989,7 +993,7 @@ export async function recordCashPayment(
     totalPaid: cashTotalPaid,
     totalOutstanding: Math.max(0, plan.totalAmount - cashTotalPaid),
   });
-  if (cashReceiptKey) payment.receiptKey = cashReceiptKey;
+  if (cashReceipt.key) payment.receiptKey = cashReceipt.key;
 
   // Update stage
   const totalPaid = stage.amountPaid + amountPaid;
@@ -1037,7 +1041,7 @@ export async function recordCashPayment(
       amount: formatCurrency(amountPaid),
       stageLabel: stage.label,
       receiptNumber,
-    });
+    }, cashReceipt.buffer.length > 0 ? cashReceipt.buffer : undefined);
   }
 
   // Check if first stage (down payment / full payment) is verified → fabrication
