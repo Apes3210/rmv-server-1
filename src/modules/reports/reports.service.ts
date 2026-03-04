@@ -402,11 +402,13 @@ export async function getDashboardSummary(userId?: string, userRoles?: string[])
         status: { $nin: [ProjectStatus.COMPLETED, ProjectStatus.CANCELLED] },
         ...(userRoles?.includes(Role.ENGINEER) && !userRoles?.some(r => [Role.ADMIN, Role.SALES_STAFF].includes(r as Role))
           ? { $or: [{ engineerIds: userId }, { status: ProjectStatus.SUBMITTED, engineerIds: { $size: 0 } }] }
-          : userRoles?.includes(Role.SALES_STAFF) && !userRoles?.includes(Role.ADMIN)
-            ? { salesStaffId: userId }
-            : userRoles?.includes(Role.CUSTOMER) && !userRoles?.some(r => [Role.ADMIN, Role.SALES_STAFF, Role.ENGINEER].includes(r as Role))
-              ? { customerId: userId }
-              : {}),
+          : userRoles?.includes(Role.FABRICATION_STAFF) && !userRoles?.some(r => [Role.ADMIN, Role.ENGINEER].includes(r as Role))
+            ? { status: ProjectStatus.FABRICATION }
+            : userRoles?.includes(Role.SALES_STAFF) && !userRoles?.includes(Role.ADMIN)
+              ? { salesStaffId: userId }
+              : userRoles?.includes(Role.CUSTOMER) && !userRoles?.some(r => [Role.ADMIN, Role.SALES_STAFF, Role.ENGINEER].includes(r as Role))
+                ? { customerId: userId }
+                : {}),
       }).exec(),
       Project.countDocuments({ deletedAt: null, status: ProjectStatus.COMPLETED, ...customerProjectFilter }).exec(),
       // For customers, only count payments linked to their projects

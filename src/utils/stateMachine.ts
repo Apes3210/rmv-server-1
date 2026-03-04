@@ -66,7 +66,7 @@ export const projectStateMachine = createStateMachine<ProjectStatus>({
   [ProjectStatus.DRAFT]: [ProjectStatus.SUBMITTED, ProjectStatus.CANCELLED],
   [ProjectStatus.SUBMITTED]: [ProjectStatus.BLUEPRINT, ProjectStatus.CANCELLED],
   [ProjectStatus.BLUEPRINT]: [ProjectStatus.APPROVED, ProjectStatus.CANCELLED],
-  [ProjectStatus.APPROVED]: [ProjectStatus.PAYMENT_PENDING, ProjectStatus.CANCELLED],
+  [ProjectStatus.APPROVED]: [ProjectStatus.PAYMENT_PENDING, ProjectStatus.BLUEPRINT, ProjectStatus.CANCELLED],
   [ProjectStatus.PAYMENT_PENDING]: [ProjectStatus.FABRICATION, ProjectStatus.CANCELLED],
   [ProjectStatus.FABRICATION]: [ProjectStatus.COMPLETED, ProjectStatus.CANCELLED],
   [ProjectStatus.COMPLETED]: [],
@@ -78,7 +78,7 @@ export const blueprintStateMachine = createStateMachine<BlueprintStatus>({
   [BlueprintStatus.UPLOADED]: [BlueprintStatus.APPROVED, BlueprintStatus.REVISION_REQUESTED],
   [BlueprintStatus.REVISION_REQUESTED]: [BlueprintStatus.REVISION_UPLOADED],
   [BlueprintStatus.REVISION_UPLOADED]: [BlueprintStatus.APPROVED, BlueprintStatus.REVISION_REQUESTED],
-  [BlueprintStatus.APPROVED]: [],
+  [BlueprintStatus.APPROVED]: [BlueprintStatus.REVISION_REQUESTED],
 });
 
 // ── Payment Stage State Machine ──

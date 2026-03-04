@@ -265,7 +265,16 @@ export async function requestRevision(
 
   blueprintStateMachine.assertTransition(blueprint.status, BlueprintStatus.REVISION_REQUESTED);
 
+  // If the blueprint was already fully approved, revert the project back to BLUEPRINT stage
+  if (blueprint.status === BlueprintStatus.APPROVED && project.status === ProjectStatus.APPROVED) {
+    projectStateMachine.assertTransition(project.status, ProjectStatus.BLUEPRINT);
+    project.status = ProjectStatus.BLUEPRINT;
+    await project.save();
+  }
+
   blueprint.status = BlueprintStatus.REVISION_REQUESTED;
+  blueprint.blueprintApproved = false;
+  blueprint.costingApproved = false;
   blueprint.revisionNotes = input.notes;
   blueprint.revisionRefKeys = input.refKeys;
   await blueprint.save();

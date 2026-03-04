@@ -362,10 +362,8 @@ export async function listProjects(
       { status: ProjectStatus.SUBMITTED, engineerIds: { $size: 0 } },
     ];
   } else if (actorRoles.includes(Role.FABRICATION_STAFF) && !actorRoles.some(r => [Role.ADMIN, Role.ENGINEER].includes(r))) {
-    filter.$or = [
-      { fabricationLeadId: actorId },
-      { fabricationAssistantIds: actorId },
-    ];
+    // Fabrication staff see all projects currently in the fabrication stage
+    filter.status = ProjectStatus.FABRICATION;
   }
 
   if (query.status === 'active') {
