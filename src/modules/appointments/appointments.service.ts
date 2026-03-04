@@ -7,7 +7,7 @@ import {
 import { AppError, ErrorCode } from '../../utils/appError.js';
 import {
   AppointmentStatus, AppointmentType, Role, AuditAction,
-  NotificationCategory, PaymentMethod, SLOT_CODES, type SlotCode,
+  NotificationCategory, PaymentMethod, OcularFeePaymentChoice, SLOT_CODES, type SlotCode,
 } from '../../utils/constants.js';
 import { appointmentStateMachine } from '../../utils/stateMachine.js';
 import { createAndSendNotification, notifyRole } from '../notifications/socket.service.js';
@@ -255,6 +255,16 @@ export async function requestAppointment(
     ocularVisitData?.ocularFeeBreakdown &&
     !ocularVisitData.ocularFeeBreakdown.isWithinNCR;
 
+  // Determine fee status based on payment choice
+  let ocularFeeStatus: string | undefined;
+  if (isOutsideNcr) {
+    if (input.ocularFeePaymentChoice === OcularFeePaymentChoice.CASH) {
+      ocularFeeStatus = 'cash_pending';
+    } else {
+      ocularFeeStatus = 'pending';
+    }
+  }
+
   const appointment = await Appointment.create({
     customerId,
     type: input.type,
@@ -269,7 +279,8 @@ export async function requestAppointment(
     distanceKm: ocularVisitData?.distanceKm,
     ocularFee: ocularVisitData?.ocularFee,
     ocularFeeBreakdown: ocularVisitData?.ocularFeeBreakdown,
-    ocularFeeStatus: isOutsideNcr ? 'pending' : undefined,
+    ocularFeePaymentChoice: isOutsideNcr ? input.ocularFeePaymentChoice : undefined,
+    ocularFeeStatus,
     customerNotes: input.purpose,
     addressStructured: input.addressStructured,
     bookedBy: customerId,

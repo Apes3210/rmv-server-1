@@ -1,5 +1,5 @@
 import mongoose, { Schema, Document, Types } from 'mongoose';
-import { AppointmentStatus, AppointmentType, SlotCode, PaymentMethod, ServiceType, MeasurementUnit, Environment } from '../utils/constants.js';
+import { AppointmentStatus, AppointmentType, SlotCode, PaymentMethod, OcularFeePaymentChoice, ServiceType, MeasurementUnit, Environment } from '../utils/constants.js';
 import type { ILineItem, ISiteConditions } from './VisitReport.js';
 
 // ── Customer Site Details (pre-visit info from customer) ──
@@ -60,10 +60,11 @@ export interface IAppointment extends Document {
     isWithinNCR: boolean;
   };
   ocularFeePaymentMethod?: PaymentMethod;
+  ocularFeePaymentChoice?: OcularFeePaymentChoice;
   ocularFeePaid?: boolean;
   ocularFeeProofKey?: string;
   ocularFeeReferenceNumber?: string;
-  ocularFeeStatus?: 'pending' | 'proof_submitted' | 'verified' | 'declined' | 'refunded';
+  ocularFeeStatus?: 'pending' | 'cash_pending' | 'proof_submitted' | 'verified' | 'declined' | 'refunded';
   ocularFeeDeclineReason?: string;
   ocularFeeVerifiedBy?: Types.ObjectId;
   ocularFeeRefundReason?: string;
@@ -139,10 +140,11 @@ const appointmentSchema = new Schema<IAppointment>(
       isWithinNCR: Boolean,
     },
     ocularFeePaymentMethod: { type: String, enum: Object.values(PaymentMethod) },
+    ocularFeePaymentChoice: { type: String, enum: Object.values(OcularFeePaymentChoice) },
     ocularFeePaid: { type: Boolean, default: false },
     ocularFeeProofKey: { type: String },
     ocularFeeReferenceNumber: { type: String },
-    ocularFeeStatus: { type: String, enum: ['pending', 'proof_submitted', 'verified', 'declined', 'refunded'] },
+    ocularFeeStatus: { type: String, enum: ['pending', 'cash_pending', 'proof_submitted', 'verified', 'declined', 'refunded'] },
     ocularFeeDeclineReason: { type: String },
     ocularFeeVerifiedBy: { type: Schema.Types.ObjectId, ref: 'User' },
     ocularFeeRefundReason: { type: String },

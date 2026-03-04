@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { AppointmentType, PaymentMethod, ServiceType, MeasurementUnit, Environment, SLOT_CODES } from '../../utils/constants.js';
+import { AppointmentType, PaymentMethod, OcularFeePaymentChoice, ServiceType, MeasurementUnit, Environment, SLOT_CODES } from '../../utils/constants.js';
 
 const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -24,6 +24,7 @@ export const requestAppointmentSchema = z.object({
   formattedAddress: z.string().max(500).trim().optional(),
   customerLocation: locationSchema.optional(),
   addressStructured: addressStructuredSchema.optional(),
+  ocularFeePaymentChoice: z.nativeEnum(OcularFeePaymentChoice).optional(),
 }).refine(
   (data) => data.type !== AppointmentType.OCULAR || !!data.customerLocation,
   {

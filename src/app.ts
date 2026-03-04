@@ -28,6 +28,7 @@ import uploadRoutes from './modules/uploads/upload.routes.js';
 import configRoutes from './modules/config/config.routes.js';
 import visitReportRoutes from './modules/visit-reports/visit-reports.routes.js';
 import webhookRoutes from './modules/webhooks/webhook.routes.js';
+import refundRoutes from './modules/refunds/refunds.routes.js';
 
 const app = express();
 app.set('trust proxy', 1);
@@ -146,6 +147,7 @@ app.use(`${prefix}/reports`, reportRoutes);
 app.use(`${prefix}/uploads`, uploadRoutes);
 app.use(`${prefix}/config`, configRoutes);
 app.use(`${prefix}/visit-reports`, visitReportRoutes);
+app.use(`${prefix}/refunds`, refundRoutes);
 
 // ── 404 Handler ──
 app.use((_req, res) => {

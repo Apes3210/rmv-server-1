@@ -94,6 +94,19 @@ export enum CashCollectionStatus {
   DISCREPANCY = 'discrepancy',
 }
 
+// ── Ocular Fee Payment Choice (customer picks at booking) ──
+export enum OcularFeePaymentChoice {
+  ONLINE = 'online',
+  CASH = 'cash',
+}
+
+// ── Refund Request Status ──
+export enum RefundRequestStatus {
+  PENDING = 'pending',
+  APPROVED = 'approved',
+  DENIED = 'denied',
+}
+
 // ── OTP Purpose ──
 export enum OtpPurpose {
   EMAIL_VERIFICATION = 'email_verification',
@@ -212,6 +225,11 @@ export enum AuditAction {
   CASH_COLLECTED = 'cash_collected',
   CASH_RECEIVED = 'cash_received',
   CASH_DISCREPANCY = 'cash_discrepancy',
+
+  // Refund Request
+  REFUND_REQUESTED = 'refund_requested',
+  REFUND_APPROVED = 'refund_approved',
+  REFUND_DENIED = 'refund_denied',
 
   // Fabrication
   FABRICATION_ASSIGNED = 'fabrication_assigned',

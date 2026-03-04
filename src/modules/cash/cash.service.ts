@@ -23,6 +23,16 @@ export async function recordCashCollection(
   const appointment = await Appointment.findById(input.appointmentId);
   if (!appointment) throw AppError.notFound('Appointment not found');
 
+  // Hard-block: if this is for a cash_pending ocular fee, amount must match exactly
+  if (appointment.ocularFeeStatus === 'cash_pending' && appointment.ocularFee) {
+    const expected = appointment.ocularFee;
+    if (Math.abs(input.amountCollected - expected) > 0.01) {
+      throw AppError.badRequest(
+        `Amount must match the ocular fee of ${formatCurrency(expected)}. You entered ${formatCurrency(input.amountCollected)}.`,
+      );
+    }
+  }
+
   const collection = await CashCollection.create({
     appointmentId: input.appointmentId,
     salesStaffId,
@@ -32,6 +42,13 @@ export async function recordCashCollection(
     photoKey: input.photoKey,
     status: CashCollectionStatus.COLLECTED,
   });
+
+  // If this was a cash_pending ocular fee, mark it as proof_submitted
+  if (appointment.ocularFeeStatus === 'cash_pending') {
+    appointment.ocularFeeStatus = 'proof_submitted';
+    appointment.ocularFeePaymentMethod = 'cash' as any;
+    await appointment.save();
+  }
 
   await AuditLog.create({
     action: AuditAction.CASH_COLLECTED,
