@@ -4,7 +4,7 @@ import * as fabricationService from './fabrication.service.js';
 import type { UpdateFabricationUpdateInput } from './fabrication.validation.js';
 
 export const createFabricationUpdate = asyncHandler(async (req: Request, res: Response) => {
-  const update = await fabricationService.createFabricationUpdate(req.body, req.userId!, req.ip, req.get('user-agent'));
+  const update = await fabricationService.createFabricationUpdate(req.body, req.userId!, req.userRoles!, req.ip, req.get('user-agent'));
   res.status(201).json({ success: true, data: update });
 });
 

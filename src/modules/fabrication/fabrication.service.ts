@@ -50,6 +50,7 @@ function getRequiredPaidStages(targetStatus: FabricationStatus, totalPaymentStag
 export async function createFabricationUpdate(
   input: CreateFabricationUpdateInput,
   actorId: string,
+  actorRoles: Role[],
   ip?: string,
   ua?: string,
 ) {
@@ -60,11 +61,12 @@ export async function createFabricationUpdate(
     throw AppError.badRequest('Project is not in fabrication phase');
   }
 
-  // Only fabrication staff or engineers assigned to this project can update
+  // Admins can post updates to any project; staff/engineers must be assigned
+  const isAdmin = actorRoles.includes(Role.ADMIN);
   const isLead = project.fabricationLeadId?.toString() === actorId;
   const isAssistant = project.fabricationAssistantIds.some(id => id.toString() === actorId);
   const isEngineer = project.engineerIds?.some((id: { toString: () => string }) => id.toString() === actorId);
-  if (!isLead && !isAssistant && !isEngineer) {
+  if (!isAdmin && !isLead && !isAssistant && !isEngineer) {
     throw AppError.forbidden('You are not assigned to this project');
   }
 
@@ -396,10 +398,7 @@ async function assertFabricationProjectAccess(
   if (actorRoles.includes(Role.CUSTOMER) && project.customerId.toString() === actorId) return;
   if (actorRoles.includes(Role.SALES_STAFF) && project.salesStaffId?.toString() === actorId) return;
 
-  if (actorRoles.includes(Role.ENGINEER)) {
-    if (project.engineerIds.some((id) => id.toString() === actorId)) return;
-    if (project.status === ProjectStatus.SUBMITTED && project.engineerIds.length === 0) return;
-  }
+  if (actorRoles.includes(Role.ENGINEER)) return;
 
   if (
     actorRoles.includes(Role.FABRICATION_STAFF) &&

@@ -458,6 +458,26 @@ export async function getDashboardSummary(userId?: string, userRoles?: string[])
     // Conversion rate: completed / total (avoid div by zero)
     const conversionRate = totalProjects > 0 ? completedProjects / totalProjects : 0;
 
+    // ── Pending installation confirmations (customer-facing) ──
+    // Find projects at ready_for_delivery that the customer hasn't confirmed yet
+    let pendingInstallationConfirmations: { _id: string; title: string }[] = [];
+    if (isCustomerOnly && userId) {
+      const readyProjects = await FabricationUpdate.aggregate([
+        { $sort: { createdAt: -1 as const } },
+        { $group: { _id: '$projectId', latestStatus: { $first: '$status' } } },
+        { $match: { latestStatus: FabricationStatus.READY_FOR_DELIVERY } },
+      ]).exec();
+      const readyProjectIds = readyProjects.map(r => r._id);
+      if (readyProjectIds.length > 0) {
+        pendingInstallationConfirmations = await Project.find({
+          _id: { $in: readyProjectIds },
+          customerId: userId,
+          installationConfirmedAt: null,
+          deletedAt: null,
+        }).select('_id title').lean().exec() as unknown as { _id: string; title: string }[];
+      }
+    }
+
     return {
       totalProjects,
       activeProjects,
@@ -474,6 +494,7 @@ export async function getDashboardSummary(userId?: string, userRoles?: string[])
       pendingCashPayments,
       totalUsers,
       pendingBlueprints,
+      pendingInstallationConfirmations,
     };
   } catch (error) {
     console.error('getDashboardSummary error:', error);
@@ -494,6 +515,7 @@ export async function getDashboardSummary(userId?: string, userRoles?: string[])
       pendingCashPayments: 0,
       totalUsers: 0,
       pendingBlueprints: 0,
+      pendingInstallationConfirmations: [],
     };
   }
 }
