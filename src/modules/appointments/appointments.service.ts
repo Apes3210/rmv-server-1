@@ -2,12 +2,12 @@ import { format, parse, isAfter, isBefore, startOfDay, addMinutes, addDays } fro
 import { toZonedTime } from 'date-fns-tz';
 import {
   Appointment, SlotLock, User, AuditLog, Holiday, SalesAvailability, Config, BlockedSlot,
-  VisitReport, VisitReportStatus,
+  VisitReport, VisitReportStatus, Project,
 } from '../../models/index.js';
 import { AppError, ErrorCode } from '../../utils/appError.js';
 import {
   AppointmentStatus, AppointmentType, Role, AuditAction,
-  NotificationCategory, PaymentMethod, OcularFeePaymentChoice, SLOT_CODES, type SlotCode,
+  NotificationCategory, PaymentMethod, OcularFeePaymentChoice, ProjectStatus, SLOT_CODES, type SlotCode,
 } from '../../utils/constants.js';
 import { appointmentStateMachine } from '../../utils/stateMachine.js';
 import { createAndSendNotification, notifyRole } from '../notifications/socket.service.js';
@@ -26,6 +26,9 @@ import type {
   RecordOcularFeeInput,
   AvailableSlotsQuery,
   SubmitSiteDetailsInput,
+  AgentCreateOcularInput,
+  SubmitOcularLocationInput,
+  AgentFinalizeOcularInput,
 } from './appointments.validation.js';
 import type { Types } from 'mongoose';
 
@@ -240,49 +243,28 @@ export async function requestAppointment(
   ip?: string,
   ua?: string,
 ) {
+  // Customers can only book office visits; oculars are agent-created
+  if (input.type === AppointmentType.OCULAR) {
+    throw AppError.badRequest(
+      'Ocular visits cannot be booked directly. Please book an office consultation first.',
+      ErrorCode.VALIDATION_ERROR,
+    );
+  }
+
   await assertNoActiveAppointment(customerId);
   await assertDateAvailable(input.date);
   await assertSlotAvailable(input.date, input.slotCode, input.type);
 
-  const ocularVisitData = await resolveOcularVisitData(
-    input.type,
-    input.formattedAddress,
-    input.customerLocation,
-  );
-
-  // Determine ocular fee status for outside-NCR appointments
-  const isOutsideNcr = input.type === AppointmentType.OCULAR &&
-    ocularVisitData?.ocularFeeBreakdown &&
-    !ocularVisitData.ocularFeeBreakdown.isWithinNCR;
-
-  // Determine fee status based on payment choice
-  let ocularFeeStatus: string | undefined;
-  if (isOutsideNcr) {
-    if (input.ocularFeePaymentChoice === OcularFeePaymentChoice.CASH) {
-      ocularFeeStatus = 'cash_pending';
-    } else {
-      ocularFeeStatus = 'pending';
-    }
-  }
-
+  // Office-only: no ocular visit data needed
   const appointment = await Appointment.create({
     customerId,
     type: input.type,
     date: input.date,
     slotCode: input.slotCode,
     status: AppointmentStatus.REQUESTED,
-    latitude: ocularVisitData?.latitude,
-    longitude: ocularVisitData?.longitude,
-    formattedAddress: ocularVisitData?.formattedAddress,
-    customerAddress: ocularVisitData?.formattedAddress,
-    customerLocation: ocularVisitData?.customerLocation,
-    distanceKm: ocularVisitData?.distanceKm,
-    ocularFee: ocularVisitData?.ocularFee,
-    ocularFeeBreakdown: ocularVisitData?.ocularFeeBreakdown,
-    ocularFeePaymentChoice: isOutsideNcr ? input.ocularFeePaymentChoice : undefined,
-    ocularFeeStatus,
     customerNotes: input.purpose,
-    addressStructured: input.addressStructured,
+    serviceType: input.serviceType,
+    serviceTypeCustom: input.serviceTypeCustom,
     bookedBy: customerId,
   });
 
@@ -405,17 +387,6 @@ export async function confirmAppointment(
     );
   }
 
-  // Block confirmation for office appointments if customer hasn't submitted site details
-  if (
-    appointment.type === AppointmentType.OFFICE &&
-    appointment.siteDetailsStatus !== 'submitted'
-  ) {
-    throw AppError.badRequest(
-      'Customer must submit site details before this office appointment can be confirmed.',
-      ErrorCode.VALIDATION_ERROR,
-    );
-  }
-
   // Assign or re-assign sales staff
   const salesStaff = await User.findOne({
     _id: input.salesStaffId,
@@ -484,6 +455,8 @@ export async function confirmAppointment(
     salesStaff._id,
     appointment.type === AppointmentType.OCULAR ? 'ocular' : 'consultation',
     appointment.customerSiteDetails || undefined,
+    appointment.serviceType,
+    appointment.serviceTypeCustom,
   );
 
   return appointment;
@@ -560,6 +533,299 @@ export async function skipSiteDetails(
   return appointment;
 }
 
+// ── Agent: Create Ocular Appointment (from consultation context) ──
+
+export async function agentCreateOcular(
+  input: AgentCreateOcularInput,
+  agentId: string,
+  ip?: string,
+  ua?: string,
+) {
+  const customer = await User.findById(input.customerId);
+  if (!customer || !customer.roles.includes(Role.CUSTOMER)) {
+    throw AppError.notFound('Customer not found');
+  }
+
+  await assertNoActiveAppointment(input.customerId);
+  await assertDateAvailable(input.date);
+  await assertSlotAvailable(input.date, input.slotCode, AppointmentType.OCULAR);
+
+  // Create ocular WITHOUT location/fee — customer provides these later
+  const appointment = await Appointment.create({
+    customerId: input.customerId,
+    type: AppointmentType.OCULAR,
+    date: input.date,
+    slotCode: input.slotCode,
+    status: AppointmentStatus.REQUESTED,
+    customerNotes: input.visitReportId
+      ? `Ocular follow-up from consultation report ${input.visitReportId}`
+      : 'Ocular visit scheduled by agent',
+    bookedBy: agentId,
+  });
+
+  await AuditLog.create({
+    action: AuditAction.APPOINTMENT_CREATED,
+    actorId: agentId,
+    targetType: 'appointment',
+    targetId: appointment._id,
+    details: {
+      type: AppointmentType.OCULAR,
+      date: input.date,
+      slotCode: input.slotCode,
+      customerId: input.customerId,
+      visitReportId: input.visitReportId,
+      createdByAgent: true,
+      isOcularFollowUp: true,
+    },
+    ipAddress: ip,
+    userAgent: ua,
+  });
+
+  // Notify customer to provide their location
+  await createAndSendNotification(
+    input.customerId,
+    NotificationCategory.APPOINTMENT,
+    'Ocular Visit Scheduled',
+    `An ocular visit has been scheduled for ${input.date} at ${formatSlotTime(input.slotCode)}. Please provide your site address.`,
+    `/appointments/${appointment._id}`,
+  );
+
+  return appointment;
+}
+
+// ── Customer: Submit Ocular Location ──
+
+export async function customerSubmitOcularLocation(
+  appointmentId: string,
+  input: SubmitOcularLocationInput,
+  customerId: string,
+  ip?: string,
+  ua?: string,
+) {
+  const appointment = await Appointment.findById(appointmentId);
+  if (!appointment) throw AppError.notFound('Appointment not found');
+
+  if (appointment.customerId.toString() !== customerId) {
+    throw AppError.forbidden('You do not own this appointment');
+  }
+
+  if (appointment.type !== AppointmentType.OCULAR) {
+    throw AppError.badRequest('This is not an ocular appointment');
+  }
+
+  if (appointment.status !== AppointmentStatus.REQUESTED) {
+    throw AppError.badRequest('Location can only be submitted for pending ocular appointments');
+  }
+
+  // Validate Philippines bounds
+  const { lat, lng } = input.customerLocation;
+  if (lat < 4.5 || lat > 21.5 || lng < 116.0 || lng > 127.0) {
+    throw AppError.badRequest('Location must be within the Philippines');
+  }
+
+  // Compute fee and resolve address
+  const ocularVisitData = await resolveOcularVisitData(
+    AppointmentType.OCULAR,
+    input.formattedAddress,
+    input.customerLocation,
+  );
+
+  if (!ocularVisitData) {
+    throw AppError.badRequest('Could not compute ocular visit data');
+  }
+
+  appointment.latitude = ocularVisitData.latitude;
+  appointment.longitude = ocularVisitData.longitude;
+  appointment.formattedAddress = ocularVisitData.formattedAddress;
+  appointment.customerAddress = ocularVisitData.formattedAddress;
+  appointment.customerLocation = ocularVisitData.customerLocation;
+  appointment.distanceKm = ocularVisitData.distanceKm;
+  appointment.ocularFee = ocularVisitData.ocularFee;
+  appointment.ocularFeeBreakdown = ocularVisitData.ocularFeeBreakdown;
+  if (input.addressStructured) appointment.addressStructured = input.addressStructured;
+
+  // Determine fee status
+  const isWithinNCR = ocularVisitData.ocularFeeBreakdown.isWithinNCR;
+  if (!isWithinNCR && ocularVisitData.ocularFee > 0) {
+    appointment.ocularFeeStatus = 'pending';
+  }
+
+  await appointment.save();
+
+  await AuditLog.create({
+    action: AuditAction.APPOINTMENT_LOCATION_SUBMITTED,
+    actorId: customerId,
+    targetType: 'appointment',
+    targetId: appointment._id,
+    details: {
+      lat: input.customerLocation.lat,
+      lng: input.customerLocation.lng,
+      distanceKm: ocularVisitData.distanceKm,
+      ocularFee: ocularVisitData.ocularFee,
+      isWithinNCR,
+    },
+    ipAddress: ip,
+    userAgent: ua,
+  });
+
+  // Notify agent that customer has provided location
+  await notifyRole(
+    Role.APPOINTMENT_AGENT,
+    NotificationCategory.APPOINTMENT,
+    'Ocular Location Submitted',
+    `Customer has submitted their location for ocular appointment on ${appointment.date} at ${formatSlotTime(appointment.slotCode)}.${!isWithinNCR ? ` Fee: ₱${ocularVisitData.ocularFee.toLocaleString()}` : ' Within NCR - no fee.'}`,
+    `/appointments/${appointment._id}`,
+  );
+
+  return appointment;
+}
+
+// ── Agent: Finalize Ocular Appointment ──
+
+export async function agentFinalizeOcular(
+  appointmentId: string,
+  input: AgentFinalizeOcularInput,
+  agentId: string,
+  ip?: string,
+  ua?: string,
+) {
+  const appointment = await Appointment.findById(appointmentId);
+  if (!appointment) throw AppError.notFound('Appointment not found');
+
+  if (appointment.type !== AppointmentType.OCULAR) {
+    throw AppError.badRequest('This is not an ocular appointment');
+  }
+
+  appointmentStateMachine.assertTransition(appointment.status, AppointmentStatus.CONFIRMED);
+
+  // Ensure customer has provided location
+  if (!appointment.customerLocation && !appointment.latitude) {
+    throw AppError.badRequest('Customer has not yet submitted their location');
+  }
+
+  // Ensure ocular fee is resolved (paid or within NCR)
+  const isWithinNCR = appointment.ocularFeeBreakdown?.isWithinNCR;
+  if (!isWithinNCR && !appointment.ocularFeePaid) {
+    throw AppError.badRequest(
+      'Ocular fee must be paid before finalizing. The location is outside Metro Manila.',
+      ErrorCode.VALIDATION_ERROR,
+    );
+  }
+
+  // Resolve sales staff: prefer explicit, otherwise inherit from customer's previous consultation
+  let resolvedSalesStaffId = input.salesStaffId;
+  if (!resolvedSalesStaffId) {
+    const prevConsultation = await Appointment.findOne({
+      customerId: appointment.customerId,
+      type: AppointmentType.OFFICE,
+      salesStaffId: { $exists: true },
+      status: { $in: [AppointmentStatus.CONFIRMED, AppointmentStatus.COMPLETED] },
+    }).sort({ createdAt: -1 });
+    if (prevConsultation?.salesStaffId) {
+      resolvedSalesStaffId = prevConsultation.salesStaffId.toString();
+    }
+  }
+  if (!resolvedSalesStaffId) {
+    throw AppError.badRequest('No sales staff specified and no previous consultation found for this customer');
+  }
+
+  const salesStaff = await User.findOne({
+    _id: resolvedSalesStaffId,
+    roles: Role.SALES_STAFF,
+    isActive: true,
+  });
+  if (!salesStaff) throw AppError.notFound('Sales staff not found');
+  await assertSalesAvailable(resolvedSalesStaffId, appointment.date);
+
+  // Lock slot for ocular
+  await lockSlot(appointment.date, appointment.slotCode as SlotCode, resolvedSalesStaffId, agentId);
+  await confirmSlotLock(appointment.date, appointment.slotCode as SlotCode, resolvedSalesStaffId, appointment._id);
+
+  appointment.status = AppointmentStatus.CONFIRMED;
+  appointment.salesStaffId = salesStaff._id;
+  appointment.confirmedBy = agentId as unknown as Types.ObjectId;
+  if (input.internalNotes) appointment.internalNotes = input.internalNotes;
+  await appointment.save();
+
+  await AuditLog.create({
+    action: AuditAction.APPOINTMENT_CONFIRMED,
+    actorId: agentId,
+    targetType: 'appointment',
+    targetId: appointment._id,
+    details: { salesStaffId: resolvedSalesStaffId, finalizedOcular: true, autoAssigned: !input.salesStaffId },
+    ipAddress: ip,
+    userAgent: ua,
+  });
+
+  // Notify customer
+  const customerUser = await User.findById(appointment.customerId);
+  if (customerUser) {
+    await createAndSendNotification(
+      appointment.customerId,
+      NotificationCategory.APPOINTMENT,
+      'Ocular Visit Confirmed',
+      `Your ocular visit on ${appointment.date} at ${formatSlotTime(appointment.slotCode)} has been confirmed.`,
+      `/appointments/${appointment._id}`,
+    );
+
+    await sendAppointmentConfirmedEmail(customerUser.email, {
+      date: appointment.date,
+      time: formatSlotTime(appointment.slotCode),
+      type: 'Ocular Visit',
+    });
+  }
+
+  // Notify sales staff
+  await createAndSendNotification(
+    resolvedSalesStaffId,
+    NotificationCategory.APPOINTMENT,
+    'Ocular Visit Assigned',
+    `You have been assigned an ocular visit on ${appointment.date} at ${formatSlotTime(appointment.slotCode)}.`,
+    `/appointments/${appointment._id}`,
+  );
+
+  // Find existing project from consultation to link the ocular visit report
+  const consultationProject = await Project.findOne({
+    customerId: appointment.customerId,
+    status: { $in: [ProjectStatus.DRAFT, ProjectStatus.SUBMITTED] },
+  }).sort({ createdAt: -1 });
+
+  // Pre-populate ocular report with data from the consultation visit report
+  let consultationSiteDetails: import('../../models/Appointment.js').ICustomerSiteDetails | undefined;
+  if (consultationProject) {
+    const consultationReport = await VisitReport.findOne({
+      customerId: appointment.customerId,
+      visitType: 'consultation',
+      status: { $in: [VisitReportStatus.SUBMITTED, VisitReportStatus.COMPLETED] },
+    }).sort({ createdAt: -1 }).lean();
+    if (consultationReport) {
+      consultationSiteDetails = {
+        serviceType: consultationReport.serviceType,
+        serviceTypeCustom: consultationReport.serviceTypeCustom,
+        materials: consultationReport.materials,
+        finishes: consultationReport.finishes,
+        preferredDesign: consultationReport.preferredDesign,
+        customerRequirements: consultationReport.customerRequirements,
+        notes: consultationReport.notes,
+      };
+    }
+  }
+
+  // Auto-create VisitReport (DRAFT) for ocular, linked to existing consultation project
+  await autoCreateVisitReport(
+    appointment._id,
+    appointment.customerId,
+    salesStaff._id,
+    'ocular',
+    consultationSiteDetails,
+    consultationProject?.serviceType,
+    undefined, // serviceTypeCustomOverride
+    consultationProject?._id,
+  );
+
+  return appointment;
+}
+
 // ── Complete Appointment ──
 
 export async function completeAppointment(
@@ -629,7 +895,7 @@ export async function updateVisitStatus(
   await appointment.save();
 
   await AuditLog.create({
-    action: newStatus === AppointmentStatus.PREPARING ? 'appointment_preparing' : 'appointment_on_the_way',
+    action: newStatus === AppointmentStatus.PREPARING ? AuditAction.APPOINTMENT_PREPARING : AuditAction.APPOINTMENT_ON_THE_WAY,
     actorId,
     targetType: 'appointment',
     targetId: appointment._id,
@@ -1439,14 +1705,29 @@ export async function listAppointments(query: {
 
   if (query.search) {
     const searchRegex = { $regex: query.search, $options: 'i' };
-    const searchConditions = [
-      { customerName: searchRegex },
-      { purpose: searchRegex },
+
+    // Pre-lookup customer IDs matching the search term by name
+    const matchingUsers = await User.find({
+      $or: [{ firstName: searchRegex }, { lastName: searchRegex }],
+    }).select('_id').lean();
+    const matchingIds = matchingUsers.map((u) => u._id);
+
+    const searchOr: Record<string, unknown>[] = [
+      { customerNotes: searchRegex },
+      { formattedAddress: searchRegex },
+      { customerAddress: searchRegex },
     ];
-    if (Object.keys(filter).length > 0) {
-      filter.$and = [{ $or: searchConditions }];
+    if (matchingIds.length > 0) searchOr.push({ customerId: { $in: matchingIds } });
+
+    if (filter.$or) {
+      // Role-based $or already set — move it into $and so both conditions hold
+      const existingOr = filter.$or as Record<string, unknown>[];
+      delete filter.$or;
+      filter.$and = [{ $or: existingOr }, { $or: searchOr }];
+    } else if (Object.keys(filter).length > 0) {
+      filter.$and = [{ $or: searchOr }];
     } else {
-      filter.$or = searchConditions;
+      filter.$or = searchOr;
     }
   }
 

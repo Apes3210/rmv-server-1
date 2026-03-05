@@ -1,5 +1,5 @@
 import {
-  Project, Appointment, User, AuditLog,
+  Project, Appointment, User, AuditLog, VisitReport,
 } from '../../models/index.js';
 import { PaymentPlan } from '../../models/Payment.js';
 import { Blueprint } from '../../models/Blueprint.js';
@@ -328,8 +328,17 @@ export async function getProjectById(
 // ── List Projects ──
 
 export async function getProjectByVisitReportId(visitReportId: string) {
-  const project = await Project.findOne({ visitReportId }).select('_id').lean();
-  return project;
+  // Direct match: project was created from this visit report
+  const project = await Project.findOne({ visitReportId }).select('_id title serviceType status').lean();
+  if (project) return project;
+
+  // Indirect match: ocular visit report linked to the consultation's project
+  const report = await VisitReport.findById(visitReportId).select('linkedProjectId').lean();
+  if (report?.linkedProjectId) {
+    return Project.findById(report.linkedProjectId).select('_id title serviceType status').lean();
+  }
+
+  return null;
 }
 
 export async function listProjects(

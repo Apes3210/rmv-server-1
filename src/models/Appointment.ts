@@ -77,6 +77,10 @@ export interface IAppointment extends Document {
   customerNotes?: string;
   internalNotes?: string;
 
+  // Service type (set at booking time)
+  serviceType?: string;
+  serviceTypeCustom?: string;
+
   // Cancellation
   cancellationReason?: string;
   cancelledBy?: Types.ObjectId;
@@ -85,6 +89,9 @@ export interface IAppointment extends Document {
   rescheduleCount: number;
   maxReschedules: number;
   rescheduleReason?: string;
+
+  // Set to true when the consultation visit report has been submitted
+  consultationReportSubmitted?: boolean;
 
   // Customer-provided site details (for office appointments, mandatory before confirmation)
   customerSiteDetails?: ICustomerSiteDetails;
@@ -156,6 +163,9 @@ const appointmentSchema = new Schema<IAppointment>(
     customerNotes: { type: String },
     internalNotes: { type: String },
 
+    serviceType: { type: String, enum: [...Object.values(ServiceType)] },
+    serviceTypeCustom: { type: String, trim: true },
+
     cancellationReason: { type: String },
     cancelledBy: { type: Schema.Types.ObjectId, ref: 'User' },
 
@@ -205,6 +215,8 @@ const appointmentSchema = new Schema<IAppointment>(
       enum: ['pending', 'submitted', 'skipped'],
       default: 'pending',
     },
+
+    consultationReportSubmitted: { type: Boolean, default: false },
 
     bookedBy: { type: Schema.Types.ObjectId, ref: 'User', required: true },
     confirmedBy: { type: Schema.Types.ObjectId, ref: 'User' },

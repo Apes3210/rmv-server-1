@@ -296,6 +296,11 @@ export async function computeRoute(customerLocation: LatLng) {
 }
 
 export async function computeOcularFee(customerLocation: LatLng) {
+  // Validate Philippines bounds
+  if (customerLocation.lat < 4.5 || customerLocation.lat > 21.5 || customerLocation.lng < 116.0 || customerLocation.lng > 127.0) {
+    throw AppError.badRequest('Location must be within the Philippines');
+  }
+
   const settings = await getOcularSettings();
   const origin = { lat: settings.shopLatitude, lng: settings.shopLongitude };
 

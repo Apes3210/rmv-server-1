@@ -47,10 +47,32 @@ export async function autoCreateDraft(
   salesStaffId: Types.ObjectId | string,
   visitType: string,
   customerSiteDetails?: ICustomerSiteDetails,
+  serviceTypeOverride?: string,
+  serviceTypeCustomOverride?: string,
+  linkedProjectId?: Types.ObjectId | string,
 ): Promise<void> {
   // Check if any report already exists for this appointment
   const existing = await VisitReport.findOne({ appointmentId });
-  if (existing) return; // idempotent
+  if (existing) {
+    // Backfill existing draft with consultation data if it was created before pre-population
+    if (
+      existing.status === VisitReportStatus.DRAFT &&
+      linkedProjectId &&
+      !existing.linkedProjectId &&
+      customerSiteDetails
+    ) {
+      existing.linkedProjectId = linkedProjectId as Types.ObjectId;
+      if (customerSiteDetails.serviceType) existing.serviceType = customerSiteDetails.serviceType;
+      if (customerSiteDetails.serviceTypeCustom) existing.serviceTypeCustom = customerSiteDetails.serviceTypeCustom;
+      if (customerSiteDetails.materials) existing.materials = customerSiteDetails.materials;
+      if (customerSiteDetails.finishes) existing.finishes = customerSiteDetails.finishes;
+      if (customerSiteDetails.preferredDesign) existing.preferredDesign = customerSiteDetails.preferredDesign;
+      if (customerSiteDetails.customerRequirements) existing.customerRequirements = customerSiteDetails.customerRequirements;
+      if (customerSiteDetails.notes) existing.notes = customerSiteDetails.notes;
+      await existing.save();
+    }
+    return;
+  }
 
   // Build report data, pre-populating from customer site details if available
   const reportData: Record<string, any> = {
@@ -59,8 +81,9 @@ export async function autoCreateDraft(
     salesStaffId,
     status: VisitReportStatus.DRAFT,
     visitType,
-    serviceType: customerSiteDetails?.serviceType || ServiceType.CUSTOM,
-    serviceTypeCustom: customerSiteDetails?.serviceTypeCustom,
+    ...(linkedProjectId && { linkedProjectId }),
+    serviceType: customerSiteDetails?.serviceType || serviceTypeOverride || ServiceType.CUSTOM,
+    serviceTypeCustom: customerSiteDetails?.serviceTypeCustom || serviceTypeCustomOverride,
     measurementUnit: customerSiteDetails?.measurementUnit,
     lineItems: customerSiteDetails?.lineItems || [],
     siteConditions: customerSiteDetails?.siteConditions,
@@ -319,13 +342,11 @@ export async function submitReport(
     userAgent: ua,
   });
 
-  // ── Auto-create Project (idempotent — use visitReportId) ──
-  {
+  if (report.visitType === 'consultation') {
+    // ── Consultation: auto-create DRAFT project, notify agent about recommended ocular ──
     const existingProject = await Project.findOne({ visitReportId: report._id });
     if (!existingProject) {
       const serviceLabel = report.serviceTypeCustom || report.serviceType || 'General Fabrication';
-      // Use customer notes as the title if meaningful and not a duplicate of serviceLabel.
-      // The serviceType chip already shows the category, so the title should be the customer's description.
       const customerNotes = (appt.customerNotes || '').trim();
       const notesNormalized = customerNotes.toLowerCase();
       const serviceLabelNormalized = serviceLabel.toLowerCase();
@@ -339,14 +360,14 @@ export async function submitReport(
         salesStaffId: report.salesStaffId,
         title: titleBase,
         serviceType: serviceLabel,
-        description: report.customerRequirements || report.notes || 'Created from visit report',
+        description: report.customerRequirements || report.notes || 'Created from consultation',
         siteAddress: appt.customerAddress || 'TBD',
         measurements: report.measurements,
         materialType: report.materials,
         finishColor: report.finishes,
         quantity: 1,
         notes: report.notes,
-        status: ProjectStatus.SUBMITTED,
+        status: ProjectStatus.DRAFT,
         mediaKeys: [...report.photoKeys, ...report.sketchKeys, ...report.referenceImageKeys],
       });
 
@@ -355,17 +376,33 @@ export async function submitReport(
         actorId: salesStaffId,
         targetType: 'project',
         targetId: project._id,
-        details: { triggeredBy: 'system', reason: 'visit_report_submitted', visitReportId: reportId },
+        details: { triggeredBy: 'system', reason: 'consultation_submitted', visitReportId: reportId },
         ipAddress: ip,
         userAgent: ua,
       });
 
-      // Notify admins about new project
+      // Notify agent with recommended ocular info
+      const formatOcularSlot = (slot: string) => {
+        const h = parseInt(slot.split(':')[0]);
+        return `${h > 12 ? h - 12 : h === 0 ? 12 : h}:00 ${h >= 12 ? 'PM' : 'AM'}`;
+      };
+      const ocularDateInfo = report.recommendedOcularDate
+        ? ` Recommended ocular date: ${report.recommendedOcularDate.toISOString().split('T')[0]}${report.recommendedOcularSlot ? ` at ${formatOcularSlot(report.recommendedOcularSlot)}` : ''}.`
+        : '';
+      await notifyRole(
+        Role.APPOINTMENT_AGENT,
+        NotificationCategory.APPOINTMENT,
+        'Consultation Completed — Schedule Ocular',
+        `Consultation report submitted for "${serviceLabel}". A DRAFT project has been created.${ocularDateInfo} Schedule an ocular visit for the customer.`,
+        `/appointments/${appt._id}`,
+      );
+
+      // Notify admin
       await notifyRole(
         Role.ADMIN,
         NotificationCategory.PROJECT,
-        'New Project from Visit Report',
-        `A new project "${project.title}" has been created from a visit report. Assign an engineer.`,
+        'New Draft Project from Consultation',
+        `A new draft project "${serviceLabel}" has been created from a consultation. Awaiting ocular visit.`,
         `/projects/${project._id}`,
       );
 
@@ -373,10 +410,129 @@ export async function submitReport(
       await createAndSendNotification(
         report.customerId,
         NotificationCategory.PROJECT,
-        'Project Created',
-        `Your project "${project.title}" has been created from the visit report. An engineer will be assigned shortly.`,
+        'Consultation Complete',
+        `Your consultation has been completed and project "${serviceLabel}" has been created. An ocular visit will be scheduled.`,
         `/projects/${project._id}`,
       );
+
+      // Mark the appointment so the agent list can display "Ready for Ocular"
+      await Appointment.findByIdAndUpdate(report.appointmentId, { consultationReportSubmitted: true });
+    }
+  } else {
+    // ── Ocular: update existing project with measurements, transition DRAFT → SUBMITTED ──
+    const linkedProject = report.linkedProjectId
+      ? await Project.findById(report.linkedProjectId)
+      : await Project.findOne({ visitReportId: { $ne: report._id }, appointmentId: { $exists: true }, customerId: report.customerId, status: { $in: [ProjectStatus.DRAFT, ProjectStatus.SUBMITTED] } }).sort({ createdAt: -1 });
+
+    if (linkedProject) {
+      // Update project with ocular data
+      if (report.measurements) linkedProject.measurements = report.measurements;
+      if (report.materials) linkedProject.materialType = report.materials;
+      if (report.finishes) linkedProject.finishColor = report.finishes;
+      if (report.notes) linkedProject.notes = report.notes;
+      if (report.siteConditions) (linkedProject as any).siteConditions = report.siteConditions;
+      linkedProject.mediaKeys = [...(linkedProject.mediaKeys || []), ...report.photoKeys, ...report.sketchKeys, ...report.referenceImageKeys];
+      if (appt.formattedAddress) linkedProject.siteAddress = appt.formattedAddress;
+      // Point the project's visitReportId to the ocular report so the project page shows on-site data
+      linkedProject.visitReportId = report._id;
+
+      // Transition DRAFT → SUBMITTED
+      if (linkedProject.status === ProjectStatus.DRAFT) {
+        linkedProject.status = ProjectStatus.SUBMITTED;
+      }
+
+      await linkedProject.save();
+
+      await AuditLog.create({
+        action: AuditAction.PROJECT_UPDATED,
+        actorId: salesStaffId,
+        targetType: 'project',
+        targetId: linkedProject._id,
+        details: { triggeredBy: 'system', reason: 'ocular_report_submitted', visitReportId: reportId },
+        ipAddress: ip,
+        userAgent: ua,
+      });
+
+      // Notify admin/engineers
+      await notifyRole(
+        Role.ADMIN,
+        NotificationCategory.PROJECT,
+        'Project Updated from Ocular',
+        `Project "${linkedProject.serviceType || linkedProject.title}" has been updated with ocular measurements and is now SUBMITTED. Assign an engineer.`,
+        `/projects/${linkedProject._id}`,
+      );
+
+      await notifyRole(
+        Role.ENGINEER,
+        NotificationCategory.PROJECT,
+        'New Project Submitted',
+        `Project "${linkedProject.serviceType || linkedProject.title}" has been submitted with site measurements and is ready for blueprint work.`,
+        `/projects/${linkedProject._id}`,
+      );
+
+      // Notify customer
+      await createAndSendNotification(
+        report.customerId,
+        NotificationCategory.PROJECT,
+        'Ocular Visit Complete',
+        `Your ocular visit report has been submitted and your project "${linkedProject.serviceType || linkedProject.title}" is now being processed.`,
+        `/projects/${linkedProject._id}`,
+      );
+    } else {
+      // Fallback: no linked project found — create one as SUBMITTED (legacy behavior)
+      const existingProject = await Project.findOne({ visitReportId: report._id });
+      if (!existingProject) {
+        const serviceLabel = report.serviceTypeCustom || report.serviceType || 'General Fabrication';
+        const customerNotes = (appt.customerNotes || '').trim();
+        const notesNormalized = customerNotes.toLowerCase();
+        const serviceLabelNormalized = serviceLabel.toLowerCase();
+        const titleBase = customerNotes && notesNormalized !== serviceLabelNormalized
+          ? customerNotes
+          : serviceLabel;
+        const project = await Project.create({
+          appointmentId: report.appointmentId,
+          visitReportId: report._id,
+          customerId: report.customerId,
+          salesStaffId: report.salesStaffId,
+          title: titleBase,
+          serviceType: serviceLabel,
+          description: report.customerRequirements || report.notes || 'Created from visit report',
+          siteAddress: appt.customerAddress || 'TBD',
+          measurements: report.measurements,
+          materialType: report.materials,
+          finishColor: report.finishes,
+          quantity: 1,
+          notes: report.notes,
+          status: ProjectStatus.SUBMITTED,
+          mediaKeys: [...report.photoKeys, ...report.sketchKeys, ...report.referenceImageKeys],
+        });
+
+        await AuditLog.create({
+          action: AuditAction.PROJECT_CREATED,
+          actorId: salesStaffId,
+          targetType: 'project',
+          targetId: project._id,
+          details: { triggeredBy: 'system', reason: 'visit_report_submitted', visitReportId: reportId },
+          ipAddress: ip,
+          userAgent: ua,
+        });
+
+        await notifyRole(
+          Role.ADMIN,
+          NotificationCategory.PROJECT,
+          'New Project from Visit Report',
+          `A new project "${serviceLabel}" has been created from a visit report. Assign an engineer.`,
+          `/projects/${project._id}`,
+        );
+
+        await createAndSendNotification(
+          report.customerId,
+          NotificationCategory.PROJECT,
+          'Project Created',
+          `Your project "${serviceLabel}" has been created from the visit report. An engineer will be assigned shortly.`,
+          `/projects/${project._id}`,
+        );
+      }
     }
   }
 

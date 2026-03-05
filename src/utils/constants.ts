@@ -196,6 +196,9 @@ export enum AuditAction {
   APPOINTMENT_NO_SHOW = 'appointment_no_show',
   APPOINTMENT_RESCHEDULE_REQUESTED = 'appointment_reschedule_requested',
   APPOINTMENT_RESCHEDULED = 'appointment_rescheduled',
+  APPOINTMENT_LOCATION_SUBMITTED = 'appointment_location_submitted',
+  APPOINTMENT_PREPARING = 'appointment_preparing',
+  APPOINTMENT_ON_THE_WAY = 'appointment_on_the_way',
   SALES_ASSIGNED = 'sales_assigned',
 
   // Project

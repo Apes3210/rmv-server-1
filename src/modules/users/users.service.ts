@@ -241,6 +241,13 @@ export async function listByRole(role: string, search?: string) {
     .limit(50);
 }
 
+export async function getCustomerById(userId: string) {
+  const user = await User.findOne({ _id: userId, roles: 'customer', isActive: true })
+    .select('firstName lastName email phone');
+  if (!user) throw AppError.notFound('Customer not found');
+  return user;
+}
+
 // ── Save E-Signature ──
 
 export async function saveSignature(userId: string, signatureKey: string) {

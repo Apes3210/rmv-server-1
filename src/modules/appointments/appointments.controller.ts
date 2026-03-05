@@ -287,3 +287,38 @@ export const listAppointments = asyncHandler(async (req: Request, res: Response)
     },
   });
 });
+
+// ── Agent: Create Ocular (from consultation context) ──
+export const agentCreateOcular = asyncHandler(async (req: Request, res: Response) => {
+  const appointment = await appointmentsService.agentCreateOcular(
+    req.body,
+    req.userId!,
+    req.ip,
+    req.get('user-agent'),
+  );
+  res.status(201).json({ success: true, data: appointment });
+});
+
+// ── Customer: Submit Ocular Location ──
+export const customerSubmitOcularLocation = asyncHandler(async (req: Request, res: Response) => {
+  const appointment = await appointmentsService.customerSubmitOcularLocation(
+    req.params.id as string,
+    req.body,
+    req.userId!,
+    req.ip,
+    req.get('user-agent'),
+  );
+  res.json({ success: true, data: formatAppointment(appointment) });
+});
+
+// ── Agent: Finalize Ocular ──
+export const agentFinalizeOcular = asyncHandler(async (req: Request, res: Response) => {
+  const appointment = await appointmentsService.agentFinalizeOcular(
+    req.params.id as string,
+    req.body,
+    req.userId!,
+    req.ip,
+    req.get('user-agent'),
+  );
+  res.json({ success: true, data: appointment });
+});

@@ -68,6 +68,15 @@ export const updateVisitReportSchema = z.object({
   videoKeys: z.array(z.string()).max(5).optional(),
   sketchKeys: z.array(z.string()).max(10).optional(),
   referenceImageKeys: z.array(z.string()).max(10).optional(),
+
+  // Consultation-specific fields
+  productsDiscussed: z.string().max(2000).trim().optional(),
+  designPreferences: z.string().max(2000).trim().optional(),
+  materialOptions: z.string().max(2000).trim().optional(),
+  projectScope: z.string().max(2000).trim().optional(),
+  recommendedOcularDate: z.string().datetime().optional(),
+  recommendedOcularSlot: z.string().max(20).trim().optional(),
+  linkedProjectId: z.string().optional(),
 });
 
 export const returnVisitReportSchema = z.object({

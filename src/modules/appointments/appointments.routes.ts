@@ -17,6 +17,9 @@ import {
   declineOcularFeeSchema,
   availableSlotsQuerySchema,
   submitSiteDetailsSchema,
+  agentCreateOcularSchema,
+  submitOcularLocationSchema,
+  agentFinalizeOcularSchema,
 } from './appointments.validation.js';
 
 const router = Router();
@@ -70,6 +73,33 @@ router.post(
   authorize(Role.APPOINTMENT_AGENT),
   validate(agentCreateAppointmentSchema),
   ctrl.agentCreateAppointment,
+);
+
+// ── Agent: Create Ocular (from consultation context) ──
+router.post(
+  '/agent-create-ocular',
+  authenticate,
+  authorize(Role.APPOINTMENT_AGENT, Role.ADMIN),
+  validate(agentCreateOcularSchema),
+  ctrl.agentCreateOcular,
+);
+
+// ── Customer: Submit Ocular Location ──
+router.post(
+  '/:id/submit-location',
+  authenticate,
+  authorize(Role.CUSTOMER),
+  validate(submitOcularLocationSchema),
+  ctrl.customerSubmitOcularLocation,
+);
+
+// ── Agent: Finalize Ocular ──
+router.post(
+  '/:id/finalize-ocular',
+  authenticate,
+  authorize(Role.APPOINTMENT_AGENT, Role.ADMIN),
+  validate(agentFinalizeOcularSchema),
+  ctrl.agentFinalizeOcular,
 );
 
 router.post(

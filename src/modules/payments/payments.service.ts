@@ -190,69 +190,7 @@ export async function submitPaymentProof(
   ip?: string,
   ua?: string,
 ) {
-  // Find the plan containing this stage
-  const plan = await PaymentPlan.findOne({ 'stages.stageId': input.stageId });
-  if (!plan) throw AppError.notFound('Payment stage not found');
-
-  const project = await Project.findById(plan.projectId);
-  if (!project) throw AppError.notFound('Project not found');
-  if (project.customerId.toString() !== customerId) {
-    throw AppError.forbidden('You can only submit payments for your own projects');
-  }
-
-  // Contract must be signed before payment
-  if (!project.contractSignedAt) {
-    throw AppError.badRequest('You must sign the project contract before making any payments');
-  }
-
-  const stage = plan.stages.find(s => s.stageId === input.stageId);
-  if (!stage) throw AppError.notFound('Stage not found');
-
-  // Stage must be pending or declined (re-submit allowed)
-  if (![PaymentStageStatus.PENDING, PaymentStageStatus.DECLINED].includes(stage.status)) {
-    throw AppError.badRequest('This stage is not accepting payments');
-  }
-
-  // If stage isn't activated yet, allow payment but log it as advance
-  // (badges stay informational; customer can pay early)
-
-  const payment = await Payment.create({
-    projectId: plan.projectId,
-    stageId: input.stageId,
-    method: input.method,
-    amountPaid: input.amountPaid,
-    referenceNumber: input.referenceNumber,
-    proofKey: input.proofKey,
-    status: PaymentStageStatus.PROOF_SUBMITTED,
-    idempotencyKey,
-    creditFromPrevious: 0,
-    excessCredit: 0,
-  });
-
-  // Update stage status
-  stage.status = PaymentStageStatus.PROOF_SUBMITTED;
-  await plan.save();
-
-  await AuditLog.create({
-    action: AuditAction.PAYMENT_PROOF_SUBMITTED,
-    actorId: customerId,
-    targetType: 'payment',
-    targetId: payment._id,
-    details: { stageId: input.stageId, method: input.method, amountPaid: input.amountPaid },
-    ipAddress: ip,
-    userAgent: ua,
-  });
-
-  // Notify all cashiers
-  await notifyRole(
-    Role.CASHIER,
-    NotificationCategory.PAYMENT,
-    'Payment Proof Submitted',
-    `New payment proof submitted for "${project.title}" - ${stage.label} (${formatCurrency(input.amountPaid)})`,
-    `/cashier-queue`,
-  );
-
-  return payment;
+  throw AppError.badRequest('Manual proof upload is no longer supported. Please pay via QR.');
 }
 
 // ── Cashier: Verify Payment ──
@@ -721,8 +659,8 @@ export async function handleStagePaymongoPayment(checkoutSessionId: string) {
   const stage = plan.stages.find(s => s.checkoutSessionId === checkoutSessionId);
   if (!stage) return null;
 
-  // Already verified — idempotent
-  if (stage.status === PaymentStageStatus.VERIFIED) return plan;
+  // Already verified or awaiting cashier review — idempotent
+  if (stage.status === PaymentStageStatus.VERIFIED || stage.status === PaymentStageStatus.PROOF_SUBMITTED) return plan;
 
   const project = await Project.findById(plan.projectId);
   if (!project) return null;
@@ -730,112 +668,49 @@ export async function handleStagePaymongoPayment(checkoutSessionId: string) {
   const remaining = stage.remainingBalance > 0 ? stage.remainingBalance : stage.amount;
   const amountPaid = env.NODE_ENV === 'production' ? remaining : 1;
 
-  // Create Payment record
-  const receiptNumber = await generateNextReceiptNumber();
+  // Create Payment record — awaiting cashier verification
   const payment = await Payment.create({
     projectId: plan.projectId,
     stageId: stage.stageId,
     method: PaymentMethod.QRPH,
     amountPaid,
-    status: PaymentStageStatus.VERIFIED,
-    verifiedAt: new Date(),
-    receiptNumber,
+    status: PaymentStageStatus.PROOF_SUBMITTED,
+    referenceNumber: checkoutSessionId,
     creditFromPrevious: 0,
     excessCredit: 0,
   });
 
-  // Generate receipt PDF
-  const customer = await User.findById(project.customerId);
-  const totalPaidWebhook = plan.stages.reduce((sum, s) => sum + s.amountPaid, 0) + amountPaid;
-  const whCustomerAddr = customer?.addressData
-    ? [customer.addressData.street, customer.addressData.barangay, customer.addressData.city, customer.addressData.province, customer.addressData.zip].filter(Boolean).join(', ')
-    : (customer as any)?.address || '';
-  const whReceipt = await generateAndUploadReceipt({
-    receiptNumber,
-    customerName: customer ? `${customer.firstName} ${customer.lastName}` : 'Customer',
-    customerEmail: customer?.email || '',
-    customerAddress: whCustomerAddr,
-    projectTitle: project.title,
-    stageName: stage.label,
-    amountPaid,
-    paymentMethod: 'qrph',
-    creditApplied: 0,
-    excessCredit: 0,
-    verifiedByName: 'PayMongo (Auto)',
-    verifiedAt: payment.verifiedAt!,
-    totalProjectCost: plan.totalAmount,
-    totalPaid: totalPaidWebhook,
-    totalOutstanding: Math.max(0, plan.totalAmount - totalPaidWebhook),
-  });
-  if (whReceipt.key) {
-    payment.receiptKey = whReceipt.key;
-    await payment.save();
-  }
-
-  // Update stage
-  stage.status = PaymentStageStatus.VERIFIED;
-  stage.amountPaid += amountPaid;
-  stage.remainingBalance = Math.max(0, stage.amount - stage.amountPaid);
+  // Update stage to awaiting verification
+  stage.status = PaymentStageStatus.PROOF_SUBMITTED;
 
   if (!plan.isImmutable) plan.isImmutable = true;
   await plan.save();
 
   await AuditLog.create({
-    action: AuditAction.PAYMENT_VERIFIED,
+    action: AuditAction.PAYMENT_PROOF_SUBMITTED,
     actorId: project.customerId,
     targetType: 'payment',
     targetId: payment._id,
-    details: { stageId: stage.stageId, amountPaid, verifiedVia: 'paymongo_webhook', receiptNumber },
+    details: { stageId: stage.stageId, amountPaid, verifiedVia: 'paymongo_webhook' },
   });
 
-  // Notify customer
+  // Notify customer that payment is awaiting cashier verification
   await createAndSendNotification(
     project.customerId,
     NotificationCategory.PAYMENT,
-    'Payment Confirmed via QR',
-    `Your QRPH payment of ${formatCurrency(amountPaid)} for "${project.title}" — ${stage.label} has been confirmed. Receipt: ${receiptNumber}`,
+    'Payment Received — Awaiting Verification',
+    `Your QRPH payment of ${formatCurrency(amountPaid)} for "${project.title}" — ${stage.label} has been received and is awaiting cashier verification.`,
     `/projects/${project._id}/payments`,
   );
 
-  // Notify cashier
-  const cashiers = await User.find({ roles: Role.CASHIER }).select('_id');
-  for (const c of cashiers) {
-    await createAndSendNotification(
-      c._id,
-      NotificationCategory.PAYMENT,
-      'QRPH Payment Auto-Verified',
-      `QRPH payment for "${project.title}" — ${stage.label} was automatically verified. Receipt: ${receiptNumber}`,
-      `/projects/${project._id}/payments`,
-    );
-  }
-
-  // Send email
-  if (customer) {
-    await sendPaymentVerifiedEmail(customer.email, {
-      amount: formatCurrency(amountPaid),
-      stageLabel: stage.label,
-      receiptNumber,
-    }, whReceipt.buffer.length > 0 ? whReceipt.buffer : undefined);
-  }
-
-  // Check if first stage (down payment / full payment) is verified → transition to fabrication
-  const firstStageVerified = plan.stages[0]?.status === PaymentStageStatus.VERIFIED;
-  if (firstStageVerified && project.status === ProjectStatus.PAYMENT_PENDING) {
-    projectStateMachine.assertTransition(project.status, ProjectStatus.FABRICATION);
-    project.status = ProjectStatus.FABRICATION;
-    await project.save();
-
-    const allVerified = plan.stages.every(s => s.status === PaymentStageStatus.VERIFIED);
-    await createAndSendNotification(
-      project.customerId,
-      NotificationCategory.SYSTEM,
-      allVerified ? 'All Payments Verified' : 'Down Payment Verified',
-      allVerified
-        ? `All payments for "${project.title}" are verified! Your project is now moving to fabrication.`
-        : `Your down payment for "${project.title}" has been verified! Your project is now moving to fabrication. Remaining payments can be made during the fabrication phase.`,
-      `/projects/${project._id}`,
-    );
-  }
+  // Notify cashiers to review
+  await notifyRole(
+    Role.CASHIER,
+    NotificationCategory.PAYMENT,
+    'QR Payment Awaiting Verification',
+    `QRPH payment of ${formatCurrency(amountPaid)} for "${project.title}" — ${stage.label} needs verification.`,
+    `/cashier-queue`,
+  );
 
   return plan;
 }
@@ -863,74 +738,44 @@ export async function simulateStagePayment(
 
   const remaining = stage.remainingBalance > 0 ? stage.remainingBalance : stage.amount;
 
-  const receiptNumber = await generateNextReceiptNumber();
+  // Create Payment record — awaiting cashier verification (same as real QR flow)
   const payment = await Payment.create({
     projectId: plan.projectId,
     stageId: stage.stageId,
     method: PaymentMethod.QRPH,
     amountPaid: remaining,
-    status: PaymentStageStatus.VERIFIED,
-    verifiedBy: actorId as unknown as Types.ObjectId,
-    verifiedAt: new Date(),
-    receiptNumber,
+    status: PaymentStageStatus.PROOF_SUBMITTED,
+    referenceNumber: `SIM-${Date.now()}`,
     creditFromPrevious: 0,
     excessCredit: 0,
   });
 
-  // Generate receipt PDF
-  const simCustomer = await User.findById(project.customerId);
-  const simTotalPaid = plan.stages.reduce((sum, s) => sum + s.amountPaid, 0) + remaining;
-  const simCustomerAddr = simCustomer?.addressData
-    ? [simCustomer.addressData.street, simCustomer.addressData.barangay, simCustomer.addressData.city, simCustomer.addressData.province, simCustomer.addressData.zip].filter(Boolean).join(', ')
-    : (simCustomer as any)?.address || '';
-  const simReceipt = await generateAndUploadReceipt({
-    receiptNumber,
-    customerName: simCustomer ? `${simCustomer.firstName} ${simCustomer.lastName}` : 'Customer',
-    customerEmail: simCustomer?.email || '',
-    customerAddress: simCustomerAddr,
-    projectTitle: project.title,
-    stageName: stage.label,
-    amountPaid: remaining,
-    paymentMethod: 'qrph',
-    creditApplied: 0,
-    excessCredit: 0,
-    verifiedByName: 'System (Simulated)',
-    verifiedAt: payment.verifiedAt!,
-    totalProjectCost: plan.totalAmount,
-    totalPaid: simTotalPaid,
-    totalOutstanding: Math.max(0, plan.totalAmount - simTotalPaid),
-  });
-  if (simReceipt.key) {
-    payment.receiptKey = simReceipt.key;
-    await payment.save();
-  }
-
-  stage.status = PaymentStageStatus.VERIFIED;
-  stage.amountPaid = stage.amount;
-  stage.remainingBalance = 0;
+  // Update stage to awaiting verification
+  stage.status = PaymentStageStatus.PROOF_SUBMITTED;
 
   if (!plan.isImmutable) plan.isImmutable = true;
   await plan.save();
 
   await AuditLog.create({
-    action: AuditAction.PAYMENT_VERIFIED,
+    action: AuditAction.PAYMENT_PROOF_SUBMITTED,
     actorId,
     targetType: 'payment',
     targetId: payment._id,
-    details: { stageId: stage.stageId, amountPaid: remaining, verifiedVia: 'simulate', receiptNumber },
+    details: { stageId: stage.stageId, amountPaid: remaining, verifiedVia: 'simulate' },
     ipAddress: ip,
     userAgent: ua,
   });
 
-  // Check if first stage verified → fabrication
-  const firstStageVerified = plan.stages[0]?.status === PaymentStageStatus.VERIFIED;
-  if (firstStageVerified && project.status === ProjectStatus.PAYMENT_PENDING) {
-    projectStateMachine.assertTransition(project.status, ProjectStatus.FABRICATION);
-    project.status = ProjectStatus.FABRICATION;
-    await project.save();
-  }
+  // Notify cashiers to review
+  await notifyRole(
+    Role.CASHIER,
+    NotificationCategory.PAYMENT,
+    'Simulated Payment Awaiting Verification',
+    `Simulated QRPH payment of ${formatCurrency(remaining)} for stage "${stage.label}" needs verification.`,
+    `/cashier-queue`,
+  );
 
-  return { payment, receiptNumber };
+  return { payment };
 }
 
 // ── Cashier: Record Cash Payment (auto-verified) ──

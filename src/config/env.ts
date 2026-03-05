@@ -58,6 +58,7 @@ const envSchema = z.object({
 
   // PayMongo
   PAYMONGO_SECRET_KEY: z.string().default(''),
+  PAYMONGO_WEBHOOK_SECRET: z.string().default(''),
 
   // Frontend URL (for redirect URLs)
   FRONTEND_URL: z.string().default('http://localhost:5173'),

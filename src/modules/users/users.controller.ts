@@ -53,6 +53,11 @@ export const listCustomers = asyncHandler(async (req: Request, res: Response) =>
   res.json({ success: true, data: result });
 });
 
+export const getCustomerById = asyncHandler(async (req: Request, res: Response) => {
+  const result = await usersService.getCustomerById(req.params.id as string);
+  res.json({ success: true, data: result });
+});
+
 export const saveSignature = asyncHandler(async (req: Request, res: Response) => {
   const result = await usersService.saveSignature(req.userId!, req.body.signatureKey);
   res.json({ success: true, data: result });

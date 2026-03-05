@@ -21,6 +21,8 @@ export const requestAppointmentSchema = z.object({
   date: z.string().regex(dateRegex, 'Date must be YYYY-MM-DD'),
   slotCode: z.enum(SLOT_CODES as unknown as [string, ...string[]]),
   purpose: z.string().max(500).trim().optional(),
+  serviceType: z.nativeEnum(ServiceType).optional(),
+  serviceTypeCustom: z.string().max(200).trim().optional(),
   formattedAddress: z.string().max(500).trim().optional(),
   customerLocation: locationSchema.optional(),
   addressStructured: addressStructuredSchema.optional(),
@@ -131,3 +133,30 @@ export const submitSiteDetailsSchema = z.object({
 });
 
 export type SubmitSiteDetailsInput = z.infer<typeof submitSiteDetailsSchema>;
+
+// ── Agent Create Ocular (from consultation context) ──
+export const agentCreateOcularSchema = z.object({
+  customerId: z.string().min(1),
+  date: z.string().regex(dateRegex, 'Date must be YYYY-MM-DD'),
+  slotCode: z.enum(SLOT_CODES as unknown as [string, ...string[]]),
+  visitReportId: z.string().optional(),
+});
+
+export type AgentCreateOcularInput = z.infer<typeof agentCreateOcularSchema>;
+
+// ── Customer Submit Ocular Location ──
+export const submitOcularLocationSchema = z.object({
+  customerLocation: locationSchema,
+  formattedAddress: z.string().max(500).trim().optional(),
+  addressStructured: addressStructuredSchema.optional(),
+});
+
+export type SubmitOcularLocationInput = z.infer<typeof submitOcularLocationSchema>;
+
+// ── Agent Finalize Ocular ──
+export const agentFinalizeOcularSchema = z.object({
+  salesStaffId: z.string().min(1).optional(),
+  internalNotes: z.string().max(1000).trim().optional(),
+});
+
+export type AgentFinalizeOcularInput = z.infer<typeof agentFinalizeOcularSchema>;

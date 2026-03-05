@@ -70,6 +70,15 @@ export interface IVisitReport extends Document {
   customerRequirements?: string;
   notes?: string;
 
+  // ── Consultation-specific fields ──
+  productsDiscussed?: string;
+  designPreferences?: string;
+  materialOptions?: string;
+  projectScope?: string;
+  recommendedOcularDate?: Date;
+  recommendedOcularSlot?: string;
+  linkedProjectId?: Types.ObjectId;
+
   // File uploads (R2 keys)
   photoKeys: string[];
   videoKeys: string[];
@@ -167,6 +176,15 @@ const visitReportSchema = new Schema<IVisitReport>(
     videoKeys: [{ type: String }],
     sketchKeys: [{ type: String }],
     referenceImageKeys: [{ type: String }],
+
+    // Consultation-specific fields
+    productsDiscussed: { type: String, maxlength: 2000 },
+    designPreferences: { type: String, maxlength: 2000 },
+    materialOptions: { type: String, maxlength: 2000 },
+    projectScope: { type: String, maxlength: 2000 },
+    recommendedOcularDate: { type: Date },
+    recommendedOcularSlot: { type: String },
+    linkedProjectId: { type: Schema.Types.ObjectId, ref: 'Project' },
 
     returnReason: { type: String },
   },

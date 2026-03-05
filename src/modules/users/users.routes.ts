@@ -77,6 +77,13 @@ router.get(
   usersController.listCustomers,
 );
 
+router.get(
+  '/customers/:id',
+  authenticate,
+  authorize(Role.APPOINTMENT_AGENT, Role.ADMIN),
+  usersController.getCustomerById,
+);
+
 // ── Profile (any authenticated user) ──
 router.patch(
   '/profile',

@@ -33,7 +33,7 @@ router.post(
 router.get(
   '/appointment/:appointmentId',
   authenticate,
-  authorize(Role.SALES_STAFF, Role.ENGINEER, Role.ADMIN),
+  authorize(Role.SALES_STAFF, Role.ENGINEER, Role.ADMIN, Role.APPOINTMENT_AGENT),
   ctrl.getByAppointment,
 );
 
