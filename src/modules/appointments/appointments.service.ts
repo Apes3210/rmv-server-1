@@ -1176,6 +1176,7 @@ export async function cancelAppointment(
 export async function createOcularFeeCheckout(
   appointmentId: string,
   customerId: string,
+  clientOrigin: string,
   ip?: string,
   ua?: string,
 ) {
@@ -1202,22 +1203,16 @@ export async function createOcularFeeCheckout(
   // ⚠️ TESTING ONLY: Override fee to ₱1 for PayMongo test payments. Remove this line for production.
   const chargeAmount = 1; // TODO: change back to `feeAmount` for real payments
 
-  // If there's already an active checkout session, return it
-  if (appointment.paymongoCheckoutUrl && appointment.ocularFeeStatus === 'pending') {
-    return {
-      appointment,
-      checkoutUrl: appointment.paymongoCheckoutUrl,
-      sessionId: appointment.paymongoCheckoutSessionId,
-    };
-  }
+  // Always create a fresh checkout session so the success/cancel URLs reflect
+  // the client's actual origin (avoids stale localhost URLs in dev)
 
   const session = await createCheckoutSession({
     amount: chargeAmount, // ⚠️ TESTING ONLY: using chargeAmount (₱1) instead of feeAmount
     description: `Ocular Visit Fee`,
     appointmentId: appointment._id.toString(),
     customerId,
-    successUrl: `${env.FRONTEND_URL}/appointments/${appointment._id}/pay-ocular-fee?status=success`,
-    cancelUrl: `${env.FRONTEND_URL}/appointments/${appointment._id}/pay-ocular-fee?status=cancelled`,
+    successUrl: `${clientOrigin}/appointments/${appointment._id}/pay-ocular-fee?status=success`,
+    cancelUrl: `${clientOrigin}/appointments/${appointment._id}/pay-ocular-fee?status=cancelled`,
   });
 
   appointment.paymongoCheckoutSessionId = session.id;
