@@ -7,6 +7,7 @@ import { AppError, ErrorCode } from '../../utils/appError.js';
 import {
   ProjectStatus, AppointmentStatus, Role, AuditAction, NotificationCategory,
 } from '../../utils/constants.js';
+import { VisitReportStatus } from '../../models/VisitReport.js';
 import { projectStateMachine } from '../../utils/stateMachine.js';
 import { createAndSendNotification, notifyRole } from '../notifications/socket.service.js';
 import { generateAndUploadContract, type ContractData } from '../../services/contract.service.js';
@@ -41,6 +42,12 @@ export async function createProject(
   const existing = await Project.findOne({ appointmentId: input.appointmentId });
   if (existing) throw AppError.conflict('A project already exists for this appointment', ErrorCode.DUPLICATE_ENTRY);
 
+  // Link the latest submitted visit report from this appointment
+  const latestReport = await VisitReport.findOne({
+    appointmentId: input.appointmentId,
+    status: { $in: [VisitReportStatus.SUBMITTED, VisitReportStatus.COMPLETED] },
+  }).sort({ createdAt: -1 }).select('_id');
+
   const project = await Project.create({
     appointmentId: input.appointmentId,
     customerId: appointment.customerId,
@@ -55,6 +62,7 @@ export async function createProject(
     quantity: input.quantity,
     notes: input.notes,
     status: ProjectStatus.DRAFT,
+    ...(latestReport && { visitReportId: latestReport._id }),
   });
 
   await AuditLog.create({
@@ -311,6 +319,22 @@ export async function getProjectById(
     .populate('visitReportId');
 
   if (!project) throw AppError.notFound('Project not found');
+
+  // Fallback: if visitReportId was never linked, find the latest submitted report for the appointment
+  if (!project.visitReportId && project.appointmentId) {
+    const fallbackReport = await VisitReport.findOne({
+      appointmentId: project.appointmentId,
+      status: { $in: [VisitReportStatus.SUBMITTED, VisitReportStatus.COMPLETED] },
+    }).sort({ createdAt: -1 });
+
+    if (fallbackReport) {
+      // Persist the link so future queries don't need the fallback
+      project.visitReportId = fallbackReport._id;
+      await project.save();
+      // Re-populate since we just set it as an ObjectId
+      await project.populate('visitReportId');
+    }
+  }
 
   // Customers can only see their own
   if (
