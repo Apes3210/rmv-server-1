@@ -190,6 +190,7 @@ export enum AuditAction {
 
   // Appointment
   APPOINTMENT_CREATED = 'appointment_created',
+  APPOINTMENT_UPDATED = 'appointment_updated',
   APPOINTMENT_CONFIRMED = 'appointment_confirmed',
   APPOINTMENT_CANCELLED = 'appointment_cancelled',
   APPOINTMENT_COMPLETED = 'appointment_completed',

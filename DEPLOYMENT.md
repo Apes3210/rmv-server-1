@@ -1,8 +1,7 @@
 # Deployment
 
-⚠️ **IMPORTANT: DO NOT COMMIT OR PUSH THIS FILE TO GITHUB** ⚠️
-
-This file contains VPS credentials and sensitive deployment information. Keep it local only.
+This file intentionally documents the deployment flow without storing live credentials.
+Keep hostnames, usernames, passwords, tokens, and private keys in environment variables or your secret manager, not in this repo.
 
 This project uses **blue-green deployment** with Docker Compose profiles and nginx upstream switching for zero-downtime deploys.
 
@@ -10,12 +9,26 @@ This project uses **blue-green deployment** with Docker Compose profiles and ngi
 
 - Two sets of containers (blue/green) per service
 - Nginx routes traffic to the active color
-- Deploy script builds the inactive color, health-checks it, then switches nginx
+- GitHub Actions builds and pushes fresh images on every push to `main`
+- The VPS deploy script pulls the new image for the inactive color, health-checks it, then switches nginx
 - Old color is stopped only after traffic is routed to the new one
+- If image pull fails, the deploy script falls back to a local VPS build so blue-green deploys still work
 
 ## Trigger
 
 Push to `main` triggers GitHub Actions CI/CD automatically.
+
+## Required GitHub Secrets
+
+| Secret          | Purpose |
+|-----------------|---------|
+| `VPS_HOST`      | SSH target host |
+| `VPS_USERNAME`  | SSH username |
+| `VPS_PASSWORD`  | SSH password |
+| `GHCR_USERNAME` | GitHub Container Registry username for the VPS pull step |
+| `GHCR_TOKEN`    | GitHub Container Registry token with at least `read:packages` |
+
+`GHCR_USERNAME` and `GHCR_TOKEN` are strongly recommended so the VPS can pull the prebuilt images directly. If they are missing or the pull fails, the script falls back to building on the VPS, which is slower.
 
 ## Manual Deploy
 
@@ -32,14 +45,14 @@ Last verified: 2026-03-04
 
 | Field    | Value                    |
 |----------|--------------------------|
-| Host     | `188.166.177.69`         |
-| User     | `root`                   |
-| Password | `Qqu9pR96:Pvh&E`         |
+| Host     | `<set via secret>`       |
+| User     | `<set via secret>`       |
+| Password | `<set via secret>`       |
 
 ### Quick SSH via ops-tools
 
 ```powershell
-$env:VPS_HOST="188.166.177.69"; $env:VPS_USER="root"; $env:VPS_PASSWORD="Qqu9pR96:Pvh&E"
+$env:VPS_HOST="<set via secret>"; $env:VPS_USER="<set via secret>"; $env:VPS_PASSWORD="<set via secret>"
 cd ops-tools
 node run-ssh.mjs "<command>"
 ```

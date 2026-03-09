@@ -3,6 +3,34 @@ import dotenv from 'dotenv';
 
 dotenv.config();
 
+const booleanFromEnv = z.preprocess((value) => {
+  if (typeof value === 'boolean') {
+    return value;
+  }
+
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase();
+    if (['true', '1', 'yes', 'on'].includes(normalized)) {
+      return true;
+    }
+    if (['false', '0', 'no', 'off', ''].includes(normalized)) {
+      return false;
+    }
+  }
+
+  return value;
+}, z.boolean());
+
+function normalizeCookieDomain(value: string): string | undefined {
+  const normalized = value.trim().toLowerCase();
+
+  if (!normalized || normalized === 'localhost' || normalized === '127.0.0.1' || normalized === '::1') {
+    return undefined;
+  }
+
+  return value.trim();
+}
+
 const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
   PORT: z.coerce.number().default(5000),
@@ -19,7 +47,7 @@ const envSchema = z.object({
 
   // Cookies
   COOKIE_DOMAIN: z.string().default('localhost'),
-  COOKIE_SECURE: z.coerce.boolean().default(false),
+  COOKIE_SECURE: booleanFromEnv.default(false),
   COOKIE_SAMESITE: z.enum(['lax', 'strict', 'none']).default('lax'),
 
   // CORS
@@ -76,6 +104,7 @@ if (!parsed.success) {
 }
 
 const envData = parsed.data;
+const resolvedCookieDomain = normalizeCookieDomain(envData.COOKIE_DOMAIN);
 
 if (envData.NODE_ENV === 'production') {
   const prodConfigErrors: string[] = [];
@@ -92,7 +121,7 @@ if (envData.NODE_ENV === 'production') {
     prodConfigErrors.push('COOKIE_SECURE must be true in production');
   }
 
-  if (envData.COOKIE_DOMAIN === 'localhost') {
+  if (!resolvedCookieDomain) {
     prodConfigErrors.push('COOKIE_DOMAIN cannot be localhost in production');
   }
 
@@ -119,4 +148,7 @@ if (envData.NODE_ENV === 'production') {
   }
 }
 
-export const env = envData;
+export const env = {
+  ...envData,
+  COOKIE_DOMAIN: resolvedCookieDomain,
+};

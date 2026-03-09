@@ -8,6 +8,7 @@ import {
   createVisitReportSchema,
   updateVisitReportSchema,
   returnVisitReportSchema,
+  reopenVisitReportSchema,
 } from './visit-reports.validation.js';
 
 const router = Router();
@@ -77,6 +78,14 @@ router.post(
   authorize(Role.ENGINEER, Role.ADMIN),
   validate(returnVisitReportSchema),
   ctrl.returnVisitReport,
+);
+
+router.post(
+  '/:id/reopen-for-repair',
+  authenticate,
+  authorize(Role.SALES_STAFF, Role.ADMIN),
+  validate(reopenVisitReportSchema),
+  ctrl.reopenVisitReportForRepair,
 );
 
 export default router;

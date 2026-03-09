@@ -75,6 +75,8 @@ export interface IVisitReport extends Document {
   designPreferences?: string;
   materialOptions?: string;
   projectScope?: string;
+  initialDesignKeys?: string[];
+  initialDesignNotes?: string;
   recommendedOcularDate?: Date;
   recommendedOcularSlot?: string;
   linkedProjectId?: Types.ObjectId;
@@ -182,6 +184,8 @@ const visitReportSchema = new Schema<IVisitReport>(
     designPreferences: { type: String, maxlength: 2000 },
     materialOptions: { type: String, maxlength: 2000 },
     projectScope: { type: String, maxlength: 2000 },
+    initialDesignKeys: [{ type: String }],
+    initialDesignNotes: { type: String, maxlength: 2000 },
     recommendedOcularDate: { type: Date },
     recommendedOcularSlot: { type: String },
     linkedProjectId: { type: Schema.Types.ObjectId, ref: 'Project' },

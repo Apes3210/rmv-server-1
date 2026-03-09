@@ -20,8 +20,15 @@ import type {
   AssignFabricationInput,
   TransitionProjectInput,
   SignContractInput,
+  ReviewInitialDesignInput,
+  ResubmitInitialDesignInput,
+  BackfillInitialDesignInput,
+  SelectPaymentPlanInput,
 } from './projects.validation.js';
 import type { Types } from 'mongoose';
+import { v4 as uuidv4 } from 'uuid';
+import { PaymentStageStatus } from '../../utils/constants.js';
+import { getInstallmentConfig } from '../config/config.service.js';
 
 // ── Create Project (from completed appointment) ──
 
@@ -61,6 +68,9 @@ export async function createProject(
     finishColor: input.finishColor,
     quantity: input.quantity,
     notes: input.notes,
+    initialDesignKeys: appointment.initialDesignKeys || [],
+    initialDesignNotes: appointment.initialDesignNotes,
+    designReviewStatus: appointment.initialDesignStatus === 'submitted' ? 'pending' : 'not_required',
     status: ProjectStatus.DRAFT,
     ...(latestReport && { visitReportId: latestReport._id }),
   });
@@ -183,6 +193,390 @@ export async function assignEngineers(
   return project;
 }
 
+function hasInitialDesignSubmission(project: {
+  initialDesignKeys?: string[];
+  initialDesignNotes?: string;
+}) {
+  return Boolean(project.initialDesignKeys?.length || project.initialDesignNotes?.trim());
+}
+
+function isHistoricalInitialDesignBackfillEligible(projectStatus: ProjectStatus, hasBlueprint: boolean) {
+  return hasBlueprint || [
+    ProjectStatus.APPROVED,
+    ProjectStatus.PAYMENT_PENDING,
+    ProjectStatus.FABRICATION,
+    ProjectStatus.COMPLETED,
+  ].includes(projectStatus);
+}
+
+function buildContractData(
+  project: any,
+  blueprint: any,
+  paymentPlan: {
+    totalAmount: number;
+    isPayInFull: boolean;
+    stages: Array<{ label: string; percentage: number; amount: number; description?: string }>;
+  },
+) {
+  const customer = project.customerId as any;
+  const engineers = project.engineerIds as any[];
+
+  return {
+    projectTitle: project.title,
+    projectDescription: project.description,
+    siteAddress: project.siteAddress,
+    serviceType: project.serviceType,
+    customerName: `${customer.firstName} ${customer.lastName}`,
+    customerEmail: customer.email,
+    customerPhone: customer.phone,
+    customerAddress: customer.address,
+    engineerNames: engineers.map((e: any) => `${e.firstName} ${e.lastName}`),
+    totalAmount: paymentPlan.totalAmount,
+    paymentType: paymentPlan.isPayInFull ? 'full' : 'installment',
+    stages: paymentPlan.stages.map((stage) => ({
+      label: stage.label,
+      percentage: stage.percentage,
+      amount: stage.amount,
+      description: stage.description,
+    })),
+    estimatedDuration: blueprint.quotation?.estimatedDuration,
+    materialType: project.materialType,
+    finishColor: project.finishColor,
+    quantity: project.quantity,
+    customerSignatureKey: customer.signatureKey || null,
+    engineerSignatureKey: engineers[0]?.signatureKey || null,
+    contractSignedAt: project.contractSignedAt || null,
+    quotationLineItems: blueprint.quotation?.lineItems?.map((lineItem: any) => ({
+      label: lineItem.label,
+      quantity: lineItem.quantity,
+      materials: lineItem.materials,
+      labor: lineItem.labor,
+      amount: lineItem.amount,
+    })),
+    quotationFees: blueprint.quotation?.fees,
+    quotationValidityDays: blueprint.quotation?.validityDays,
+    scopeOfWork: blueprint.quotation?.breakdown,
+  } satisfies ContractData;
+}
+
+export async function reviewInitialDesign(
+  projectId: string,
+  input: ReviewInitialDesignInput,
+  actorId: string,
+  ip?: string,
+  ua?: string,
+) {
+  const project = await Project.findById(projectId);
+  if (!project) throw AppError.notFound('Project not found');
+
+  const canReview = project.engineerIds.some((id) => id.toString() === actorId);
+  const actor = await User.findById(actorId).select('roles firstName lastName');
+  const isAdmin = actor?.roles?.includes(Role.ADMIN);
+
+  if (!canReview && !isAdmin) {
+    throw AppError.forbidden('Only an assigned engineer or admin can review the initial design');
+  }
+
+  if (!hasInitialDesignSubmission(project)) {
+    throw AppError.badRequest('No initial design has been submitted for this project');
+  }
+
+  if (project.designReviewStatus === 'approved' && input.decision === 'approved') {
+    return project;
+  }
+
+  project.designReviewStatus = input.decision;
+  project.designReviewNotes = input.notes;
+  project.designReviewedBy = actorId as unknown as Types.ObjectId;
+  project.designReviewedAt = new Date();
+  await project.save();
+
+  await AuditLog.create({
+    action: AuditAction.PROJECT_UPDATED,
+    actorId,
+    targetType: 'project',
+    targetId: project._id,
+    details: { action: 'initial_design_reviewed', decision: input.decision, notes: input.notes || null },
+    ipAddress: ip,
+    userAgent: ua,
+  });
+
+  await createAndSendNotification(
+    project.salesStaffId,
+    NotificationCategory.PROJECT,
+    input.decision === 'approved' ? 'Initial Design Approved' : 'Initial Design Needs Changes',
+    input.decision === 'approved'
+      ? `The initial design for project "${project.title}" has been approved by engineering.`
+      : `Engineering declined the initial design for project "${project.title}".${input.notes ? ` Notes: ${input.notes}` : ''}`,
+    `/projects/${project._id}`,
+  );
+
+  return project;
+}
+
+export async function resubmitInitialDesign(
+  projectId: string,
+  input: ResubmitInitialDesignInput,
+  actorId: string,
+  ip?: string,
+  ua?: string,
+) {
+  const project = await Project.findById(projectId);
+  if (!project) throw AppError.notFound('Project not found');
+
+  const actor = await User.findById(actorId).select('roles');
+  const isAdmin = actor?.roles?.includes(Role.ADMIN);
+  const isAssignedSales = String(project.salesStaffId) === actorId;
+  if (!isAdmin && !isAssignedSales) {
+    throw AppError.forbidden('Only the assigned sales staff or an admin can update the initial design');
+  }
+
+  if (![ProjectStatus.SUBMITTED, ProjectStatus.BLUEPRINT].includes(project.status)) {
+    throw AppError.badRequest('Initial design can only be updated before blueprint review begins');
+  }
+
+  const existingBlueprint = await Blueprint.findOne({ projectId }).select('_id');
+  if (existingBlueprint) {
+    throw AppError.badRequest('Initial design can no longer be updated after the blueprint has been uploaded');
+  }
+
+  project.initialDesignKeys = input.initialDesignKeys || [];
+  project.initialDesignNotes = input.initialDesignNotes || undefined;
+  project.designReviewStatus = 'pending';
+  project.designReviewedBy = undefined;
+  project.designReviewedAt = undefined;
+  project.designReviewNotes = undefined;
+  await project.save();
+
+  await AuditLog.create({
+    action: AuditAction.PROJECT_UPDATED,
+    actorId,
+    targetType: 'project',
+    targetId: project._id,
+    details: {
+      action: 'initial_design_resubmitted',
+      initialDesignKeyCount: project.initialDesignKeys.length,
+      hasNotes: !!project.initialDesignNotes,
+    },
+    ipAddress: ip,
+    userAgent: ua,
+  });
+
+  for (const engineerId of project.engineerIds) {
+    await createAndSendNotification(
+      engineerId,
+      NotificationCategory.PROJECT,
+      'Initial Design Resubmitted',
+      `Sales staff updated the initial design for project "${project.title}". Please review it again.`,
+      `/projects/${project._id}`,
+    );
+  }
+
+  return project;
+}
+
+export async function backfillInitialDesign(
+  projectId: string,
+  input: BackfillInitialDesignInput,
+  actorId: string,
+  ip?: string,
+  ua?: string,
+) {
+  const project = await Project.findById(projectId);
+  if (!project) throw AppError.notFound('Project not found');
+
+  const existingBlueprint = await Blueprint.findOne({ projectId }).select('_id');
+  if (!isHistoricalInitialDesignBackfillEligible(project.status, Boolean(existingBlueprint))) {
+    throw AppError.badRequest('Use the standard initial design workflow before blueprint review begins');
+  }
+
+  project.initialDesignKeys = input.initialDesignKeys || [];
+  project.initialDesignNotes = input.initialDesignNotes || undefined;
+  project.initialDesignBackfill = {
+    isSyntheticDemo: true,
+    reason: input.backfillReason,
+    backfilledAt: new Date(),
+    backfilledBy: actorId as unknown as Types.ObjectId,
+  };
+
+  if (!hasInitialDesignSubmission(project)) {
+    throw AppError.badRequest('Provide at least one design file or a note');
+  }
+
+  if (project.designReviewStatus === 'pending' || project.designReviewStatus === 'declined') {
+    project.designReviewStatus = 'not_required';
+    project.designReviewedBy = undefined;
+    project.designReviewedAt = undefined;
+    project.designReviewNotes = undefined;
+  }
+
+  await project.save();
+
+  await AuditLog.create({
+    action: AuditAction.PROJECT_UPDATED,
+    actorId,
+    targetType: 'project',
+    targetId: project._id,
+    details: {
+      action: 'initial_design_backfilled',
+      syntheticDemo: true,
+      reason: input.backfillReason,
+      initialDesignKeyCount: project.initialDesignKeys.length,
+      hasNotes: !!project.initialDesignNotes,
+    },
+    ipAddress: ip,
+    userAgent: ua,
+  });
+
+  return project;
+}
+
+async function buildPaymentStages(projectId: string, paymentType: 'full' | 'installment') {
+  const blueprint = await Blueprint.findOne({ projectId }).sort({ version: -1 });
+  if (!blueprint?.quotation || blueprint.status !== 'approved') {
+    throw AppError.badRequest('Customer payment selection is only available after the approved quotation is ready');
+  }
+
+  const baseTotal = blueprint.quotation.total;
+  const installmentConfig = await getInstallmentConfig();
+  const isPayInFull = paymentType === 'full';
+  const totalAmount = isPayInFull
+    ? baseTotal
+    : Math.round(baseTotal * (1 + installmentConfig.surchargePercent / 100) * 100) / 100;
+
+  const stages = isPayInFull
+    ? [{
+      stageId: uuidv4(),
+      label: 'Full Payment',
+      description: 'Due upon contract signing',
+      percentage: 100,
+      amount: totalAmount,
+      status: PaymentStageStatus.PENDING,
+      amountPaid: 0,
+      creditApplied: 0,
+      remainingBalance: totalAmount,
+      activatedAt: new Date(),
+    }]
+    : installmentConfig.split.map((pct, idx) => {
+      const amount = Math.round((totalAmount * pct / 100) * 100) / 100;
+      const milestone = blueprint.quotation?.paymentMilestones?.[idx];
+      return {
+        stageId: uuidv4(),
+        label: milestone?.label || installmentConfig.stageLabels[idx] || `Stage ${idx + 1}`,
+        description: milestone?.description || installmentConfig.stageDescriptions[idx] || '',
+        percentage: pct,
+        amount,
+        status: PaymentStageStatus.PENDING,
+        amountPaid: 0,
+        creditApplied: 0,
+        remainingBalance: amount,
+        activatedAt: idx === 0 ? new Date() : null,
+      };
+    });
+
+  return {
+    blueprint,
+    totalAmount,
+    isPayInFull,
+    surchargePercent: isPayInFull ? 0 : installmentConfig.surchargePercent,
+    stages,
+  };
+}
+
+export async function selectPaymentPlan(
+  projectId: string,
+  input: SelectPaymentPlanInput,
+  actorId: string,
+  ip?: string,
+  ua?: string,
+) {
+  const project = await Project.findById(projectId)
+    .populate('customerId', 'firstName lastName email phone address signatureKey')
+    .populate('engineerIds', 'firstName lastName phone signatureKey');
+
+  if (!project) throw AppError.notFound('Project not found');
+  if (String((project.customerId as any)._id ?? project.customerId) !== actorId) {
+    throw AppError.forbidden('Only the project customer can select a payment plan');
+  }
+
+  const approvedBlueprint = await Blueprint.findOne({ projectId }).sort({ version: -1 });
+  if (!approvedBlueprint?.quotation || approvedBlueprint.status !== 'approved') {
+    throw AppError.badRequest('Customer payment selection is only available after the approved quotation is ready');
+  }
+
+  const existingPlan = await PaymentPlan.findOne({ projectId: project._id });
+
+  if (existingPlan) {
+    if (![ProjectStatus.APPROVED, ProjectStatus.PAYMENT_PENDING].includes(project.status)) {
+      throw AppError.conflict('A payment plan already exists for this project', ErrorCode.DUPLICATE_ENTRY);
+    }
+
+    if (!project.contractKey) {
+      const recoveryContractData = buildContractData(project, approvedBlueprint, existingPlan);
+      const { originalKey } = await generateAndUploadContract(recoveryContractData);
+      project.contractKey = originalKey;
+      project.contractGeneratedAt = new Date();
+      project.originalContractDownloadedAt = undefined as any;
+    }
+
+    if (project.status === ProjectStatus.APPROVED) {
+      projectStateMachine.assertTransition(project.status, ProjectStatus.PAYMENT_PENDING);
+      project.status = ProjectStatus.PAYMENT_PENDING;
+    }
+
+    await project.save();
+    return { paymentPlan: existingPlan, contractKey: project.contractKey, project };
+  }
+
+  if (project.status !== ProjectStatus.APPROVED) {
+    throw AppError.badRequest('Payment plan selection is only available after blueprint approval');
+  }
+
+  const { blueprint, totalAmount, isPayInFull, surchargePercent, stages } = await buildPaymentStages(projectId, input.paymentType);
+
+  const contractData = buildContractData(project, blueprint, {
+    totalAmount,
+    isPayInFull,
+    stages,
+  });
+  const { originalKey } = await generateAndUploadContract(contractData);
+
+  const plan = await PaymentPlan.create({
+    projectId: project._id,
+    totalAmount,
+    isPayInFull,
+    stages,
+    createdBy: actorId,
+  });
+
+  projectStateMachine.assertTransition(project.status, ProjectStatus.PAYMENT_PENDING);
+  project.status = ProjectStatus.PAYMENT_PENDING;
+  project.contractKey = originalKey;
+  project.contractGeneratedAt = new Date();
+  project.originalContractDownloadedAt = undefined as any;
+  await project.save();
+
+  await AuditLog.create({
+    action: AuditAction.PAYMENT_PLAN_CREATED,
+    actorId,
+    targetType: 'payment_plan',
+    targetId: plan._id,
+    details: { projectId, paymentType: input.paymentType, totalAmount, surchargePercent, stageCount: stages.length },
+    ipAddress: ip,
+    userAgent: ua,
+  });
+
+  await createAndSendNotification(
+    actorId,
+    NotificationCategory.PAYMENT,
+    'Payment Plan Created',
+    `Your ${isPayInFull ? 'full payment' : 'installment'} plan for "${project.title}" is ready. Please review and sign the contract next.`,
+    `/projects/${project._id}`,
+  );
+
+  return { paymentPlan: plan, contractKey: originalKey, project };
+}
+
 // ── Assign Fabrication Staff ──
 
 export async function assignFabricationStaff(
@@ -194,6 +588,19 @@ export async function assignFabricationStaff(
 ) {
   const project = await Project.findById(projectId);
   if (!project) throw AppError.notFound('Project not found');
+
+  if (![ProjectStatus.APPROVED, ProjectStatus.PAYMENT_PENDING, ProjectStatus.FABRICATION, ProjectStatus.COMPLETED].includes(project.status)) {
+    throw AppError.badRequest('Fabrication team can only be assigned after the blueprint has been approved');
+  }
+
+  const latestBlueprint = await Blueprint.findOne({ projectId }).sort({ version: -1 }).select('status');
+  if (!latestBlueprint) {
+    throw AppError.badRequest('Fabrication team cannot be assigned until a blueprint exists');
+  }
+
+  if (latestBlueprint.status !== 'approved') {
+    throw AppError.badRequest('Fabrication team can only be assigned after the customer approves the blueprint and costing');
+  }
 
   // Verify lead is fabrication staff
   const lead = await User.findOne({
@@ -314,6 +721,8 @@ export async function getProjectById(
     .populate('customerId', 'firstName lastName email phone')
     .populate('salesStaffId', 'firstName lastName')
     .populate('engineerIds', 'firstName lastName phone')
+    .populate('designReviewedBy', 'firstName lastName')
+    .populate('initialDesignBackfill.backfilledBy', 'firstName lastName')
     .populate('fabricationLeadId', 'firstName lastName')
     .populate('fabricationAssistantIds', 'firstName lastName')
     .populate('visitReportId');
@@ -534,33 +943,7 @@ export async function generateContract(
   }
 
   const customer = project.customerId as any;
-  const engineers = project.engineerIds as any[];
-
-  const contractData: ContractData = {
-    projectTitle: project.title,
-    projectDescription: project.description,
-    siteAddress: project.siteAddress,
-    serviceType: project.serviceType,
-    customerName: `${customer.firstName} ${customer.lastName}`,
-    customerEmail: customer.email,
-    customerPhone: customer.phone,
-    customerAddress: customer.address,
-    engineerNames: engineers.map((e: any) => `${e.firstName} ${e.lastName}`),
-    totalAmount: paymentPlan.totalAmount,
-    paymentType: paymentPlan.isPayInFull ? 'full' : 'installment',
-    stages: paymentPlan.stages.map(s => ({
-      label: s.label,
-      percentage: s.percentage,
-      amount: s.amount,
-    })),
-    estimatedDuration: blueprint.quotation.estimatedDuration,
-    materialType: project.materialType,
-    finishColor: project.finishColor,
-    quantity: project.quantity,
-    customerSignatureKey: customer.signatureKey || null,
-    engineerSignatureKey: engineers[0]?.signatureKey || null,
-    contractSignedAt: project.contractSignedAt || null,
-  };
+  const contractData = buildContractData(project, blueprint, paymentPlan);
 
   const { originalKey, copyKey } = await generateAndUploadContract(contractData);
 
@@ -636,33 +1019,11 @@ export async function signContract(
   try {
     const blueprint = await Blueprint.findOne({ projectId }).sort({ version: -1 });
     const paymentPlan = await PaymentPlan.findOne({ projectId });
-    const customer = project.customerId as any;
-    const engineers = project.engineerIds as any[];
 
     if (blueprint?.quotation && paymentPlan) {
       const contractData: ContractData = {
-        projectTitle: project.title,
-        projectDescription: project.description,
-        siteAddress: project.siteAddress,
-        serviceType: project.serviceType,
-        customerName: `${customer.firstName} ${customer.lastName}`,
-        customerEmail: customer.email,
-        customerPhone: customer.phone,
-        customerAddress: customer.address,
-        engineerNames: engineers.map((e: any) => `${e.firstName} ${e.lastName}`),
-        totalAmount: paymentPlan.totalAmount,
-        paymentType: paymentPlan.isPayInFull ? 'full' : 'installment',
-        stages: paymentPlan.stages.map(s => ({
-          label: s.label,
-          percentage: s.percentage,
-          amount: s.amount,
-        })),
-        estimatedDuration: blueprint.quotation.estimatedDuration,
-        materialType: project.materialType,
-        finishColor: project.finishColor,
-        quantity: project.quantity,
+        ...buildContractData(project, blueprint, paymentPlan),
         customerSignatureKey: input.signatureKey,
-        engineerSignatureKey: engineers[0]?.signatureKey || null,
         contractSignedAt: project.contractSignedAt,
       };
 

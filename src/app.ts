@@ -33,6 +33,8 @@ import refundRoutes from './modules/refunds/refunds.routes.js';
 const app = express();
 app.set('trust proxy', 1);
 
+const csrfCookieDomainOptions = env.COOKIE_DOMAIN ? { domain: env.COOKIE_DOMAIN } : {};
+
 // ── Security Headers ──
 app.use(
   helmet({
@@ -97,13 +99,15 @@ app.get(`${env.API_PREFIX}/csrf-token`, (req, res) => {
   const token = generateCsrfToken();
   // Clear legacy host-only/domain variants first to avoid duplicate csrfToken cookies.
   res.clearCookie('csrfToken', { path: '/' });
-  res.clearCookie('csrfToken', { domain: env.COOKIE_DOMAIN, path: '/' });
+  if (env.COOKIE_DOMAIN) {
+    res.clearCookie('csrfToken', { domain: env.COOKIE_DOMAIN, path: '/' });
+  }
   res.cookie('csrfToken', token, {
     httpOnly: false,
     secure: env.COOKIE_SECURE,
     sameSite: env.COOKIE_SAMESITE,
-    domain: env.COOKIE_DOMAIN,
     path: '/',
+    ...csrfCookieDomainOptions,
   });
   res.json({ success: true, data: { csrfToken: token } });
 });

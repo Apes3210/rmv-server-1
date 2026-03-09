@@ -9,10 +9,52 @@ import {
 } from '../../utils/constants.js';
 import { visitReportStateMachine, appointmentStateMachine } from '../../utils/stateMachine.js';
 import { createAndSendNotification, notifyRole } from '../notifications/socket.service.js';
-import type { CreateVisitReportInput, UpdateVisitReportInput, ReturnVisitReportInput } from './visit-reports.validation.js';
+import type { CreateVisitReportInput, UpdateVisitReportInput, ReturnVisitReportInput, ReopenVisitReportInput } from './visit-reports.validation.js';
 import type { Types } from 'mongoose';
 
 import type { ICustomerSiteDetails } from '../../models/Appointment.js';
+
+function hasAnyMeasuredDimensions(report: {
+  lineItems?: Array<{
+    length?: number;
+    width?: number;
+    height?: number;
+    area?: number;
+    thickness?: number;
+  }>;
+  measurements?: {
+    length?: number;
+    width?: number;
+    height?: number;
+    area?: number;
+    thickness?: number;
+    raw?: string;
+  };
+}) {
+  const hasLineItemMeasurements = Boolean(
+    report.lineItems?.some((item) =>
+      item.length != null ||
+      item.width != null ||
+      item.height != null ||
+      item.area != null ||
+      item.thickness != null,
+    ),
+  );
+
+  const legacy = report.measurements;
+  const hasLegacyMeasurements = Boolean(
+    legacy && (
+      legacy.length != null ||
+      legacy.width != null ||
+      legacy.height != null ||
+      legacy.area != null ||
+      legacy.thickness != null ||
+      legacy.raw?.trim()
+    ),
+  );
+
+  return hasLineItemMeasurements || hasLegacyMeasurements;
+}
 
 /**
  * Build a filter condition that excludes draft reports whose appointment has been cancelled.
@@ -328,6 +370,13 @@ export async function submitReport(
     );
   }
 
+  if (report.visitType === 'ocular' && !hasAnyMeasuredDimensions(report)) {
+    throw AppError.badRequest(
+      'Add at least one measured line item or legacy measurement before submitting an ocular report',
+      ErrorCode.VALIDATION_ERROR,
+    );
+  }
+
   visitReportStateMachine.assertTransition(report.status, VisitReportStatus.SUBMITTED);
 
   report.status = VisitReportStatus.SUBMITTED;
@@ -367,6 +416,9 @@ export async function submitReport(
         finishColor: report.finishes,
         quantity: 1,
         notes: report.notes,
+        initialDesignKeys: report.initialDesignKeys?.length ? report.initialDesignKeys : (appt.initialDesignKeys || []),
+        initialDesignNotes: report.initialDesignNotes || appt.initialDesignNotes,
+        designReviewStatus: (report.initialDesignKeys?.length || report.initialDesignNotes || appt.initialDesignStatus === 'submitted') ? 'pending' : 'not_required',
         status: ProjectStatus.DRAFT,
         mediaKeys: [...report.photoKeys, ...report.sketchKeys, ...report.referenceImageKeys],
       });
@@ -430,6 +482,13 @@ export async function submitReport(
       if (report.materials) linkedProject.materialType = report.materials;
       if (report.finishes) linkedProject.finishColor = report.finishes;
       if (report.notes) linkedProject.notes = report.notes;
+      if (report.initialDesignKeys?.length) linkedProject.initialDesignKeys = report.initialDesignKeys;
+      else if (appt.initialDesignKeys?.length) linkedProject.initialDesignKeys = appt.initialDesignKeys;
+      if (report.initialDesignNotes) linkedProject.initialDesignNotes = report.initialDesignNotes;
+      else if (appt.initialDesignNotes) linkedProject.initialDesignNotes = appt.initialDesignNotes;
+      if (appt.initialDesignStatus === 'submitted' && linkedProject.designReviewStatus === 'not_required') {
+        linkedProject.designReviewStatus = 'pending';
+      }
       if (report.siteConditions) (linkedProject as any).siteConditions = report.siteConditions;
       linkedProject.mediaKeys = [...(linkedProject.mediaKeys || []), ...report.photoKeys, ...report.sketchKeys, ...report.referenceImageKeys];
       if (appt.formattedAddress) linkedProject.siteAddress = appt.formattedAddress;
@@ -503,6 +562,9 @@ export async function submitReport(
           finishColor: report.finishes,
           quantity: 1,
           notes: report.notes,
+          initialDesignKeys: report.initialDesignKeys?.length ? report.initialDesignKeys : (appt.initialDesignKeys || []),
+          initialDesignNotes: report.initialDesignNotes || appt.initialDesignNotes,
+          designReviewStatus: (report.initialDesignKeys?.length || report.initialDesignNotes || appt.initialDesignStatus === 'submitted') ? 'pending' : 'not_required',
           status: ProjectStatus.SUBMITTED,
           mediaKeys: [...report.photoKeys, ...report.sketchKeys, ...report.referenceImageKeys],
         });
@@ -635,6 +697,83 @@ export async function returnReport(
     `Your visit report has been returned for revision. Reason: ${input.reason}`,
     `/visit-reports/${report._id}`,
   );
+
+  return report;
+}
+
+export async function reopenReportForRepair(
+  reportId: string,
+  input: ReopenVisitReportInput,
+  actorId: string,
+  actorRoles: Role[],
+  ip?: string,
+  ua?: string,
+) {
+  const report = await VisitReport.findById(reportId);
+  if (!report) throw AppError.notFound('Visit report not found');
+
+  if (report.visitType !== 'ocular') {
+    throw AppError.badRequest('Only ocular reports can be reopened for repair');
+  }
+
+  const isAdmin = actorRoles.includes(Role.ADMIN);
+  const isAssignedSales = actorRoles.includes(Role.SALES_STAFF) && report.salesStaffId.toString() === actorId;
+  if (!isAdmin && !isAssignedSales) {
+    throw AppError.forbidden('Only the assigned sales staff or an admin can reopen this ocular report');
+  }
+
+  if (![VisitReportStatus.SUBMITTED, VisitReportStatus.COMPLETED].includes(report.status)) {
+    throw AppError.badRequest('Only submitted or completed ocular reports can be reopened for repair');
+  }
+
+  const reason = input.reason.trim();
+  report.status = VisitReportStatus.RETURNED;
+  report.returnReason = reason;
+  await report.save();
+
+  await AuditLog.create({
+    action: AuditAction.VISIT_REPORT_RETURNED,
+    actorId,
+    targetType: 'visit_report',
+    targetId: report._id,
+    details: { reason, reopenedForRepair: true },
+    ipAddress: ip,
+    userAgent: ua,
+  });
+
+  const linkedProject = report.linkedProjectId
+    ? await Project.findById(report.linkedProjectId)
+    : await Project.findOne({ visitReportId: report._id });
+
+  if (linkedProject) {
+    await notifyRole(
+      Role.ADMIN,
+      NotificationCategory.PROJECT,
+      'Ocular Report Reopened for Repair',
+      `Ocular report for project "${linkedProject.title}" was reopened for repair. Reason: ${reason}`,
+      `/visit-reports/${report._id}`,
+    );
+
+    for (const engineerId of linkedProject.engineerIds) {
+      await createAndSendNotification(
+        engineerId,
+        NotificationCategory.PROJECT,
+        'Ocular Report Under Repair',
+        `The ocular report for project "${linkedProject.title}" was reopened for repair. Engineering should wait for the corrected site data before relying on it.`,
+        `/projects/${linkedProject._id}`,
+      );
+    }
+  }
+
+  if (isAdmin && report.salesStaffId.toString() !== actorId) {
+    await createAndSendNotification(
+      report.salesStaffId,
+      NotificationCategory.PROJECT,
+      'Ocular Report Reopened for Repair',
+      `An admin reopened your ocular report for repair. Reason: ${reason}`,
+      `/visit-reports/${report._id}`,
+    );
+  }
 
   return report;
 }

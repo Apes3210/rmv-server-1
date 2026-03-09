@@ -5,6 +5,9 @@ on:
     branches: [main]
   workflow_dispatch:
 
+env:
+  REGISTRY: ghcr.io
+
 jobs:
   ci:
     name: Build Check
@@ -25,10 +28,49 @@ jobs:
       - name: Build
         run: npm run build
 
+  image:
+    name: Publish Backend Image
+    runs-on: ubuntu-latest
+    needs: ci
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image_repo: ${{ steps.meta.outputs.image_repo }}
+      image_tag: ${{ steps.meta.outputs.image_tag }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Compute image metadata
+        id: meta
+        shell: bash
+        run: |
+          owner_lc=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          echo "image_repo=${{ env.REGISTRY }}/$owner_lc/rmv-server" >> "$GITHUB_OUTPUT"
+          echo "image_tag=${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push backend image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.image_repo }}:${{ steps.meta.outputs.image_tag }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
   deploy:
     name: Blue-Green Deploy (Backend)
     runs-on: ubuntu-latest
-    needs: ci
+    needs: [ci, image]
     concurrency:
       group: vps-deploy
       cancel-in-progress: false
@@ -61,6 +103,11 @@ jobs:
 
             # ── Run blue-green deploy ─────────────────────────────────
             chmod +x /opt/rmv/rmv-server/deploy/scripts/blue-green-deploy.sh
+            export RMV_API_IMAGE='${{ needs.image.outputs.image_repo }}'
+            export RMV_IMAGE_TAG='${{ needs.image.outputs.image_tag }}'
+            if [ -n "${{ secrets.GHCR_USERNAME }}" ] && [ -n "${{ secrets.GHCR_TOKEN }}" ]; then
+              echo '${{ secrets.GHCR_TOKEN }}' | docker login ghcr.io -u '${{ secrets.GHCR_USERNAME }}' --password-stdin
+            fi
             /opt/rmv/rmv-server/deploy/scripts/blue-green-deploy.sh api
 
             echo "========== BACKEND DEPLOY DONE =========="

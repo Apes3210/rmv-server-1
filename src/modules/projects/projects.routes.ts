@@ -11,6 +11,10 @@ import {
   assignFabricationSchema,
   transitionProjectSchema,
   signContractSchema,
+  reviewInitialDesignSchema,
+  resubmitInitialDesignSchema,
+  backfillInitialDesignSchema,
+  selectPaymentPlanSchema,
 } from './projects.validation.js';
 
 const router = Router();
@@ -39,6 +43,30 @@ router.post(
   authorize(Role.SALES_STAFF, Role.ENGINEER, Role.ADMIN),
   validate(assignEngineersSchema),
   ctrl.assignEngineers,
+);
+
+router.post(
+  '/:id/review-initial-design',
+  authenticate,
+  authorize(Role.ENGINEER, Role.ADMIN),
+  validate(reviewInitialDesignSchema),
+  ctrl.reviewInitialDesign,
+);
+
+router.post(
+  '/:id/resubmit-initial-design',
+  authenticate,
+  authorize(Role.SALES_STAFF, Role.ADMIN),
+  validate(resubmitInitialDesignSchema),
+  ctrl.resubmitInitialDesign,
+);
+
+router.post(
+  '/:id/backfill-initial-design',
+  authenticate,
+  authorize(Role.ADMIN),
+  validate(backfillInitialDesignSchema),
+  ctrl.backfillInitialDesign,
 );
 
 router.post(
@@ -79,6 +107,14 @@ router.post(
   authenticate,
   authorize(Role.CASHIER, Role.SALES_STAFF, Role.ADMIN),
   ctrl.generateContract,
+);
+
+router.post(
+  '/:id/select-payment-plan',
+  authenticate,
+  authorize(Role.CUSTOMER),
+  validate(selectPaymentPlanSchema),
+  ctrl.selectPaymentPlan,
 );
 
 router.get(

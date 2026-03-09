@@ -3,6 +3,7 @@ services:
   # BLUE environment
   # ═══════════════════════════════════════════════════════════════
   api-blue:
+    image: "${RMV_API_IMAGE:-rmv-api}:${RMV_IMAGE_TAG:-latest}"
     build:
       context: ..
       dockerfile: Dockerfile
@@ -16,15 +17,16 @@ services:
       - "5000"
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:5000/api/v1/health"]
-      interval: 15s
-      timeout: 5s
-      retries: 5
-      start_period: 30s
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
     networks:
       - rmv-net
     profiles: ["blue"]
 
   web-blue:
+    image: "${RMV_WEB_IMAGE:-rmv-web}:${RMV_IMAGE_TAG:-latest}"
     build:
       context: ../../rmv-web
       dockerfile: Dockerfile
@@ -34,10 +36,10 @@ services:
       - "80"
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost/"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 10s
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 5s
     networks:
       - rmv-net
     profiles: ["blue"]
@@ -46,6 +48,7 @@ services:
   # GREEN environment
   # ═══════════════════════════════════════════════════════════════
   api-green:
+    image: "${RMV_API_IMAGE:-rmv-api}:${RMV_IMAGE_TAG:-latest}"
     build:
       context: ..
       dockerfile: Dockerfile
@@ -59,15 +62,16 @@ services:
       - "5000"
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:5000/api/v1/health"]
-      interval: 15s
-      timeout: 5s
-      retries: 5
-      start_period: 30s
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
     networks:
       - rmv-net
     profiles: ["green"]
 
   web-green:
+    image: "${RMV_WEB_IMAGE:-rmv-web}:${RMV_IMAGE_TAG:-latest}"
     build:
       context: ../../rmv-web
       dockerfile: Dockerfile
@@ -77,10 +81,10 @@ services:
       - "80"
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost/"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 10s
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 5s
     networks:
       - rmv-net
     profiles: ["green"]

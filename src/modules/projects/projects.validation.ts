@@ -59,9 +59,45 @@ export const signContractSchema = z.object({
   signatureKey: z.string().min(1, 'Signature is required'),
 });
 
+export const reviewInitialDesignSchema = z.object({
+  decision: z.enum(['approved', 'declined']),
+  notes: z.string().max(2000).trim().optional(),
+});
+
+export const resubmitInitialDesignSchema = z.object({
+  initialDesignKeys: z.array(z.string()).max(10).optional(),
+  initialDesignNotes: z.string().max(2000).trim().optional(),
+}).refine(
+  (data) => (data.initialDesignKeys?.length || 0) > 0 || !!data.initialDesignNotes,
+  {
+    message: 'Provide at least one design file or a note',
+    path: ['initialDesignKeys'],
+  },
+);
+
+export const backfillInitialDesignSchema = z.object({
+  initialDesignKeys: z.array(z.string()).max(10).optional(),
+  initialDesignNotes: z.string().max(2000).trim().optional(),
+  backfillReason: z.string().min(10).max(2000).trim(),
+}).refine(
+  (data) => (data.initialDesignKeys?.length || 0) > 0 || !!data.initialDesignNotes,
+  {
+    message: 'Provide at least one design file or a note',
+    path: ['initialDesignKeys'],
+  },
+);
+
+export const selectPaymentPlanSchema = z.object({
+  paymentType: z.enum(['full', 'installment']),
+});
+
 export type CreateProjectInput = z.infer<typeof createProjectSchema>;
 export type UpdateProjectInput = z.infer<typeof updateProjectSchema>;
 export type AssignEngineersInput = z.infer<typeof assignEngineersSchema>;
 export type AssignFabricationInput = z.infer<typeof assignFabricationSchema>;
 export type TransitionProjectInput = z.infer<typeof transitionProjectSchema>;
 export type SignContractInput = z.infer<typeof signContractSchema>;
+export type ReviewInitialDesignInput = z.infer<typeof reviewInitialDesignSchema>;
+export type ResubmitInitialDesignInput = z.infer<typeof resubmitInitialDesignSchema>;
+export type BackfillInitialDesignInput = z.infer<typeof backfillInitialDesignSchema>;
+export type SelectPaymentPlanInput = z.infer<typeof selectPaymentPlanSchema>;

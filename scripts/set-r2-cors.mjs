@@ -41,7 +41,8 @@ const corsRules = {
         'http://localhost:5173',       // dev
       ],
       AllowedMethods: ['PUT', 'GET', 'HEAD'],
-      AllowedHeaders: ['Content-Type', 'Content-Length'],
+      AllowedHeaders: ['*'],
+      ExposeHeaders: ['ETag'],
       MaxAgeSeconds: 3600,
     },
   ],

@@ -16,6 +16,9 @@ LOCK_FILE="/var/lock/rmv-deploy.lock"
 
 TARGET="${1:-both}"  # api, web, or both
 
+export DOCKER_BUILDKIT=1
+export COMPOSE_DOCKER_CLI_BUILD=1
+
 # ── Acquire exclusive deploy lock (prevents cross-repo races) ────
 # Both rmv-server and rmv-web CI/CD call this script; flock ensures
 # only one deploy runs at a time on the VPS.
@@ -54,30 +57,48 @@ echo "========================================"
 
 cd "$DEPLOY_DIR"
 
+start_ts=$(date +%s)
+
+deploy_service() {
+  local service="$1"
+  local image_ref="$2"
+
+  if [ -n "$image_ref" ]; then
+    echo "Pulling image for $service -> $image_ref"
+    if docker compose -f "$COMPOSE_FILE" pull "$service"; then
+      return 0
+    fi
+    echo "WARN: pull failed for $service, falling back to local build"
+  fi
+
+  echo "Building image for $service locally"
+  docker compose -f "$COMPOSE_FILE" build "$service"
+}
+
 # ── Ensure nginx + certbot are running ───────────────────────────
 docker compose -f "$COMPOSE_FILE" up -d nginx certbot 2>/dev/null
 
-# ── Step 1: Build images ────────────────────────────────────────
+# ── Step 1: Pull or build images ─────────────────────────────────
 echo ""
-echo "[1/5] Building images..."
+echo "[1/5] Preparing images..."
 if [ "$TARGET" = "api" ] || [ "$TARGET" = "both" ]; then
-  docker compose -f "$COMPOSE_FILE" --profile "$NEXT_API" build "api-$NEXT_API"
+  deploy_service "api-$NEXT_API" "${RMV_API_IMAGE:-}:${RMV_IMAGE_TAG:-}"
   if [ $? -ne 0 ]; then echo "FATAL: api-$NEXT_API build failed"; exit 1; fi
 fi
 if [ "$TARGET" = "web" ] || [ "$TARGET" = "both" ]; then
-  docker compose -f "$COMPOSE_FILE" --profile "$NEXT_WEB" build "web-$NEXT_WEB"
+  deploy_service "web-$NEXT_WEB" "${RMV_WEB_IMAGE:-}:${RMV_IMAGE_TAG:-}"
   if [ $? -ne 0 ]; then echo "FATAL: web-$NEXT_WEB build failed"; exit 1; fi
 fi
-echo "Build complete."
+echo "Image preparation complete."
 
 # ── Step 2: Start new containers ────────────────────────────────
 echo ""
 echo "[2/5] Starting new containers..."
 if [ "$TARGET" = "api" ] || [ "$TARGET" = "both" ]; then
-  docker compose -f "$COMPOSE_FILE" --profile "$NEXT_API" up -d "api-$NEXT_API"
+  docker compose -f "$COMPOSE_FILE" --profile "$NEXT_API" up -d --no-deps "api-$NEXT_API"
 fi
 if [ "$TARGET" = "web" ] || [ "$TARGET" = "both" ]; then
-  docker compose -f "$COMPOSE_FILE" --profile "$NEXT_WEB" up -d "web-$NEXT_WEB"
+  docker compose -f "$COMPOSE_FILE" --profile "$NEXT_WEB" up -d --no-deps "web-$NEXT_WEB"
 fi
 echo "Containers started."
 
@@ -188,14 +209,20 @@ if [ "$TARGET" = "web" ] || [ "$TARGET" = "both" ]; then
   echo "$NEXT_WEB" > "/opt/rmv/.color-web"
 fi
 
-# Clean up backup + old images
+# Clean up backup + old containers.
+# Do not prune images here: on a small VPS that destroys the layer cache and
+# makes every subsequent blue-green deploy rebuild from scratch.
 rm -f "$UPSTREAM_FILE.bak"
-docker image prune -f 2>/dev/null || true
+docker container prune -f 2>/dev/null || true
+
+end_ts=$(date +%s)
+elapsed=$((end_ts - start_ts))
 
 echo ""
 echo "========== DEPLOY COMPLETE =========="
 echo "  API color: $(cat /opt/rmv/.color-api 2>/dev/null || echo none)"
 echo "  Web color: $(cat /opt/rmv/.color-web 2>/dev/null || echo none)"
+echo "  Duration : ${elapsed}s"
 echo "  Running:"
 docker ps --format '  {{.Names}}\t{{.Status}}' | grep rmv
 echo "====================================="

@@ -28,6 +28,18 @@ export interface IProject extends Document {
   quantity: number;
   notes?: string;
   estimatedCompletionDate?: Date;
+  initialDesignKeys: string[];
+  initialDesignNotes?: string;
+  initialDesignBackfill?: {
+    isSyntheticDemo: boolean;
+    reason: string;
+    backfilledAt: Date;
+    backfilledBy: Types.ObjectId;
+  };
+  designReviewStatus: 'pending' | 'approved' | 'declined' | 'not_required';
+  designReviewedBy?: Types.ObjectId;
+  designReviewedAt?: Date;
+  designReviewNotes?: string;
 
   status: ProjectStatus;
   cancelReason?: string;
@@ -73,6 +85,22 @@ const projectSchema = new Schema<IProject>(
     quantity: { type: Number, default: 1, min: 1 },
     notes: { type: String },
     estimatedCompletionDate: { type: Date },
+    initialDesignKeys: [{ type: String }],
+    initialDesignNotes: { type: String },
+    initialDesignBackfill: {
+      isSyntheticDemo: { type: Boolean, default: false },
+      reason: { type: String },
+      backfilledAt: { type: Date },
+      backfilledBy: { type: Schema.Types.ObjectId, ref: 'User' },
+    },
+    designReviewStatus: {
+      type: String,
+      enum: ['pending', 'approved', 'declined', 'not_required'],
+      default: 'not_required',
+    },
+    designReviewedBy: { type: Schema.Types.ObjectId, ref: 'User' },
+    designReviewedAt: { type: Date },
+    designReviewNotes: { type: String },
 
     status: {
       type: String,

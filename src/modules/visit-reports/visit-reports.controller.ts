@@ -78,6 +78,18 @@ export const returnVisitReport = asyncHandler(async (req: Request, res: Response
   res.json({ success: true, data: report });
 });
 
+export const reopenVisitReportForRepair = asyncHandler(async (req: Request, res: Response) => {
+  const report = await visitReportsService.reopenReportForRepair(
+    req.params.id as string,
+    req.body,
+    req.userId!,
+    req.userRoles!,
+    req.ip,
+    req.get('user-agent'),
+  );
+  res.json({ success: true, data: report });
+});
+
 // ── Delete Report ──
 export const deleteVisitReport = asyncHandler(async (req: Request, res: Response) => {
   const result = await visitReportsService.deleteReport(

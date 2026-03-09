@@ -84,6 +84,50 @@ export const signContract = asyncHandler(async (req: Request, res: Response) => 
   res.json({ success: true, data: project });
 });
 
+export const reviewInitialDesign = asyncHandler(async (req: Request, res: Response) => {
+  const project = await projectsService.reviewInitialDesign(
+    req.params.id as string,
+    req.body,
+    req.userId!,
+    req.ip,
+    req.get('user-agent'),
+  );
+  res.json({ success: true, data: project });
+});
+
+export const resubmitInitialDesign = asyncHandler(async (req: Request, res: Response) => {
+  const project = await projectsService.resubmitInitialDesign(
+    req.params.id as string,
+    req.body,
+    req.userId!,
+    req.ip,
+    req.get('user-agent'),
+  );
+  res.json({ success: true, data: project });
+});
+
+export const backfillInitialDesign = asyncHandler(async (req: Request, res: Response) => {
+  const project = await projectsService.backfillInitialDesign(
+    req.params.id as string,
+    req.body,
+    req.userId!,
+    req.ip,
+    req.get('user-agent'),
+  );
+  res.json({ success: true, data: project });
+});
+
+export const selectPaymentPlan = asyncHandler(async (req: Request, res: Response) => {
+  const result = await projectsService.selectPaymentPlan(
+    req.params.id as string,
+    req.body,
+    req.userId!,
+    req.ip,
+    req.get('user-agent'),
+  );
+  res.json({ success: true, data: result });
+});
+
 export const confirmInstallation = asyncHandler(async (req: Request, res: Response) => {
   const project = await projectsService.confirmInstallation(
     req.params.id as string,

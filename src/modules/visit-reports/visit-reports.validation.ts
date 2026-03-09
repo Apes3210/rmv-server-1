@@ -74,6 +74,8 @@ export const updateVisitReportSchema = z.object({
   designPreferences: z.string().max(2000).trim().optional(),
   materialOptions: z.string().max(2000).trim().optional(),
   projectScope: z.string().max(2000).trim().optional(),
+  initialDesignKeys: z.array(z.string()).max(10).optional(),
+  initialDesignNotes: z.string().max(2000).trim().optional(),
   recommendedOcularDate: z.string().datetime().optional(),
   recommendedOcularSlot: z.string().max(20).trim().optional(),
   linkedProjectId: z.string().optional(),
@@ -83,6 +85,11 @@ export const returnVisitReportSchema = z.object({
   reason: z.string().min(1).max(1000).trim(),
 });
 
+export const reopenVisitReportSchema = z.object({
+  reason: z.string().min(1).max(1000).trim(),
+});
+
 export type CreateVisitReportInput = z.infer<typeof createVisitReportSchema>;
 export type UpdateVisitReportInput = z.infer<typeof updateVisitReportSchema>;
 export type ReturnVisitReportInput = z.infer<typeof returnVisitReportSchema>;
+export type ReopenVisitReportInput = z.infer<typeof reopenVisitReportSchema>;

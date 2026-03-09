@@ -4,40 +4,43 @@ import { env } from '../../config/env.js';
 import { generateCsrfToken } from '../../middleware/csrf.js';
 import { extractClientHints } from '../../utils/deviceInfo.js';
 import * as authService from './auth.service.js';
+import { getRefreshTokenFromRequest } from './auth.tokens.js';
+
+const cookieDomainOptions = env.COOKIE_DOMAIN ? { domain: env.COOKIE_DOMAIN } : {};
 
 const COOKIE_OPTIONS = {
   httpOnly: true,
   secure: env.COOKIE_SECURE,
   sameSite: env.COOKIE_SAMESITE as 'lax' | 'strict' | 'none',
-  domain: env.COOKIE_DOMAIN,
+  ...cookieDomainOptions,
 };
 
 const CSRF_COOKIE_OPTIONS = {
   httpOnly: false,
   secure: env.COOKIE_SECURE,
   sameSite: env.COOKIE_SAMESITE as 'lax' | 'strict' | 'none',
-  domain: env.COOKIE_DOMAIN,
   path: '/',
+  ...cookieDomainOptions,
 };
 
 /** Set refresh + CSRF cookies and store tokens in res.locals.
  *  Access token is returned in JSON body (stored in sessionStorage per-tab). */
 function setAuthCookies(res: Response, accessToken: string, refreshToken: string) {
-  // Access token is NOT set as a cookie — returned in body for per-tab sessionStorage
-  res.cookie('refreshToken', refreshToken, {
-    ...COOKIE_OPTIONS,
-    maxAge: 7 * 24 * 60 * 60 * 1000,
-    path: '/api/v1/auth',
-  });
+  // Refresh token is NOT set as a cookie — it is returned in JSON and stored per-tab.
+  res.clearCookie('refreshToken', { path: '/api/v1/auth' });
+  res.clearCookie('refreshToken', { ...COOKIE_OPTIONS, path: '/api/v1/auth' });
   const csrfToken = generateCsrfToken();
   res.clearCookie('csrfToken', { path: '/' });
-  res.clearCookie('csrfToken', { domain: env.COOKIE_DOMAIN, path: '/' });
+  if (env.COOKIE_DOMAIN) {
+    res.clearCookie('csrfToken', { domain: env.COOKIE_DOMAIN, path: '/' });
+  }
   res.cookie('csrfToken', csrfToken, {
     ...CSRF_COOKIE_OPTIONS,
     maxAge: 7 * 24 * 60 * 60 * 1000,
   });
   res.locals.csrfToken = csrfToken;
   res.locals.accessToken = accessToken;
+  res.locals.refreshToken = refreshToken;
 }
 
 export const register = asyncHandler(async (req: Request, res: Response) => {
@@ -64,7 +67,7 @@ export const verifyEmail = asyncHandler(async (req: Request, res: Response) => {
 
   setAuthCookies(res, result.accessToken, result.refreshToken);
 
-  res.json({ success: true, data: { message: result.message, user: result.user, accessToken: res.locals.accessToken } });
+  res.json({ success: true, data: { message: result.message, user: result.user, accessToken: res.locals.accessToken, refreshToken: res.locals.refreshToken } });
 });
 
 export const login = asyncHandler(async (req: Request, res: Response) => {
@@ -97,12 +100,13 @@ export const login = asyncHandler(async (req: Request, res: Response) => {
       user: result.user,
       csrfToken: res.locals.csrfToken,
       accessToken: res.locals.accessToken,
+      refreshToken: res.locals.refreshToken,
     },
   });
 });
 
 export const refreshToken = asyncHandler(async (req: Request, res: Response) => {
-  const token = req.cookies?.refreshToken || req.body?.refreshToken;
+  const token = getRefreshTokenFromRequest(req);
   if (!token) {
     res.status(400).json({ success: false, error: { message: 'Refresh token required' } });
     return;
@@ -115,7 +119,7 @@ export const refreshToken = asyncHandler(async (req: Request, res: Response) => 
 });
 
 export const logout = asyncHandler(async (req: Request, res: Response) => {
-  const refreshTokenValue = req.cookies?.refreshToken;
+  const refreshTokenValue = getRefreshTokenFromRequest(req);
   await authService.logout(
     req.userId!,
     refreshTokenValue,
@@ -203,6 +207,7 @@ export const verify2fa = asyncHandler(async (req: Request, res: Response) => {
       user: result.user,
       csrfToken: res.locals.csrfToken,
       accessToken: res.locals.accessToken,
+      refreshToken: res.locals.refreshToken,
     },
   });
 });
@@ -244,7 +249,7 @@ export const disable2fa = asyncHandler(async (req: Request, res: Response) => {
 export const getSessions = asyncHandler(async (req: Request, res: Response) => {
   const sessions = await authService.getSessions(
     req.userId!,
-    req.cookies?.refreshToken,
+    getRefreshTokenFromRequest(req),
   );
   res.json({ success: true, data: sessions });
 });
@@ -253,7 +258,7 @@ export const revokeSession = asyncHandler(async (req: Request, res: Response) =>
   const result = await authService.revokeSession(
     req.userId!,
     req.params.id as string,
-    req.cookies?.refreshToken,
+    getRefreshTokenFromRequest(req),
     req.ip,
     req.headers['user-agent'] as string | undefined,
   );
@@ -263,7 +268,7 @@ export const revokeSession = asyncHandler(async (req: Request, res: Response) =>
 export const revokeAllSessions = asyncHandler(async (req: Request, res: Response) => {
   const result = await authService.revokeAllOtherSessions(
     req.userId!,
-    req.cookies?.refreshToken,
+    getRefreshTokenFromRequest(req),
     req.ip,
     req.headers['user-agent'] as string | undefined,
   );
@@ -322,6 +327,7 @@ export const googleAuth = asyncHandler(async (req: Request, res: Response) => {
       user: loginResult.user,
       csrfToken: res.locals.csrfToken,
       accessToken: res.locals.accessToken,
+      refreshToken: res.locals.refreshToken,
     },
   });
 });
@@ -342,6 +348,7 @@ export const googleComplete = asyncHandler(async (req: Request, res: Response) =
       user: result.user,
       csrfToken: res.locals.csrfToken,
       accessToken: res.locals.accessToken,
+      refreshToken: res.locals.refreshToken,
     },
   });
 });

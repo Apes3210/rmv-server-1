@@ -4,6 +4,7 @@ import type { ILineItem, ISiteConditions } from './VisitReport.js';
 
 // ── Customer Site Details (pre-visit info from customer) ──
 export type SiteDetailsStatus = 'pending' | 'submitted' | 'skipped';
+export type InitialDesignStatus = 'pending' | 'submitted' | 'skipped';
 
 export interface ICustomerSiteDetails {
   serviceType?: string;
@@ -96,6 +97,11 @@ export interface IAppointment extends Document {
   // Customer-provided site details (for office appointments, mandatory before confirmation)
   customerSiteDetails?: ICustomerSiteDetails;
   siteDetailsStatus: SiteDetailsStatus;
+
+  // Sales-provided initial design draft before the ocular visit
+  initialDesignKeys?: string[];
+  initialDesignNotes?: string;
+  initialDesignStatus: InitialDesignStatus;
 
   // Booking metadata
   bookedBy: Types.ObjectId; // Customer or Agent who created
@@ -211,6 +217,13 @@ const appointmentSchema = new Schema<IAppointment>(
       _id: false,
     },
     siteDetailsStatus: {
+      type: String,
+      enum: ['pending', 'submitted', 'skipped'],
+      default: 'pending',
+    },
+    initialDesignKeys: [{ type: String }],
+    initialDesignNotes: { type: String },
+    initialDesignStatus: {
       type: String,
       enum: ['pending', 'submitted', 'skipped'],
       default: 'pending',

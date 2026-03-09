@@ -35,6 +35,10 @@ export async function uploadBlueprint(
   const project = await Project.findById(input.projectId);
   if (!project) throw AppError.notFound('Project not found');
 
+  if ((project.initialDesignKeys?.length || project.initialDesignNotes?.trim()) && !['approved', 'not_required'].includes(project.designReviewStatus || 'not_required')) {
+    throw AppError.badRequest('The sales initial design must be approved by engineering before the first blueprint upload');
+  }
+
   // Project must be in blueprint phase or submitted
   if (![ProjectStatus.SUBMITTED, ProjectStatus.BLUEPRINT].includes(project.status)) {
     throw AppError.badRequest('Project is not in a valid state for blueprint upload');
@@ -373,7 +377,7 @@ export async function getLatestBlueprint(
   return blueprint;
 }
 
-// ── Customer: Accept Blueprint (approve both + choose payment type + auto-create plan) ──
+// ── Customer: Accept Blueprint (approve both components only) ──
 
 export async function acceptBlueprint(
   blueprintId: string,
@@ -412,73 +416,6 @@ export async function acceptBlueprint(
     await project.save();
   }
 
-  // Auto-generate payment plan
-  const baseTotal = blueprint.quotation.total;
-  let finalTotal = baseTotal;
-  let isPayInFull = true;
-
-  const installmentConfig = await getInstallmentConfig();
-
-  if (input.paymentType === 'installment') {
-    isPayInFull = false;
-    const surcharge = installmentConfig.surchargePercent;
-    finalTotal = Math.round(baseTotal * (1 + surcharge / 100) * 100) / 100;
-  }
-
-  let stages;
-  if (isPayInFull) {
-    stages = [{
-      stageId: uuidv4(),
-      label: 'Full Payment',
-      description: '',
-      percentage: 100,
-      amount: finalTotal,
-      status: PaymentStageStatus.PENDING,
-      amountPaid: 0,
-      creditApplied: 0,
-      remainingBalance: finalTotal,
-      activatedAt: new Date(), // Full payment is immediately due
-    }];
-  } else {
-    stages = installmentConfig.split.map((pct, idx) => {
-      const amount = Math.round((finalTotal * pct / 100) * 100) / 100;
-      const milestones = blueprint.quotation?.paymentMilestones;
-      return {
-        stageId: uuidv4(),
-        label: milestones?.[idx]?.label || installmentConfig.stageLabels[idx] || `Stage ${idx + 1}`,
-        description: milestones?.[idx]?.description || installmentConfig.stageDescriptions[idx] || '',
-        percentage: pct,
-        amount,
-        status: PaymentStageStatus.PENDING,
-        amountPaid: 0,
-        creditApplied: 0,
-        remainingBalance: amount,
-        activatedAt: idx === 0 ? new Date() : null, // Stage 1 (down payment) is immediately due; others wait for fabrication
-      };
-    });
-  }
-
-  // If a plan already exists (e.g. retry / double-submit), return it idempotently
-  const existingPlan = await PaymentPlan.findOne({ projectId: project._id });
-  if (existingPlan) {
-    return { blueprint, paymentPlan: existingPlan };
-  }
-
-  const plan = await PaymentPlan.create({
-    projectId: project._id,
-    totalAmount: finalTotal,
-    isPayInFull,
-    stages,
-    createdBy: customerId,
-  });
-
-  // Transition project to PAYMENT_PENDING
-  if (project.status === ProjectStatus.APPROVED) {
-    projectStateMachine.assertTransition(project.status, ProjectStatus.PAYMENT_PENDING);
-    project.status = ProjectStatus.PAYMENT_PENDING;
-    await project.save();
-  }
-
   await AuditLog.create({
     action: AuditAction.BLUEPRINT_APPROVED,
     actorId: customerId,
@@ -486,10 +423,8 @@ export async function acceptBlueprint(
     targetId: blueprint._id,
     details: {
       fullyApproved: true,
-      paymentType: input.paymentType,
-      totalAmount: finalTotal,
-      surchargePercent: isPayInFull ? 0 : installmentConfig.surchargePercent,
-      stages: stages.length,
+      paymentTypeSelectionPending: true,
+      totalAmount: blueprint.quotation.total,
     },
     ipAddress: ip,
     userAgent: ua,
@@ -500,74 +435,18 @@ export async function acceptBlueprint(
     blueprint.uploadedBy,
     NotificationCategory.BLUEPRINT,
     'Blueprint Accepted',
-    `Customer accepted the blueprint for "${project.title}" and chose ${isPayInFull ? 'full payment' : 'installment payment'}.`,
+    `Customer accepted the blueprint for "${project.title}". Payment-plan selection is next.`,
     `/projects/${project._id}/blueprint`,
   );
 
   // Notify customer
   await createAndSendNotification(
     customerId,
-    NotificationCategory.PAYMENT,
-    'Payment Plan Created',
-    `Your payment plan for "${project.title}" is ready. Total: ₱${finalTotal.toLocaleString('en-PH', { minimumFractionDigits: 2 })}.`,
+    NotificationCategory.BLUEPRINT,
+    'Blueprint Accepted',
+    `You approved the blueprint for "${project.title}". Select your payment plan to generate the contract.`,
     `/projects/${project._id}`,
   );
 
-  // ── Auto-generate contract PDF (without customer signature — they sign later) ──
-  try {
-    const customer = await User.findById(customerId).select('firstName lastName email phone address');
-    const engineers = await User.find({ _id: { $in: project.engineerIds } }).select('firstName lastName');
-
-    const contractData = {
-      projectTitle: project.title,
-      projectDescription: project.description,
-      siteAddress: project.siteAddress,
-      serviceType: project.serviceType,
-      customerName: customer ? `${customer.firstName} ${customer.lastName}` : 'Customer',
-      customerEmail: customer?.email || '',
-      customerPhone: customer?.phone,
-      customerAddress: customer?.address,
-      engineerNames: engineers.map((e: any) => `${e.firstName} ${e.lastName}`),
-      totalAmount: finalTotal,
-      paymentType: input.paymentType as 'full' | 'installment',
-      stages: stages.map(s => ({ label: s.label, percentage: s.percentage, amount: s.amount, description: s.description })),
-      estimatedDuration: blueprint.quotation.estimatedDuration,
-      materialType: project.materialType,
-      finishColor: project.finishColor,
-      quantity: project.quantity,
-      customerSignatureKey: null, // Signature will be added when customer signs the contract
-      quotationLineItems: blueprint.quotation.lineItems?.map((li: any) => ({
-        label: li.label,
-        quantity: li.quantity,
-        materials: li.materials,
-        labor: li.labor,
-        amount: li.amount,
-      })),
-      quotationFees: blueprint.quotation.fees,
-      quotationValidityDays: blueprint.quotation.validityDays,
-      scopeOfWork: blueprint.quotation.breakdown,
-    };
-
-    const { originalKey } = await generateAndUploadContract(contractData);
-
-    project.contractKey = originalKey;
-    project.contractGeneratedAt = new Date();
-    await project.save();
-
-    // Notify customer about contract — tell them to review and sign
-    await createAndSendNotification(
-      customerId,
-      NotificationCategory.SYSTEM,
-      'Contract Ready for Signing',
-      `The contract for your project "${project.title}" has been generated. Please review and e-sign it before making any payments.`,
-      `/projects/${project._id}`,
-    );
-
-    logger.info(`Auto-generated contract on blueprint accept for project ${project._id}: ${originalKey}`);
-  } catch (err) {
-    // Contract generation failure should NOT block the accept flow
-    logger.error('Failed to auto-generate contract on blueprint accept', err);
-  }
-
-  return { blueprint, paymentPlan: plan };
+  return { blueprint };
 }

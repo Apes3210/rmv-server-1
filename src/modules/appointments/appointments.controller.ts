@@ -79,6 +79,17 @@ export const completeAppointment = asyncHandler(async (req: Request, res: Respon
   res.json({ success: true, data: appointment });
 });
 
+export const submitInitialDesign = asyncHandler(async (req: Request, res: Response) => {
+  const appointment = await appointmentsService.submitInitialDesign(
+    req.params.id as string,
+    req.body,
+    req.userId!,
+    req.ip,
+    req.get('user-agent'),
+  );
+  res.json({ success: true, data: formatAppointment(appointment) });
+});
+
 // ── Update Visit Status (Preparing / On The Way) ──
 export const updateVisitStatus = asyncHandler(async (req: Request, res: Response) => {
   const newStatus = req.params.status as AppointmentStatus.PREPARING | AppointmentStatus.ON_THE_WAY;

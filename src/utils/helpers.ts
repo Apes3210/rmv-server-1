@@ -39,6 +39,10 @@ export function isValidPHMobile(phone: string): boolean {
  */
 export const ALLOWED_FILE_EXTENSIONS = [
   'pdf',
+  'dwg',
+  'csv',
+  'xls',
+  'xlsx',
   'jpg',
   'jpeg',
   'png',
