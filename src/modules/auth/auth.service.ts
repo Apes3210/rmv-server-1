@@ -25,6 +25,7 @@ import type {
 } from './auth.validation.js';
 import type { Types } from 'mongoose';
 import { verifyFirebaseIdToken } from '../../config/firebase.js';
+import { hasLocalPassword, isGoogleOnlyAccount, isInternalManagedAccount } from './auth.account-policy.js';
 
 // ── Token Generation ──
 function generateAccessToken(userId: string, roles: Role[]): string {
@@ -247,7 +248,7 @@ export async function login(
   const { email, password } = input;
   const deviceInfo = parseDevice(ua, ip, hints);
 
-  const user = await User.findOne({ email }).select('+password');
+  const user = await User.findOne({ email }).select('+password +provider +firebaseUid');
   if (!user) {
     // Log failed attempt
     await AuditLog.create({
@@ -271,6 +272,17 @@ export async function login(
   // Check temp account expiry
   if (user.expiresAt && new Date() > user.expiresAt) {
     throw AppError.forbidden('Account has expired', ErrorCode.ACCOUNT_EXPIRED);
+  }
+
+  if (isGoogleOnlyAccount(user)) {
+    throw AppError.forbidden(
+      'This account uses Google sign-in. Please continue with Google.',
+      ErrorCode.FORBIDDEN,
+    );
+  }
+
+  if (!hasLocalPassword(user)) {
+    throw AppError.unauthorized('Invalid email or password', ErrorCode.INVALID_CREDENTIALS);
   }
 
   const isMatch = await bcrypt.compare(password, user.password);
@@ -412,10 +424,26 @@ export async function logout(userId: string, refreshTokenValue?: string, ip?: st
 
 export async function forgotPassword(input: ForgotPasswordInput) {
   const { email } = input;
-  const user = await User.findOne({ email });
+  const user = await User.findOne({ email }).select('+password +provider +firebaseUid roles');
   if (!user) {
     // Don't reveal if email exists
     return { message: 'If the email exists, an OTP has been sent.' };
+  }
+
+  if (isInternalManagedAccount(user)) {
+    throw AppError.badRequest(
+      'You cannot reset this password here. Please contact your administrator.',
+      ErrorCode.VALIDATION_ERROR,
+      { accountType: 'internal' },
+    );
+  }
+
+  if (isGoogleOnlyAccount(user)) {
+    throw AppError.badRequest(
+      'This account uses Google sign-in. Please continue with Google.',
+      ErrorCode.VALIDATION_ERROR,
+      { authProvider: 'google' },
+    );
   }
 
   await createAndSendOtp(email, OtpPurpose.PASSWORD_RESET);
@@ -425,10 +453,26 @@ export async function forgotPassword(input: ForgotPasswordInput) {
 export async function resetPassword(input: ResetPasswordInput, ip?: string, ua?: string) {
   const { email, otp, newPassword } = input;
 
-  await verifyOtp(email, otp, OtpPurpose.PASSWORD_RESET);
-
-  const user = await User.findOne({ email });
+  const user = await User.findOne({ email }).select('+password +provider +firebaseUid roles');
   if (!user) throw AppError.notFound('User not found');
+
+  if (isInternalManagedAccount(user)) {
+    throw AppError.badRequest(
+      'You cannot reset this password here. Please contact your administrator.',
+      ErrorCode.VALIDATION_ERROR,
+      { accountType: 'internal' },
+    );
+  }
+
+  if (isGoogleOnlyAccount(user)) {
+    throw AppError.badRequest(
+      'This account uses Google sign-in. Please continue with Google.',
+      ErrorCode.VALIDATION_ERROR,
+      { authProvider: 'google' },
+    );
+  }
+
+  await verifyOtp(email, otp, OtpPurpose.PASSWORD_RESET);
 
   user.password = await bcrypt.hash(newPassword, 12);
   user.mustChangePassword = false;

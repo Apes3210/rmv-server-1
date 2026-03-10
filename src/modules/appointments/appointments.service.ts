@@ -57,6 +57,13 @@ async function assertNoActiveAppointment(customerId: string): Promise<void> {
     throw AppError.conflict(
       'You already have an active appointment. Please complete or cancel it first.',
       ErrorCode.DUPLICATE_ENTRY,
+      {
+        activeAppointmentId: active._id.toString(),
+        activeAppointmentStatus: active.status,
+        activeAppointmentType: active.type,
+        activeAppointmentDate: active.date,
+        activeAppointmentSlotCode: active.slotCode,
+      },
     );
   }
 }
