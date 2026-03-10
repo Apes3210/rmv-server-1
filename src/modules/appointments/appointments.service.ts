@@ -26,7 +26,6 @@ import type {
   RecordOcularFeeInput,
   AvailableSlotsQuery,
   SubmitSiteDetailsInput,
-  SubmitInitialDesignInput,
   AgentCreateOcularInput,
   SubmitOcularLocationInput,
   AgentFinalizeOcularInput,
@@ -501,55 +500,6 @@ export async function submitSiteDetails(
     NotificationCategory.APPOINTMENT,
     'Site Details Submitted',
     `Customer has submitted site details for ${appointment.type} appointment on ${appointment.date} at ${formatSlotTime(appointment.slotCode)}.`,
-    `/appointments/${appointment._id}`,
-  );
-
-  return appointment;
-}
-
-// ── Sales Staff: Submit Initial Design Draft ──
-
-export async function submitInitialDesign(
-  appointmentId: string,
-  input: SubmitInitialDesignInput,
-  salesStaffId: string,
-  ip?: string,
-  ua?: string,
-) {
-  const appointment = await Appointment.findById(appointmentId);
-  if (!appointment) throw AppError.notFound('Appointment not found');
-
-  if (!appointment.salesStaffId || appointment.salesStaffId.toString() !== salesStaffId) {
-    throw AppError.forbidden('You are not assigned to this appointment');
-  }
-
-  if (![AppointmentStatus.CONFIRMED, AppointmentStatus.ON_THE_WAY].includes(appointment.status)) {
-    throw AppError.badRequest('Initial design can only be submitted before the appointment is completed');
-  }
-
-  appointment.initialDesignKeys = input.initialDesignKeys || [];
-  appointment.initialDesignNotes = input.initialDesignNotes || undefined;
-  appointment.initialDesignStatus = 'submitted';
-  await appointment.save();
-
-  await AuditLog.create({
-    action: AuditAction.APPOINTMENT_UPDATED,
-    actorId: salesStaffId,
-    targetType: 'appointment',
-    targetId: appointment._id,
-    details: {
-      initialDesignStatus: appointment.initialDesignStatus,
-      initialDesignKeyCount: appointment.initialDesignKeys.length,
-    },
-    ipAddress: ip,
-    userAgent: ua,
-  });
-
-  await notifyRole(
-    Role.APPOINTMENT_AGENT,
-    NotificationCategory.APPOINTMENT,
-    'Initial Design Submitted',
-    `Sales staff submitted an initial design draft for the appointment on ${appointment.date} at ${formatSlotTime(appointment.slotCode)}.`,
     `/appointments/${appointment._id}`,
   );
 

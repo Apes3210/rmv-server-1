@@ -17,7 +17,6 @@ import {
   declineOcularFeeSchema,
   availableSlotsQuerySchema,
   submitSiteDetailsSchema,
-  submitInitialDesignSchema,
   agentCreateOcularSchema,
   submitOcularLocationSchema,
   agentFinalizeOcularSchema,
@@ -124,14 +123,6 @@ router.post(
   authenticate,
   authorize(Role.SALES_STAFF),
   ctrl.completeAppointment,
-);
-
-router.post(
-  '/:id/initial-design',
-  authenticate,
-  authorize(Role.SALES_STAFF),
-  validate(submitInitialDesignSchema),
-  ctrl.submitInitialDesign,
 );
 
 router.post(

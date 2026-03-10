@@ -68,9 +68,7 @@ export async function createProject(
     finishColor: input.finishColor,
     quantity: input.quantity,
     notes: input.notes,
-    initialDesignKeys: appointment.initialDesignKeys || [],
-    initialDesignNotes: appointment.initialDesignNotes,
-    designReviewStatus: appointment.initialDesignStatus === 'submitted' ? 'pending' : 'not_required',
+    designReviewStatus: 'not_required',
     status: ProjectStatus.DRAFT,
     ...(latestReport && { visitReportId: latestReport._id }),
   });

@@ -14,6 +14,10 @@ import type { Types } from 'mongoose';
 
 import type { ICustomerSiteDetails } from '../../models/Appointment.js';
 
+function isNonEmptyString(value?: string | null) {
+  return Boolean(value?.trim());
+}
+
 function hasAnyMeasuredDimensions(report: {
   lineItems?: Array<{
     length?: number;
@@ -54,6 +58,100 @@ function hasAnyMeasuredDimensions(report: {
   );
 
   return hasLineItemMeasurements || hasLegacyMeasurements;
+}
+
+function getIncompleteOcularFields(report: {
+  actualVisitDateTime?: Date | string | null;
+  lineItems?: Array<{
+    label?: string;
+    length?: number;
+    width?: number;
+    height?: number;
+    area?: number;
+    thickness?: number;
+    quantity?: number;
+    notes?: string;
+  }>;
+  measurements?: {
+    length?: number;
+    width?: number;
+    height?: number;
+    area?: number;
+    thickness?: number;
+    raw?: string;
+  };
+  siteConditions?: {
+    environment?: string;
+    floorType?: string;
+    wallMaterial?: string;
+    hasElectrical?: boolean;
+    hasPlumbing?: boolean;
+    accessNotes?: string;
+    obstaclesOrConstraints?: string;
+  };
+  materials?: string;
+  finishes?: string;
+  preferredDesign?: string;
+  photoKeys?: string[];
+  initialDesignKeys?: string[];
+  initialDesignNotes?: string;
+}) {
+  const missing: string[] = [];
+
+  if (!report.actualVisitDateTime) {
+    missing.push('actual visit date and time');
+  }
+
+  const lineItems = report.lineItems || [];
+  if (lineItems.length > 0) {
+    lineItems.forEach((item, index) => {
+      const isComplete = isNonEmptyString(item.label)
+        && item.quantity != null
+        && item.quantity >= 1
+        && item.length != null
+        && item.width != null
+        && item.height != null
+        && item.thickness != null
+        && item.area != null
+        && isNonEmptyString(item.notes);
+
+      if (!isComplete) {
+        missing.push(`complete measurement details for line item ${index + 1}`);
+      }
+    });
+  } else {
+    const legacy = report.measurements;
+    const hasCompleteLegacyMeasurements = Boolean(
+      legacy
+      && legacy.length != null
+      && legacy.width != null
+      && legacy.height != null
+      && legacy.thickness != null
+      && legacy.area != null
+      && isNonEmptyString(legacy.raw),
+    );
+
+    if (!hasCompleteLegacyMeasurements) {
+      missing.push('at least one complete measurement item');
+    }
+  }
+
+  if (!isNonEmptyString(report.siteConditions?.environment)) missing.push('site environment');
+  if (!isNonEmptyString(report.siteConditions?.floorType)) missing.push('floor type');
+  if (!isNonEmptyString(report.siteConditions?.wallMaterial)) missing.push('wall material');
+  if (report.siteConditions?.hasElectrical === undefined) missing.push('electrical nearby status');
+  if (report.siteConditions?.hasPlumbing === undefined) missing.push('plumbing nearby status');
+  if (!isNonEmptyString(report.siteConditions?.accessNotes)) missing.push('access notes');
+  if (!isNonEmptyString(report.siteConditions?.obstaclesOrConstraints)) missing.push('obstacles or constraints');
+
+  if (!isNonEmptyString(report.materials)) missing.push('materials');
+  if (!isNonEmptyString(report.finishes)) missing.push('finishes');
+  if (!isNonEmptyString(report.preferredDesign)) missing.push('preferred design');
+  if ((report.photoKeys?.length || 0) === 0) missing.push('site photos');
+  if ((report.initialDesignKeys?.length || 0) === 0) missing.push('initial design files');
+  if (!isNonEmptyString(report.initialDesignNotes)) missing.push('initial design notes');
+
+  return [...new Set(missing)];
 }
 
 /**
@@ -329,6 +427,13 @@ export async function updateReport(
     }
   }
 
+  if (report.visitType === 'consultation') {
+    report.initialDesignKeys = [];
+    report.initialDesignNotes = undefined;
+    delete changes.initialDesignKeys;
+    delete changes.initialDesignNotes;
+  }
+
   await report.save();
 
   await AuditLog.create({
@@ -370,11 +475,14 @@ export async function submitReport(
     );
   }
 
-  if (report.visitType === 'ocular' && !hasAnyMeasuredDimensions(report)) {
-    throw AppError.badRequest(
-      'Add at least one measured line item or legacy measurement before submitting an ocular report',
-      ErrorCode.VALIDATION_ERROR,
-    );
+  if (report.visitType === 'ocular') {
+    const missingFields = getIncompleteOcularFields(report);
+    if (missingFields.length > 0) {
+      throw AppError.badRequest(
+        `You have not yet provided information on: ${missingFields.join(', ')}.`,
+        ErrorCode.VALIDATION_ERROR,
+      );
+    }
   }
 
   visitReportStateMachine.assertTransition(report.status, VisitReportStatus.SUBMITTED);
@@ -416,9 +524,7 @@ export async function submitReport(
         finishColor: report.finishes,
         quantity: 1,
         notes: report.notes,
-        initialDesignKeys: report.initialDesignKeys?.length ? report.initialDesignKeys : (appt.initialDesignKeys || []),
-        initialDesignNotes: report.initialDesignNotes || appt.initialDesignNotes,
-        designReviewStatus: (report.initialDesignKeys?.length || report.initialDesignNotes || appt.initialDesignStatus === 'submitted') ? 'pending' : 'not_required',
+        designReviewStatus: 'not_required',
         status: ProjectStatus.DRAFT,
         mediaKeys: [...report.photoKeys, ...report.sketchKeys, ...report.referenceImageKeys],
       });
@@ -483,11 +589,11 @@ export async function submitReport(
       if (report.finishes) linkedProject.finishColor = report.finishes;
       if (report.notes) linkedProject.notes = report.notes;
       if (report.initialDesignKeys?.length) linkedProject.initialDesignKeys = report.initialDesignKeys;
-      else if (appt.initialDesignKeys?.length) linkedProject.initialDesignKeys = appt.initialDesignKeys;
       if (report.initialDesignNotes) linkedProject.initialDesignNotes = report.initialDesignNotes;
-      else if (appt.initialDesignNotes) linkedProject.initialDesignNotes = appt.initialDesignNotes;
-      if (appt.initialDesignStatus === 'submitted' && linkedProject.designReviewStatus === 'not_required') {
-        linkedProject.designReviewStatus = 'pending';
+      if (report.initialDesignKeys?.length || report.initialDesignNotes?.trim()) {
+        linkedProject.designReviewStatus = linkedProject.designReviewStatus === 'approved'
+          ? 'approved'
+          : 'pending';
       }
       if (report.siteConditions) (linkedProject as any).siteConditions = report.siteConditions;
       linkedProject.mediaKeys = [...(linkedProject.mediaKeys || []), ...report.photoKeys, ...report.sketchKeys, ...report.referenceImageKeys];
@@ -562,9 +668,9 @@ export async function submitReport(
           finishColor: report.finishes,
           quantity: 1,
           notes: report.notes,
-          initialDesignKeys: report.initialDesignKeys?.length ? report.initialDesignKeys : (appt.initialDesignKeys || []),
-          initialDesignNotes: report.initialDesignNotes || appt.initialDesignNotes,
-          designReviewStatus: (report.initialDesignKeys?.length || report.initialDesignNotes || appt.initialDesignStatus === 'submitted') ? 'pending' : 'not_required',
+          initialDesignKeys: report.initialDesignKeys || [],
+          initialDesignNotes: report.initialDesignNotes,
+          designReviewStatus: (report.initialDesignKeys?.length || report.initialDesignNotes) ? 'pending' : 'not_required',
           status: ProjectStatus.SUBMITTED,
           mediaKeys: [...report.photoKeys, ...report.sketchKeys, ...report.referenceImageKeys],
         });

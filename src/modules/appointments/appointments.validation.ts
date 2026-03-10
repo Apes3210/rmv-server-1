@@ -134,19 +134,6 @@ export const submitSiteDetailsSchema = z.object({
 
 export type SubmitSiteDetailsInput = z.infer<typeof submitSiteDetailsSchema>;
 
-export const submitInitialDesignSchema = z.object({
-  initialDesignKeys: z.array(z.string()).max(10).optional(),
-  initialDesignNotes: z.string().max(2000).trim().optional(),
-}).refine(
-  (data) => (data.initialDesignKeys?.length || 0) > 0 || !!data.initialDesignNotes,
-  {
-    message: 'Provide at least one design file or a note',
-    path: ['initialDesignKeys'],
-  },
-);
-
-export type SubmitInitialDesignInput = z.infer<typeof submitInitialDesignSchema>;
-
 // ── Agent Create Ocular (from consultation context) ──
 export const agentCreateOcularSchema = z.object({
   customerId: z.string().min(1),
