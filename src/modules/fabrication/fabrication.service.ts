@@ -94,6 +94,14 @@ export async function createFabricationUpdate(
     }
   }
 
+  // Prevent a terminal fabrication update from being recorded until the
+  // customer has confirmed the installation schedule.
+  if (input.status === FabricationStatus.DONE && !(project as any).installationConfirmedAt) {
+    throw AppError.badRequest(
+      'Customer must confirm the installation schedule before marking the project as Done',
+    );
+  }
+
   const update = await FabricationUpdate.create({
     projectId: input.projectId,
     status: input.status,
@@ -262,13 +270,6 @@ export async function createFabricationUpdate(
 
   // If fabrication is done, transition project to completed
   if (input.status === FabricationStatus.DONE) {
-    // ── Installation confirmation gate ──
-    if (!(project as any).installationConfirmedAt) {
-      throw AppError.badRequest(
-        'Customer must confirm the installation schedule before marking the project as Done',
-      );
-    }
-
     projectStateMachine.assertTransition(project.status, ProjectStatus.COMPLETED);
     project.status = ProjectStatus.COMPLETED;
     await project.save();
