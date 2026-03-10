@@ -21,6 +21,8 @@ const INFO = '\x1b[36mINFO\x1b[0m';
 class Session {
   constructor() {
     this.cookies = new Map();
+    this.accessToken = null;
+    this.refreshToken = null;
   }
 
   cookieHeader() {
@@ -45,6 +47,14 @@ class Session {
     const headers = {};
     const cookieHeader = this.cookieHeader();
     if (cookieHeader) headers.Cookie = cookieHeader;
+
+    if (this.accessToken) {
+      headers.Authorization = `Bearer ${this.accessToken}`;
+    }
+
+    if (this.refreshToken) {
+      headers['X-Refresh-Token'] = this.refreshToken;
+    }
 
     const upperMethod = method.toUpperCase();
     if (!['GET', 'HEAD'].includes(upperMethod)) {
@@ -106,10 +116,12 @@ async function main() {
   const loginRes = await session.request('POST', '/auth/login', {
     body: { email: ADMIN_EMAIL, password: ADMIN_PASSWORD },
   });
+  session.accessToken = loginRes.data?.data?.accessToken || null;
+  session.refreshToken = loginRes.data?.data?.refreshToken || null;
   if (
     !assertCheck(
       'Admin login',
-      loginRes.status === 200 && !!session.cookies.get('accessToken'),
+      loginRes.status === 200 && !!session.accessToken && !!session.refreshToken,
       `status=${loginRes.status}`,
     )
   ) {
@@ -127,7 +139,13 @@ async function main() {
     failures.push('auth-me');
   }
 
-  const refreshRes = await session.request('POST', '/auth/refresh-token');
+  const refreshRes = await session.request('POST', '/auth/refresh-token', {
+    body: session.refreshToken ? { refreshToken: session.refreshToken } : undefined,
+  });
+  const refreshedAccessToken = refreshRes.data?.data?.accessToken;
+  if (typeof refreshedAccessToken === 'string' && refreshedAccessToken) {
+    session.accessToken = refreshedAccessToken;
+  }
   if (!assertCheck('Refresh token endpoint', refreshRes.status === 200, `status=${refreshRes.status}`)) {
     failures.push('refresh-token');
   }

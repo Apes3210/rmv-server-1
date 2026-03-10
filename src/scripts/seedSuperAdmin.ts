@@ -13,10 +13,27 @@ async function seedSuperAdmin(): Promise<void> {
     const existingAdmin = await User.findOne({
       email: env.SUPER_ADMIN_EMAIL,
       roles: Role.ADMIN,
-    });
+    }).select('+password');
 
     if (existingAdmin) {
-      logger.info('Super admin already exists, skipping seed.');
+      const passwordMatches = existingAdmin.password
+        ? await bcrypt.compare(env.SUPER_ADMIN_PASSWORD, existingAdmin.password)
+        : false;
+
+      if (!passwordMatches) {
+        const salt = await bcrypt.genSalt(12);
+        existingAdmin.password = await bcrypt.hash(env.SUPER_ADMIN_PASSWORD, salt);
+        existingAdmin.firstName = env.SUPER_ADMIN_FIRST_NAME;
+        existingAdmin.lastName = env.SUPER_ADMIN_LAST_NAME;
+        existingAdmin.roles = [Role.ADMIN];
+        existingAdmin.isEmailVerified = true;
+        existingAdmin.isActive = true;
+        await existingAdmin.save();
+        logger.info(`Super admin already existed and password was synced: ${existingAdmin.email}`);
+      } else {
+        logger.info('Super admin already exists, skipping seed.');
+      }
+
       await mongoose.connection.close();
       process.exit(0);
     }
