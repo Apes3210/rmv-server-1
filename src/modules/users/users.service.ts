@@ -194,6 +194,7 @@ export async function updateProfile(userId: string, input: UpdateProfileInput) {
       ...input.notificationPreferences,
     };
   }
+  if (input.themePreference !== undefined) user.themePreference = input.themePreference;
 
   await user.save();
   return user;

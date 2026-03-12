@@ -37,6 +37,7 @@ export interface IUser extends Document {
     fabrication: boolean;
     project: boolean;
   };
+  themePreference: 'light' | 'dark' | 'system';
   signatureKey?: string; // R2 key for e-signature PNG
   provider: 'local' | 'google';
   firebaseUid?: string;
@@ -96,6 +97,7 @@ const userSchema = new Schema<IUser>(
       fabrication: { type: Boolean, default: true },
       project: { type: Boolean, default: true },
     },
+    themePreference: { type: String, enum: ['light', 'dark', 'system'], default: 'light' },
     signatureKey: { type: String },
     provider: { type: String, enum: ['local', 'google'], default: 'local' },
     firebaseUid: { type: String, unique: true, sparse: true },

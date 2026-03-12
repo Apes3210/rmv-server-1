@@ -47,6 +47,7 @@ export const updateProfileSchema = z.object({
     blueprint: z.boolean().optional(),
     fabrication: z.boolean().optional(),
   }).optional(),
+  themePreference: z.enum(['light', 'dark', 'system']).optional(),
 });
 
 export const salesAvailabilitySchema = z.object({
