@@ -32,7 +32,7 @@ const templates: Record<string, string> = {
   otp: `
     <div style="font-family: Arial, sans-serif; max-width: 500px; margin: 0 auto; padding: 20px;">
       <div style="text-align: center; padding: 20px; background: #1a1a2e; color: white; border-radius: 8px 8px 0 0;">
-        <h1 style="margin: 0;">RMV Stainless Steel</h1>
+        <h1 style="margin: 0;">RMV Stainless & Steel Fabrication</h1>
       </div>
       <div style="padding: 30px; background: #f9f9f9; border-radius: 0 0 8px 8px;">
         <h2>Email Verification</h2>
@@ -47,7 +47,7 @@ const templates: Record<string, string> = {
   password_reset: `
     <div style="font-family: Arial, sans-serif; max-width: 500px; margin: 0 auto; padding: 20px;">
       <div style="text-align: center; padding: 20px; background: #1a1a2e; color: white; border-radius: 8px 8px 0 0;">
-        <h1 style="margin: 0;">RMV Stainless Steel</h1>
+        <h1 style="margin: 0;">RMV Stainless & Steel Fabrication</h1>
       </div>
       <div style="padding: 30px; background: #f9f9f9; border-radius: 0 0 8px 8px;">
         <h2>Password Reset</h2>
@@ -62,7 +62,7 @@ const templates: Record<string, string> = {
   appointment_confirmed: `
     <div style="font-family: Arial, sans-serif; max-width: 500px; margin: 0 auto; padding: 20px;">
       <div style="text-align: center; padding: 20px; background: #1a1a2e; color: white; border-radius: 8px 8px 0 0;">
-        <h1 style="margin: 0;">RMV Stainless Steel</h1>
+        <h1 style="margin: 0;">RMV Stainless & Steel Fabrication</h1>
       </div>
       <div style="padding: 30px; background: #f9f9f9; border-radius: 0 0 8px 8px;">
         <h2>Appointment Confirmed</h2>
@@ -79,7 +79,7 @@ const templates: Record<string, string> = {
   blueprint_uploaded: `
     <div style="font-family: Arial, sans-serif; max-width: 500px; margin: 0 auto; padding: 20px;">
       <div style="text-align: center; padding: 20px; background: #1a1a2e; color: white; border-radius: 8px 8px 0 0;">
-        <h1 style="margin: 0;">RMV Stainless Steel</h1>
+        <h1 style="margin: 0;">RMV Stainless & Steel Fabrication</h1>
       </div>
       <div style="padding: 30px; background: #f9f9f9; border-radius: 0 0 8px 8px;">
         <h2>Blueprint Ready for Review</h2>
@@ -91,7 +91,7 @@ const templates: Record<string, string> = {
   payment_verified: `
     <div style="font-family: Arial, sans-serif; max-width: 500px; margin: 0 auto; padding: 20px;">
       <div style="text-align: center; padding: 20px; background: #1a1a2e; color: white; border-radius: 8px 8px 0 0;">
-        <h1 style="margin: 0;">RMV Stainless Steel</h1>
+        <h1 style="margin: 0;">RMV Stainless & Steel Fabrication</h1>
       </div>
       <div style="padding: 30px; background: #f9f9f9; border-radius: 0 0 8px 8px;">
         <h2>Payment Verified</h2>
@@ -104,7 +104,7 @@ const templates: Record<string, string> = {
   payment_declined: `
     <div style="font-family: Arial, sans-serif; max-width: 500px; margin: 0 auto; padding: 20px;">
       <div style="text-align: center; padding: 20px; background: #1a1a2e; color: white; border-radius: 8px 8px 0 0;">
-        <h1 style="margin: 0;">RMV Stainless Steel</h1>
+        <h1 style="margin: 0;">RMV Stainless & Steel Fabrication</h1>
       </div>
       <div style="padding: 30px; background: #f9f9f9; border-radius: 0 0 8px 8px;">
         <h2>Payment Proof Declined</h2>
@@ -117,7 +117,7 @@ const templates: Record<string, string> = {
   fabrication_update: `
     <div style="font-family: Arial, sans-serif; max-width: 500px; margin: 0 auto; padding: 20px;">
       <div style="text-align: center; padding: 20px; background: #1a1a2e; color: white; border-radius: 8px 8px 0 0;">
-        <h1 style="margin: 0;">RMV Stainless Steel</h1>
+        <h1 style="margin: 0;">RMV Stainless & Steel Fabrication</h1>
       </div>
       <div style="padding: 30px; background: #f9f9f9; border-radius: 0 0 8px 8px;">
         <h2>Fabrication Update</h2>
@@ -129,7 +129,7 @@ const templates: Record<string, string> = {
   ready_for_delivery: `
     <div style="font-family: Arial, sans-serif; max-width: 500px; margin: 0 auto; padding: 20px;">
       <div style="text-align: center; padding: 20px; background: #1a1a2e; color: white; border-radius: 8px 8px 0 0;">
-        <h1 style="margin: 0;">RMV Stainless Steel</h1>
+        <h1 style="margin: 0;">RMV Stainless & Steel Fabrication</h1>
       </div>
       <div style="padding: 30px; background: #f9f9f9; border-radius: 0 0 8px 8px;">
         <h2 style="color: #1a1a2e;">🎉 Your Project is Ready for Delivery!</h2>
@@ -152,7 +152,7 @@ const templates: Record<string, string> = {
   project_completed: `
     <div style="font-family: Arial, sans-serif; max-width: 500px; margin: 0 auto; padding: 20px;">
       <div style="text-align: center; padding: 20px; background: #1a1a2e; color: white; border-radius: 8px 8px 0 0;">
-        <h1 style="margin: 0;">RMV Stainless Steel</h1>
+        <h1 style="margin: 0;">RMV Stainless & Steel Fabrication</h1>
       </div>
       <div style="padding: 30px; background: #f9f9f9; border-radius: 0 0 8px 8px;">
         <h2 style="color: #1a1a2e;">✅ Project Complete!</h2>
@@ -160,7 +160,7 @@ const templates: Record<string, string> = {
         <div style="background: #d4edda; border: 1px solid #28a745; border-radius: 8px; padding: 15px; margin: 15px 0; text-align: center;">
           <p style="margin: 0; font-weight: bold; color: #155724;">Installation Completed</p>
         </div>
-        <p>Thank you for trusting RMV Stainless Steel for your fabrication needs. We hope you are satisfied with the result!</p>
+        <p>Thank you for trusting RMV Stainless & Steel Fabrication for your fabrication needs. We hope you are satisfied with the result!</p>
         <p style="color: #666; font-size: 13px;">If you have any concerns about the installation, please contact us within 7 days.</p>
       </div>
     </div>
@@ -168,7 +168,7 @@ const templates: Record<string, string> = {
   login_2fa: `
     <div style="font-family: Arial, sans-serif; max-width: 500px; margin: 0 auto; padding: 20px;">
       <div style="text-align: center; padding: 20px; background: #1a1a2e; color: white; border-radius: 8px 8px 0 0;">
-        <h1 style="margin: 0;">RMV Stainless Steel</h1>
+        <h1 style="margin: 0;">RMV Stainless & Steel Fabrication</h1>
       </div>
       <div style="padding: 30px; background: #f9f9f9; border-radius: 0 0 8px 8px;">
         <h2>Login Verification</h2>
@@ -183,7 +183,7 @@ const templates: Record<string, string> = {
   payment_heads_up: `
     <div style="font-family: Arial, sans-serif; max-width: 500px; margin: 0 auto; padding: 20px;">
       <div style="text-align: center; padding: 20px; background: #1a1a2e; color: white; border-radius: 8px 8px 0 0;">
-        <h1 style="margin: 0;">RMV Stainless Steel</h1>
+        <h1 style="margin: 0;">RMV Stainless & Steel Fabrication</h1>
       </div>
       <div style="padding: 30px; background: #f9f9f9; border-radius: 0 0 8px 8px;">
         <h2>Upcoming Payment Notice</h2>
@@ -200,7 +200,7 @@ const templates: Record<string, string> = {
   payment_due: `
     <div style="font-family: Arial, sans-serif; max-width: 500px; margin: 0 auto; padding: 20px;">
       <div style="text-align: center; padding: 20px; background: #1a1a2e; color: white; border-radius: 8px 8px 0 0;">
-        <h1 style="margin: 0;">RMV Stainless Steel</h1>
+        <h1 style="margin: 0;">RMV Stainless & Steel Fabrication</h1>
       </div>
       <div style="padding: 30px; background: #f9f9f9; border-radius: 0 0 8px 8px;">
         <h2>Payment Now Due</h2>
@@ -217,7 +217,7 @@ const templates: Record<string, string> = {
   payment_overdue: `
     <div style="font-family: Arial, sans-serif; max-width: 500px; margin: 0 auto; padding: 20px;">
       <div style="text-align: center; padding: 20px; background: #1a1a2e; color: white; border-radius: 8px 8px 0 0;">
-        <h1 style="margin: 0;">RMV Stainless Steel</h1>
+        <h1 style="margin: 0;">RMV Stainless & Steel Fabrication</h1>
       </div>
       <div style="padding: 30px; background: #f9f9f9; border-radius: 0 0 8px 8px;">
         <h2>Payment Overdue Reminder</h2>
