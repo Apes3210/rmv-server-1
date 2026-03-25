@@ -2,7 +2,7 @@ import {
   FabricationUpdate, Project, User, AuditLog,
 } from '../../models/index.js';
 import { PaymentPlan } from '../../models/Payment.js';
-import { AppError } from '../../utils/appError.js';
+import { AppError, ErrorCode } from '../../utils/appError.js';
 import {
   FabricationStatus, PaymentStageStatus, ProjectStatus, AuditAction, NotificationCategory, Role,
 } from '../../utils/constants.js';
@@ -58,7 +58,11 @@ export async function createFabricationUpdate(
   if (!project) throw AppError.notFound('Project not found');
 
   if (project.status !== ProjectStatus.FABRICATION) {
-    throw AppError.badRequest('Project is not in fabrication phase');
+    throw AppError.badRequest(
+      'Project is not in fabrication phase',
+      ErrorCode.FABRICATION_NOT_IN_PHASE,
+      { helpPath: '/help/projects-fabrication/fabrication-gates-and-payments#overview' },
+    );
   }
 
   // Admins can post updates to any project; staff/engineers must be assigned
@@ -90,6 +94,8 @@ export async function createFabricationUpdate(
       const nextUnpaid = plan.stages.find(s => s.status !== PaymentStageStatus.VERIFIED);
       throw AppError.badRequest(
         `Cannot advance to ${input.status.replace(/_/g, ' ')} — payment stage "${nextUnpaid?.label || `Stage ${actualPaid + 1}`}" must be verified first (${actualPaid}/${requiredPaid} required stages paid)`,
+        ErrorCode.FABRICATION_PAYMENT_GATE,
+        { helpPath: '/help/projects-fabrication/fabrication-gates-and-payments#checklist' },
       );
     }
   }
@@ -99,6 +105,8 @@ export async function createFabricationUpdate(
   if (input.status === FabricationStatus.DONE && !(project as any).installationConfirmedAt) {
     throw AppError.badRequest(
       'Customer must confirm the installation schedule before marking the project as Done',
+      ErrorCode.FABRICATION_INSTALLATION_NOT_CONFIRMED,
+      { helpPath: '/help/projects-fabrication/fabrication-lifecycle#checklist' },
     );
   }
 
@@ -142,7 +150,10 @@ export async function createFabricationUpdate(
         `"${project.title}" has completed fabrication. Please confirm your installation schedule to proceed.`,
         `/projects/${project._id}/fabrication`,
       );
-      await sendReadyForDeliveryEmail(customer.email, { projectTitle: project.title });
+      await sendReadyForDeliveryEmail(customer.email, {
+        projectTitle: project.title,
+        projectId: project._id.toString(),
+      });
     } else if (input.status === FabricationStatus.DONE) {
       // Completion notification + email
       await createAndSendNotification(
@@ -152,7 +163,10 @@ export async function createFabricationUpdate(
         `Your project "${project.title}" has been successfully installed and is now complete.`,
         `/projects/${project._id}`,
       );
-      await sendProjectCompletedEmail(customer.email, { projectTitle: project.title });
+      await sendProjectCompletedEmail(customer.email, {
+        projectTitle: project.title,
+        projectId: project._id.toString(),
+      });
     } else {
       // Generic fabrication progress update
       await createAndSendNotification(
@@ -166,6 +180,7 @@ export async function createFabricationUpdate(
         projectTitle: project.title,
         status: statusLabels[input.status] || input.status,
         notes: input.notes,
+        projectId: project._id.toString(),
       });
     }
   }
@@ -226,6 +241,8 @@ export async function createFabricationUpdate(
               projectTitle: project.title,
               stageLabel: stage.label,
               amount: formatCurrency(stage.amount),
+              projectId: project._id.toString(),
+              paymentStageId: stage.stageId,
             });
           }
 
@@ -252,6 +269,8 @@ export async function createFabricationUpdate(
               stageLabel: stage.label,
               amount: formatCurrency(stage.amount),
               fabricationStatus: statusLabel,
+              projectId: project._id.toString(),
+              paymentStageId: stage.stageId,
             });
           }
 

@@ -24,6 +24,12 @@ import type { Types } from 'mongoose';
 
 const MAX_REVISIONS = 3;
 
+function assertEngineerContractSigned(project: { engineerContractSignedAt?: Date | null }) {
+  if (!project.engineerContractSignedAt) {
+    throw AppError.badRequest('Engineer must sign the contract before sending design and costing to the customer');
+  }
+}
+
 // ── Engineer: Upload Initial Blueprint ──
 
 export async function uploadBlueprint(
@@ -34,6 +40,8 @@ export async function uploadBlueprint(
 ) {
   const project = await Project.findById(input.projectId);
   if (!project) throw AppError.notFound('Project not found');
+
+  assertEngineerContractSigned(project);
 
   if ((project.initialDesignKeys?.length || project.initialDesignNotes?.trim()) && !['approved', 'not_required'].includes(project.designReviewStatus || 'not_required')) {
     throw AppError.badRequest('The sales initial design must be approved by engineering before the first blueprint upload');
@@ -92,6 +100,7 @@ export async function uploadBlueprint(
     await sendBlueprintUploadedEmail(customer.email, {
       version: 1,
       projectTitle: project.title,
+      projectId: project._id.toString(),
     });
   }
 
@@ -123,6 +132,8 @@ export async function uploadRevision(
 
   const project = await Project.findById(currentBlueprint.projectId);
   if (!project) throw AppError.notFound('Project not found');
+
+  assertEngineerContractSigned(project);
 
   // Mark current as superseded by updating status
   currentBlueprint.status = BlueprintStatus.REVISION_UPLOADED;
@@ -164,6 +175,7 @@ export async function uploadRevision(
     await sendBlueprintUploadedEmail(customer.email, {
       version: newVersion,
       projectTitle: project.title,
+      projectId: project._id.toString(),
     });
   }
 

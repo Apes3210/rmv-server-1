@@ -49,6 +49,13 @@ router.post(
   ctrl.createStageCheckout,
 );
 
+router.post(
+  '/stages/:stageId/request-cash',
+  authenticate,
+  authorize(Role.CUSTOMER),
+  ctrl.requestStageCashPayment,
+);
+
 // ⚠️ DEV ONLY: Simulate Stage Payment ──
 router.post(
   '/stages/:stageId/simulate',
@@ -70,6 +77,7 @@ router.post(
   '/:id/verify',
   authenticate,
   authorize(Role.CASHIER, Role.ADMIN),
+  validate(verifyPaymentSchema),
   ctrl.verifyPayment,
 );
 
@@ -122,6 +130,12 @@ router.get(
   '/:id',
   authenticate,
   ctrl.getPaymentById,
+);
+
+router.get(
+  '/:id/evidence-trail',
+  authenticate,
+  ctrl.getPaymentEvidenceTrail,
 );
 
 router.get(

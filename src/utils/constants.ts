@@ -105,6 +105,7 @@ export enum RefundRequestStatus {
   PENDING = 'pending',
   APPROVED = 'approved',
   DENIED = 'denied',
+  CANCELLED = 'cancelled',
 }
 
 // ── OTP Purpose ──
@@ -224,6 +225,8 @@ export enum AuditAction {
   RECEIPT_GENERATED = 'receipt_generated',
   RECEIPT_RESENT = 'receipt_resent',
   OCULAR_FEE_REFUNDED = 'ocular_fee_refunded',
+  LIFECYCLE_MISMATCH_BLOCKED = 'lifecycle_mismatch_blocked',
+  LIFECYCLE_HOTSPOT_ACKNOWLEDGED = 'lifecycle_hotspot_acknowledged',
 
   // Cash
   CASH_COLLECTED = 'cash_collected',
@@ -234,6 +237,10 @@ export enum AuditAction {
   REFUND_REQUESTED = 'refund_requested',
   REFUND_APPROVED = 'refund_approved',
   REFUND_DENIED = 'refund_denied',
+  REFUND_UPDATED = 'refund_updated',
+  REFUND_CANCELLED = 'refund_cancelled',
+  REFUND_DISPATCHED = 'refund_dispatched',
+  REFUND_RECONCILED = 'refund_reconciled',
 
   // Fabrication
   FABRICATION_ASSIGNED = 'fabrication_assigned',
@@ -249,6 +256,7 @@ export enum AuditAction {
 
   // Config
   CONFIG_UPDATED = 'config_updated',
+  CONFIG_ROLLED_BACK = 'config_rolled_back',
   HOLIDAY_CREATED = 'holiday_created',
   HOLIDAY_DELETED = 'holiday_deleted',
   MAINTENANCE_TOGGLED = 'maintenance_toggled',

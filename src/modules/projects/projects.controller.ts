@@ -84,6 +84,18 @@ export const signContract = asyncHandler(async (req: Request, res: Response) => 
   res.json({ success: true, data: project });
 });
 
+export const signEngineerContract = asyncHandler(async (req: Request, res: Response) => {
+  const project = await projectsService.signEngineerContract(
+    req.params.id as string,
+    req.body,
+    req.userId!,
+    req.userRoles!,
+    req.ip,
+    req.get('user-agent'),
+  );
+  res.json({ success: true, data: project });
+});
+
 export const reviewInitialDesign = asyncHandler(async (req: Request, res: Response) => {
   const project = await projectsService.reviewInitialDesign(
     req.params.id as string,
@@ -133,6 +145,30 @@ export const confirmInstallation = asyncHandler(async (req: Request, res: Respon
     req.params.id as string,
     req.userId!,
     req.userRoles!,
+  );
+  res.json({ success: true, data: project });
+});
+
+export const submitProjectReview = asyncHandler(async (req: Request, res: Response) => {
+  const project = await projectsService.submitProjectReview(
+    req.params.id as string,
+    req.body,
+    req.userId!,
+    req.userRoles!,
+    req.ip,
+    req.get('user-agent'),
+  );
+  res.json({ success: true, data: project });
+});
+
+export const skipProjectReview = asyncHandler(async (req: Request, res: Response) => {
+  const project = await projectsService.skipProjectReview(
+    req.params.id as string,
+    req.body,
+    req.userId!,
+    req.userRoles!,
+    req.ip,
+    req.get('user-agent'),
   );
   res.json({ success: true, data: project });
 });

@@ -20,10 +20,13 @@ import type {
   AssignFabricationInput,
   TransitionProjectInput,
   SignContractInput,
+  SignEngineerContractInput,
   ReviewInitialDesignInput,
   ResubmitInitialDesignInput,
   BackfillInitialDesignInput,
   SelectPaymentPlanInput,
+  SubmitProjectReviewInput,
+  SkipProjectReviewInput,
 } from './projects.validation.js';
 import type { Types } from 'mongoose';
 import { v4 as uuidv4 } from 'uuid';
@@ -720,6 +723,7 @@ export async function getProjectById(
     .populate('salesStaffId', 'firstName lastName')
     .populate('engineerIds', 'firstName lastName phone')
     .populate('designReviewedBy', 'firstName lastName')
+    .populate('customerReview.submittedBy', 'firstName lastName')
     .populate('initialDesignBackfill.backfilledBy', 'firstName lastName')
     .populate('fabricationLeadId', 'firstName lastName')
     .populate('fabricationAssistantIds', 'firstName lastName')
@@ -1070,6 +1074,52 @@ export async function signContract(
   return project;
 }
 
+export async function signEngineerContract(
+  projectId: string,
+  input: SignEngineerContractInput,
+  actorId: string,
+  actorRoles: Role[],
+  ip?: string,
+  ua?: string,
+) {
+  const project = await Project.findById(projectId).populate('engineerIds', 'firstName lastName email signatureKey');
+  if (!project) throw AppError.notFound('Project not found');
+
+  const isAdmin = actorRoles.includes(Role.ADMIN);
+  const isAssignedEngineer = project.engineerIds.some((eng) => String((eng as any)._id ?? eng) === actorId);
+
+  if (!isAdmin && !isAssignedEngineer) {
+    throw AppError.forbidden('Only assigned engineers or admins can sign this contract');
+  }
+
+  await User.findByIdAndUpdate(actorId, { signatureKey: input.signatureKey });
+
+  project.engineerContractSignatureKey = input.signatureKey;
+  project.engineerContractSignedAt = new Date();
+  project.engineerContractSignedBy = actorId as unknown as Types.ObjectId;
+  await project.save();
+
+  await AuditLog.create({
+    action: AuditAction.PROJECT_UPDATED,
+    actorId,
+    targetType: 'project',
+    targetId: project._id,
+    details: { action: 'engineer_contract_signed', signatureKey: input.signatureKey },
+    ipAddress: ip,
+    userAgent: ua,
+  });
+
+  await createAndSendNotification(
+    project.customerId,
+    NotificationCategory.SYSTEM,
+    'Engineer Contract Signed',
+    `Engineering has signed the contract for project "${project.title}". Design and costing can now be sent for your review.`,
+    `/projects/${project._id}`,
+  );
+
+  return project;
+}
+
 // ── Get Contract Download URL ──
 
 export async function getContractDownloadUrl(
@@ -1106,6 +1156,120 @@ export async function getContractDownloadUrl(
   }
 
   return { url, key, originalDownloaded: !!project.originalContractDownloadedAt };
+}
+
+// ── Customer: Submit/Skip Internal Project Review ──
+
+export async function submitProjectReview(
+  projectId: string,
+  input: SubmitProjectReviewInput,
+  actorId: string,
+  actorRoles: Role[],
+  ip?: string,
+  ua?: string,
+) {
+  const project = await Project.findById(projectId);
+  if (!project) throw AppError.notFound('Project not found');
+
+  const isAdmin = actorRoles.includes(Role.ADMIN);
+  const isCustomerOwner = project.customerId.toString() === actorId;
+  if (!isAdmin && !isCustomerOwner) {
+    throw AppError.forbidden('Only the project customer can submit a review');
+  }
+
+  if (project.status !== ProjectStatus.COMPLETED) {
+    throw AppError.badRequest('Reviews are only available after project completion');
+  }
+
+  if (project.customerReview?.submittedAt) {
+    throw AppError.conflict('A review has already been submitted for this project');
+  }
+
+  project.customerReview = {
+    rating: input.rating,
+    comment: input.comment,
+    submittedAt: new Date(),
+    submittedBy: actorId as unknown as Types.ObjectId,
+    skippedAt: undefined,
+    skippedReason: undefined,
+  };
+  await project.save();
+
+  await AuditLog.create({
+    action: AuditAction.PROJECT_UPDATED,
+    actorId,
+    targetType: 'project',
+    targetId: project._id,
+    details: {
+      action: 'customer_review_submitted',
+      rating: input.rating,
+      hasComment: !!input.comment,
+    },
+    ipAddress: ip,
+    userAgent: ua,
+  });
+
+  await createAndSendNotification(
+    project.salesStaffId,
+    NotificationCategory.PROJECT,
+    'Customer Review Submitted',
+    `A ${input.rating}-star review was submitted for project "${project.title}".`,
+    `/projects/${project._id}`,
+  );
+
+  return project;
+}
+
+export async function skipProjectReview(
+  projectId: string,
+  input: SkipProjectReviewInput,
+  actorId: string,
+  actorRoles: Role[],
+  ip?: string,
+  ua?: string,
+) {
+  const project = await Project.findById(projectId);
+  if (!project) throw AppError.notFound('Project not found');
+
+  const isAdmin = actorRoles.includes(Role.ADMIN);
+  const isCustomerOwner = project.customerId.toString() === actorId;
+  if (!isAdmin && !isCustomerOwner) {
+    throw AppError.forbidden('Only the project customer can skip review');
+  }
+
+  if (project.status !== ProjectStatus.COMPLETED) {
+    throw AppError.badRequest('Review options are only available after project completion');
+  }
+
+  if (project.customerReview?.submittedAt) {
+    throw AppError.conflict('A review has already been submitted for this project');
+  }
+
+  if (project.customerReview?.skippedAt) {
+    return project;
+  }
+
+  project.customerReview = {
+    ...project.customerReview,
+    skippedAt: new Date(),
+    skippedReason: input.reason,
+  };
+  await project.save();
+
+  await AuditLog.create({
+    action: AuditAction.PROJECT_UPDATED,
+    actorId,
+    targetType: 'project',
+    targetId: project._id,
+    details: {
+      action: 'customer_review_skipped',
+      reason: input.reason || null,
+    },
+    ipAddress: ip,
+    userAgent: ua,
+  });
+
+  return project;
 }
 
 // ── Customer: Confirm Installation Schedule ──

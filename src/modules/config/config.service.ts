@@ -1,7 +1,14 @@
 import { Config, Holiday, AuditLog, BlockedSlot } from '../../models/index.js';
 import { AppError, ErrorCode } from '../../utils/appError.js';
 import { AuditAction } from '../../utils/constants.js';
-import type { UpdateConfigInput, CreateHolidayInput, CreateBlockedSlotInput, BulkBlockSlotsInput, BulkUnblockSlotsInput } from './config.validation.js';
+import type {
+  UpdateConfigInput,
+  CreateHolidayInput,
+  CreateBlockedSlotInput,
+  BulkBlockSlotsInput,
+  BulkUnblockSlotsInput,
+  RollbackConfigVersionInput,
+} from './config.validation.js';
 
 const LEGACY_SHOP_COORDS = {
   lat: 14.6617,
@@ -17,6 +24,26 @@ const DAHLIA_EXT_PLUS_CODE_COORDS = {
   lat: 14.6995125,
   lng: 121.053703125,
 };
+
+const HIGH_RISK_CONFIG_KEYS = new Set([
+  'maintenance_mode',
+  'feature_lifecycle_mismatch_analytics',
+  'payment_activation_map',
+  'payment_headsup_map',
+  'payment_reminder_grace_days',
+  'payment_reminder_interval_days',
+  'payment_escalation_after_reminders',
+  'installment_surcharge_percent',
+  'installment_split',
+]);
+
+function valuesEqual(a: unknown, b: unknown): boolean {
+  try {
+    return JSON.stringify(a) === JSON.stringify(b);
+  } catch {
+    return a === b;
+  }
+}
 
 export async function getConfig(key: string) {
   const config = await Config.findOne({ key });
@@ -67,7 +94,7 @@ export async function getPaymentActivationConfig() {
 }
 
 export async function listConfigs() {
-  return Config.find().sort({ key: 1 });
+  return Config.find().select('-versions').sort({ key: 1 });
 }
 
 export async function upsertConfig(
@@ -77,13 +104,33 @@ export async function upsertConfig(
   ip?: string,
   ua?: string,
 ) {
+  const existing = await Config.findOne({ key });
+  const hasPrevious = !!existing;
+  const changed = !existing || !valuesEqual(existing.value, input.value) || existing.description !== input.description;
+
+  const update: Record<string, unknown> = {
+    value: input.value,
+    description: input.description,
+    updatedBy: adminId,
+  };
+
+  if (hasPrevious && changed) {
+    update.$push = {
+      versions: {
+        $each: [{
+          value: existing!.value,
+          description: existing!.description,
+          updatedBy: existing!.updatedBy,
+          updatedAt: existing!.updatedAt,
+        }],
+        $slice: -30,
+      },
+    };
+  }
+
   const config = await Config.findOneAndUpdate(
     { key },
-    {
-      value: input.value,
-      description: input.description,
-      updatedBy: adminId,
-    },
+    update,
     { upsert: true, new: true },
   );
 
@@ -92,7 +139,122 @@ export async function upsertConfig(
     actorId: adminId,
     targetType: 'config',
     targetId: config._id,
-    details: { key, value: input.value },
+    details: {
+      key,
+      value: input.value,
+      previousValue: existing?.value,
+      highRisk: HIGH_RISK_CONFIG_KEYS.has(key),
+    },
+    ipAddress: ip,
+    userAgent: ua,
+  });
+
+  return config;
+}
+
+export async function previewConfigImpact(key: string, value: unknown) {
+  const warnings: string[] = [];
+
+  if (key === 'maintenance_mode' && value === true) {
+    warnings.push('Enabling maintenance mode blocks non-admin users immediately.');
+  }
+
+  if (key === 'feature_lifecycle_mismatch_analytics' && value === false) {
+    warnings.push('Disabling lifecycle analytics hides hotspot alerts and trend visibility for operations.');
+  }
+
+  if (key === 'installment_surcharge_percent') {
+    const num = Number(value);
+    if (Number.isNaN(num) || num < 0 || num > 100) {
+      warnings.push('Installment surcharge should remain between 0 and 100.');
+    } else if (num >= 25) {
+      warnings.push('High surcharge may significantly increase installment totals for customers.');
+    }
+  }
+
+  if (key === 'installment_split' && Array.isArray(value)) {
+    const sum = value.map((v) => Number(v)).reduce((acc, n) => acc + (Number.isNaN(n) ? 0 : n), 0);
+    if (Math.abs(sum - 100) > 0.01) {
+      warnings.push(`Installment split should total 100. Current total is ${sum}.`);
+    }
+  }
+
+  if (key.startsWith('payment_')) {
+    warnings.push('Payment activation/reminder changes alter due-date behavior across in-flight projects.');
+  }
+
+  const riskLevel = warnings.length >= 2 || HIGH_RISK_CONFIG_KEYS.has(key)
+    ? (warnings.length >= 2 ? 'high' : 'medium')
+    : 'low';
+
+  return {
+    key,
+    riskLevel,
+    warnings,
+    requiresConfirmation: riskLevel !== 'low',
+  };
+}
+
+export async function listConfigVersions(key: string, limit = 20) {
+  const config = await Config.findOne({ key });
+  if (!config) throw AppError.notFound(`Config key "${key}" not found`);
+
+  const versions = (config.versions || [])
+    .slice()
+    .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())
+    .slice(0, Math.max(1, Math.min(limit, 50)));
+
+  return {
+    key,
+    current: {
+      value: config.value,
+      description: config.description,
+      updatedAt: config.updatedAt,
+      updatedBy: config.updatedBy,
+    },
+    versions,
+  };
+}
+
+export async function rollbackConfigVersion(
+  key: string,
+  input: RollbackConfigVersionInput,
+  adminId: string,
+  ip?: string,
+  ua?: string,
+) {
+  const config = await Config.findOne({ key });
+  if (!config) throw AppError.notFound(`Config key "${key}" not found`);
+
+  const version = config.versions.find((entry) => entry._id.toString() === input.versionId);
+  if (!version) throw AppError.notFound('Config version not found');
+
+  config.versions.push({
+    value: config.value,
+    description: config.description,
+    updatedBy: config.updatedBy,
+    updatedAt: config.updatedAt,
+  } as any);
+
+  if (config.versions.length > 30) {
+    config.versions = config.versions.slice(config.versions.length - 30);
+  }
+
+  config.value = version.value;
+  config.description = version.description;
+  config.updatedBy = adminId as any;
+  await config.save();
+
+  await AuditLog.create({
+    action: AuditAction.CONFIG_ROLLED_BACK,
+    actorId: adminId,
+    targetType: 'config',
+    targetId: config._id,
+    details: {
+      key,
+      rolledBackToVersionId: input.versionId,
+      value: version.value,
+    },
     ipAddress: ip,
     userAgent: ua,
   });
@@ -401,6 +563,45 @@ export async function seedDefaultConfigs(): Promise<void> {
     payment_escalation_after_reminders: {
       value: 3,
       description: 'Number of customer reminders sent before escalating to the cashier',
+    },
+    help_center_content: {
+      value: {
+        title: 'Help Center',
+        subtitle: 'Guides for bookings, payments, and project tracking.',
+        sections: [
+          {
+            heading: 'Booking appointments',
+            body: 'Use the Appointments page to create, reschedule, or monitor your visits.',
+          },
+          {
+            heading: 'Payments and refunds',
+            body: 'Use Payments for stage payments and My Refunds for your refund request timeline.',
+          },
+          {
+            heading: 'Project tracking',
+            body: 'Use the Projects page to monitor blueprint, payment, and fabrication milestones.',
+          },
+          {
+            heading: 'Need support?',
+            body: 'Contact your assigned staff through the portal notifications channel.',
+          },
+        ],
+        roleSections: {
+          admin: [
+            {
+              heading: 'Admin controls',
+              body: 'Use Settings and Slot Management for maintenance mode, holidays, and appointment slot blocks.',
+            },
+          ],
+          cashier: [
+            {
+              heading: 'Cashier operations',
+              body: 'Use Cashier Queue for payment verification and Refund Requests for customer refund processing.',
+            },
+          ],
+        },
+      },
+      description: 'Help Center page content shown to authenticated users. Editable by admin.',
     },
   };
 

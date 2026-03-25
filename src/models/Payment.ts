@@ -88,14 +88,55 @@ export interface IPayment extends Document {
   declineReason?: string;
   verifiedBy?: Types.ObjectId;
   verifiedAt?: Date;
+  cashierSignatureKey?: string;
   receiptKey?: string; // R2 key for receipt PDF
   receiptNumber?: string;
   idempotencyKey?: string;
+  evidenceTrail: Array<{
+    version: number;
+    source: string;
+    status: PaymentStageStatus;
+    method: PaymentMethod;
+    amountPaid: number;
+    proofKey?: string;
+    referenceNumber?: string;
+    receiptKey?: string;
+    receiptNumber?: string;
+    note?: string;
+    actorId?: Types.ObjectId;
+    capturedAt: Date;
+  }>;
   creditFromPrevious: number; // Credit applied from overpayment
   excessCredit: number; // Excess to carry forward
   createdAt: Date;
   updatedAt: Date;
 }
+
+const paymentEvidenceSchema = new Schema(
+  {
+    version: { type: Number, required: true },
+    source: { type: String, required: true },
+    status: {
+      type: String,
+      enum: Object.values(PaymentStageStatus),
+      required: true,
+    },
+    method: {
+      type: String,
+      enum: Object.values(PaymentMethod),
+      required: true,
+    },
+    amountPaid: { type: Number, required: true, min: 0 },
+    proofKey: { type: String },
+    referenceNumber: { type: String },
+    receiptKey: { type: String },
+    receiptNumber: { type: String },
+    note: { type: String },
+    actorId: { type: Schema.Types.ObjectId, ref: 'User' },
+    capturedAt: { type: Date, required: true },
+  },
+  { _id: false },
+);
 
 const paymentSchema = new Schema<IPayment>(
   {
@@ -113,9 +154,11 @@ const paymentSchema = new Schema<IPayment>(
     declineReason: { type: String },
     verifiedBy: { type: Schema.Types.ObjectId, ref: 'User' },
     verifiedAt: { type: Date },
+    cashierSignatureKey: { type: String },
     receiptKey: { type: String },
     receiptNumber: { type: String },
     idempotencyKey: { type: String },
+    evidenceTrail: { type: [paymentEvidenceSchema], default: [] },
     creditFromPrevious: { type: Number, default: 0 },
     excessCredit: { type: Number, default: 0 },
   },

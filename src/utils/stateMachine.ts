@@ -18,10 +18,21 @@ function createStateMachine<T extends string>(transitions: TransitionMap<T>) {
     },
     assertTransition(from: T, to: T): void {
       if (!this.canTransition(from, to)) {
+        const allowedNextStatuses = transitions[from] || [];
         throw AppError.badRequest(
           `Invalid status transition: ${from} → ${to}`,
           ErrorCode.INVALID_TRANSITION,
-          { from, to, allowed: transitions[from] || [] },
+          {
+            diagnosticsType: 'LIFECYCLE_MISMATCH',
+            refreshRequired: true,
+            currentStatus: from,
+            attemptedStatus: to,
+            allowedNextStatuses,
+            // Backward-compatible aliases for existing consumers.
+            from,
+            to,
+            allowed: allowedNextStatuses,
+          },
         );
       }
     },

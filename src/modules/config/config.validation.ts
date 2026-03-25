@@ -14,6 +14,14 @@ export const maintenanceToggleSchema = z.object({
   enabled: z.boolean(),
 });
 
+export const previewConfigImpactSchema = z.object({
+  value: z.unknown(),
+});
+
+export const rollbackConfigVersionSchema = z.object({
+  versionId: z.string().min(1),
+});
+
 export const createBlockedSlotSchema = z.object({
   date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
   slotCode: z.enum(['09:00', '10:00', '11:00', '13:00', '14:00', '15:00', '16:00']),
@@ -44,3 +52,5 @@ export type CreateHolidayInput = z.infer<typeof createHolidaySchema>;
 export type CreateBlockedSlotInput = z.infer<typeof createBlockedSlotSchema>;
 export type BulkBlockSlotsInput = z.infer<typeof bulkBlockSlotsSchema>;
 export type BulkUnblockSlotsInput = z.infer<typeof bulkUnblockSlotsSchema>;
+export type PreviewConfigImpactInput = z.infer<typeof previewConfigImpactSchema>;
+export type RollbackConfigVersionInput = z.infer<typeof rollbackConfigVersionSchema>;

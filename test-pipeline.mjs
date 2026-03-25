@@ -3,7 +3,11 @@
  * Tests the full flow: Customer → Agent → Sales Staff → Engineer → Customer → Cashier → Fabricator
  */
 
+import 'dotenv/config';
+
 const BASE = 'http://localhost:5000/api/v1';
+const ADMIN_EMAIL = process.env.SMOKE_ADMIN_EMAIL || process.env.SUPER_ADMIN_EMAIL || 'admin@rmvsteelfab.com';
+const ADMIN_PASSWORD = process.env.SMOKE_ADMIN_PASSWORD || process.env.SUPER_ADMIN_PASSWORD || 'Admin@12345';
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
 // ── Helpers ──
@@ -101,7 +105,7 @@ async function main() {
   // ━━━━━━━━━━━━ STEP 0: SETUP TEST USERS ━━━━━━━━━━━━
   section('STEP 0: Setup — Login as Admin & Create Test Users');
   
-  const admin = await login('admin@rmvsteelfab.com', 'Admin@12345');
+  const admin = await login(ADMIN_EMAIL, ADMIN_PASSWORD);
   if (admin.status !== 200) {
     fail('Admin login failed', admin.data);
     return;

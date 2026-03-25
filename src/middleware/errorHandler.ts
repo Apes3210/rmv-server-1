@@ -1,10 +1,32 @@
 import { Request, Response, NextFunction } from 'express';
 import { AppError, ErrorCode } from '../utils/appError.js';
 import { logger } from '../utils/logger.js';
+import { AuditLog } from '../models/index.js';
+import { AuditAction } from '../utils/constants.js';
+
+const OBJECT_ID_RE = /^[0-9a-fA-F]{24}$/;
+
+function pickTargetId(req: Request): string | undefined {
+  const candidateKeys = ['id', 'projectId', 'appointmentId', 'paymentId', 'blueprintId', 'reportId', 'refundId', 'userId'];
+  for (const key of candidateKeys) {
+    const value = req.params?.[key];
+    if (typeof value === 'string' && OBJECT_ID_RE.test(value)) {
+      return value;
+    }
+  }
+  return undefined;
+}
+
+function inferTargetType(req: Request): string {
+  const path = req.baseUrl || req.path || req.originalUrl || '';
+  const segments = path.split('/').filter(Boolean);
+  if (segments.length === 0) return 'unknown';
+  return segments[0] === 'api' ? (segments[1] || 'unknown') : segments[0];
+}
 
 export const errorHandler = (
   err: Error,
-  _req: Request,
+  req: Request,
   res: Response,
   _next: NextFunction,
 ): void => {
@@ -15,6 +37,34 @@ export const errorHandler = (
         message: err.message,
         code: err.code,
         stack: err.stack,
+      });
+    }
+
+    if (err.code === ErrorCode.INVALID_TRANSITION) {
+      const targetId = pickTargetId(req);
+      void AuditLog.create({
+        action: AuditAction.LIFECYCLE_MISMATCH_BLOCKED,
+        actorId: req.user?._id,
+        actorEmail: req.user?.email,
+        targetType: inferTargetType(req),
+        targetId,
+        details: {
+          errorCode: err.code,
+          diagnosticsType: err.details?.diagnosticsType,
+          refreshRequired: err.details?.refreshRequired,
+          currentStatus: err.details?.currentStatus,
+          attemptedStatus: err.details?.attemptedStatus,
+          allowedNextStatuses: err.details?.allowedNextStatuses,
+          method: req.method,
+          path: req.originalUrl,
+        },
+        ipAddress: req.ip,
+        userAgent: req.get('user-agent') || req.headers['user-agent'],
+      }).catch((auditError) => {
+        logger.error('Failed to write lifecycle mismatch audit log', {
+          message: auditError instanceof Error ? auditError.message : String(auditError),
+          path: req.originalUrl,
+        });
       });
     }
 

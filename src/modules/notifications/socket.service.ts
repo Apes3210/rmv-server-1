@@ -145,3 +145,12 @@ export async function notifyRole(
     logger.error('Failed to notify role:', error);
   }
 }
+
+export function emitRoleEvent(
+  role: Role,
+  event: string,
+  payload: Record<string, unknown>,
+): void {
+  if (!io) return;
+  io.to(`role:${role}`).emit(event, payload);
+}

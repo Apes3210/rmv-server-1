@@ -11,10 +11,13 @@ import {
   assignFabricationSchema,
   transitionProjectSchema,
   signContractSchema,
+  signEngineerContractSchema,
   reviewInitialDesignSchema,
   resubmitInitialDesignSchema,
   backfillInitialDesignSchema,
   selectPaymentPlanSchema,
+  submitProjectReviewSchema,
+  skipProjectReviewSchema,
 } from './projects.validation.js';
 
 const router = Router();
@@ -131,12 +134,36 @@ router.post(
   ctrl.signContract,
 );
 
+router.post(
+  '/:id/sign-contract-engineer',
+  authenticate,
+  authorize(Role.ENGINEER, Role.ADMIN),
+  validate(signEngineerContractSchema),
+  ctrl.signEngineerContract,
+);
+
 // ── Installation Confirmation ──
 router.post(
   '/:id/confirm-installation',
   authenticate,
   authorize(Role.CUSTOMER, Role.ADMIN),
   ctrl.confirmInstallation,
+);
+
+router.post(
+  '/:id/review',
+  authenticate,
+  authorize(Role.CUSTOMER, Role.ADMIN),
+  validate(submitProjectReviewSchema),
+  ctrl.submitProjectReview,
+);
+
+router.post(
+  '/:id/review/skip',
+  authenticate,
+  authorize(Role.CUSTOMER, Role.ADMIN),
+  validate(skipProjectReviewSchema),
+  ctrl.skipProjectReview,
 );
 
 // ── Read ──

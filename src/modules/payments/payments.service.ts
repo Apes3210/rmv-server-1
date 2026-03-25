@@ -8,7 +8,7 @@ import {
   PaymentStageStatus, PaymentMethod, ProjectStatus, AuditAction, NotificationCategory, Role,
 } from '../../utils/constants.js';
 import { paymentStateMachine, projectStateMachine } from '../../utils/stateMachine.js';
-import { createAndSendNotification, notifyRole } from '../notifications/socket.service.js';
+import { createAndSendNotification, notifyRole, emitRoleEvent } from '../notifications/socket.service.js';
 import { sendPaymentVerifiedEmail, sendPaymentDeclinedEmail } from '../notifications/email.service.js';
 import { formatCurrency, generateReceiptNumber } from '../../utils/helpers.js';
 import { createStageCheckoutSession } from '../../services/paymongo.service.js';
@@ -21,6 +21,7 @@ import type {
   CreatePaymentPlanInput,
   UpdatePaymentPlanInput,
   SubmitPaymentProofInput,
+  VerifyPaymentInput,
   DeclinePaymentInput,
 } from './payments.validation.js';
 import type { Types } from 'mongoose';
@@ -47,6 +48,28 @@ async function generateAndUploadReceipt(data: ReceiptData): Promise<{ key: strin
   }
 }
 
+function appendPaymentEvidenceVersion(
+  payment: any,
+  input: { source: string; note?: string; actorId?: string },
+) {
+  const nextVersion = (payment.evidenceTrail?.length || 0) + 1;
+  payment.evidenceTrail = payment.evidenceTrail || [];
+  payment.evidenceTrail.push({
+    version: nextVersion,
+    source: input.source,
+    status: payment.status,
+    method: payment.method,
+    amountPaid: payment.amountPaid,
+    proofKey: payment.proofKey,
+    referenceNumber: payment.referenceNumber,
+    receiptKey: payment.receiptKey,
+    receiptNumber: payment.receiptNumber,
+    note: input.note,
+    actorId: input.actorId,
+    capturedAt: new Date(),
+  });
+}
+
 // ── Cashier: Create Payment Plan ──
 
 export async function createPaymentPlan(
@@ -60,12 +83,22 @@ export async function createPaymentPlan(
 
   // Project must be approved
   if (project.status !== ProjectStatus.APPROVED) {
-    throw AppError.badRequest('Payment plan can only be created for approved projects');
+    throw AppError.badRequest(
+      'Payment plan can only be created for approved projects',
+      ErrorCode.PAYMENT_PLAN_NOT_ALLOWED,
+      { helpPath: '/help/payments-refunds/payment-stage-status-reference#overview' },
+    );
   }
 
   // Check no existing plan
   const existing = await PaymentPlan.findOne({ projectId: input.projectId });
-  if (existing) throw AppError.conflict('Payment plan already exists for this project', ErrorCode.DUPLICATE_ENTRY);
+  if (existing) {
+    throw AppError.conflict(
+      'Payment plan already exists for this project',
+      ErrorCode.PAYMENT_PLAN_ALREADY_EXISTS,
+      { helpPath: '/help/payments-refunds/payment-stage-status-reference#overview' },
+    );
+  }
 
   const isPayInFull = input.stages.length === 1;
   const stages = input.stages.map((s, idx) => {
@@ -197,6 +230,7 @@ export async function submitPaymentProof(
 
 export async function verifyPayment(
   paymentId: string,
+  input: VerifyPaymentInput,
   actorId: string,
   ip?: string,
   ua?: string,
@@ -251,6 +285,7 @@ export async function verifyPayment(
   payment.status = PaymentStageStatus.VERIFIED;
   payment.verifiedBy = actorId as unknown as Types.ObjectId;
   payment.verifiedAt = new Date();
+  payment.cashierSignatureKey = input.signatureKey;
   payment.receiptNumber = receiptNumber;
 
   // Generate receipt PDF
@@ -279,6 +314,12 @@ export async function verifyPayment(
     totalOutstanding: Math.max(0, plan.totalAmount - totalPaid),
   });
   if (receipt.key) payment.receiptKey = receipt.key;
+
+  appendPaymentEvidenceVersion(payment, {
+    source: 'cashier_verification',
+    note: 'Payment verified and receipt issued',
+    actorId,
+  });
 
   await payment.save();
 
@@ -312,6 +353,8 @@ export async function verifyPayment(
       amount: formatCurrency(payment.amountPaid),
       stageLabel: stage.label,
       receiptNumber,
+      projectId: project._id.toString(),
+      paymentStageId: stage.stageId,
     }, receipt.buffer.length > 0 ? receipt.buffer : undefined);
   }
 
@@ -333,6 +376,14 @@ export async function verifyPayment(
       `/projects/${project._id}`,
     );
   }
+
+  emitRoleEvent(Role.CASHIER, 'payments:queue-updated', {
+    type: 'payment_verified',
+    paymentId: payment._id.toString(),
+    projectId: project._id.toString(),
+    stageId: payment.stageId,
+    amountPaid: payment.amountPaid,
+  });
 
   return { payment, receiptNumber };
 }
@@ -362,6 +413,11 @@ export async function declinePayment(
 
   payment.status = PaymentStageStatus.DECLINED;
   payment.declineReason = input.reason;
+  appendPaymentEvidenceVersion(payment, {
+    source: 'cashier_decline',
+    note: input.reason,
+    actorId,
+  });
   await payment.save();
 
   // Revert stage status to declined
@@ -392,8 +448,17 @@ export async function declinePayment(
     await sendPaymentDeclinedEmail(customer.email, {
       stageLabel: stage.label,
       reason: input.reason,
+      projectId: project._id.toString(),
+      paymentStageId: stage.stageId,
     });
   }
+
+  emitRoleEvent(Role.CASHIER, 'payments:queue-updated', {
+    type: 'payment_declined',
+    paymentId: payment._id.toString(),
+    projectId: project._id.toString(),
+    stageId: payment.stageId,
+  });
 
   return payment;
 }
@@ -489,6 +554,21 @@ export async function getPaymentById(
   if (!payment) throw AppError.notFound('Payment not found');
   await assertPaymentProjectAccess(payment.projectId.toString(), actorId, actorRoles);
   return payment;
+}
+
+export async function getPaymentEvidenceTrail(
+  paymentId: string,
+  actorId: string,
+  actorRoles: Role[],
+) {
+  const payment = await getPaymentById(paymentId, actorId, actorRoles);
+  return {
+    paymentId: payment._id,
+    status: payment.status,
+    method: payment.method,
+    amountPaid: payment.amountPaid,
+    evidenceTrail: payment.evidenceTrail || [],
+  };
 }
 
 // ── Customer: Payment History (all payments) ──
@@ -613,7 +693,11 @@ export async function createStageCheckout(
   if (!stage) throw AppError.notFound('Stage not found');
 
   if (![PaymentStageStatus.PENDING, PaymentStageStatus.DECLINED].includes(stage.status)) {
-    throw AppError.badRequest('This stage is not accepting payments');
+    throw AppError.badRequest(
+      'This stage is not accepting payments',
+      ErrorCode.PAYMENT_STAGE_NOT_ACCEPTING,
+      { helpPath: '/help/payments-refunds/payment-stage-status-reference#overview' },
+    );
   }
 
   // Allow advance payments — badges stay informational, no hard block
@@ -644,6 +728,109 @@ export async function createStageCheckout(
     checkoutUrl: session.attributes.checkout_url,
     sessionId: session.id,
     amount: checkoutAmount,
+  };
+}
+
+// ── Customer: Request Cash Payment for a Stage ──
+
+export async function requestStageCashPayment(
+  stageId: string,
+  customerId: string,
+  ip?: string,
+  ua?: string,
+) {
+  const plan = await PaymentPlan.findOne({ 'stages.stageId': stageId });
+  if (!plan) throw AppError.notFound('Payment stage not found');
+
+  const project = await Project.findById(plan.projectId);
+  if (!project) throw AppError.notFound('Project not found');
+  if (project.customerId.toString() !== customerId) {
+    throw AppError.forbidden('You can only pay for your own projects');
+  }
+
+  const stage = plan.stages.find(s => s.stageId === stageId);
+  if (!stage) throw AppError.notFound('Stage not found');
+
+  if (stage.status === PaymentStageStatus.PROOF_SUBMITTED) {
+    throw AppError.badRequest(
+      'This stage already has a payment awaiting verification',
+      ErrorCode.PAYMENT_ALREADY_AWAITING_VERIFICATION,
+      { helpPath: '/help/payments-refunds/payment-stage-status-reference#overview' },
+    );
+  }
+
+  if (![PaymentStageStatus.PENDING, PaymentStageStatus.DECLINED].includes(stage.status)) {
+    throw AppError.badRequest(
+      'This stage is not accepting payments',
+      ErrorCode.PAYMENT_STAGE_NOT_ACCEPTING,
+      { helpPath: '/help/payments-refunds/payment-stage-status-reference#overview' },
+    );
+  }
+
+  const remaining = stage.remainingBalance > 0 ? stage.remainingBalance : stage.amount;
+
+  const payment = await Payment.create({
+    projectId: plan.projectId,
+    stageId: stage.stageId,
+    method: PaymentMethod.CASH,
+    amountPaid: remaining,
+    status: PaymentStageStatus.PROOF_SUBMITTED,
+    referenceNumber: `CASH-REQ-${Date.now()}`,
+    creditFromPrevious: 0,
+    excessCredit: 0,
+  });
+  appendPaymentEvidenceVersion(payment, {
+    source: 'customer_cash_request',
+    note: 'Customer requested cashier-side cash verification',
+    actorId: customerId,
+  });
+  await payment.save();
+
+  stage.status = PaymentStageStatus.PROOF_SUBMITTED;
+  if (!plan.isImmutable) plan.isImmutable = true;
+  await plan.save();
+
+  await AuditLog.create({
+    action: AuditAction.PAYMENT_PROOF_SUBMITTED,
+    actorId: customerId,
+    targetType: 'payment',
+    targetId: payment._id,
+    details: { stageId: stage.stageId, amountPaid: remaining, method: PaymentMethod.CASH, intentType: 'customer_cash_request' },
+    ipAddress: ip,
+    userAgent: ua,
+  });
+
+  await createAndSendNotification(
+    project.customerId,
+    NotificationCategory.PAYMENT,
+    'Cash Payment Request Submitted',
+    `Your cash payment request for ${formatCurrency(remaining)} on "${project.title}" — ${stage.label} is awaiting cashier verification.`,
+    `/projects/${project._id}/payments`,
+  );
+
+  await notifyRole(
+    Role.CASHIER,
+    NotificationCategory.PAYMENT,
+    'Cash Payment Awaiting Verification',
+    `Cash payment request of ${formatCurrency(remaining)} for "${project.title}" — ${stage.label} needs verification.`,
+    '/cashier-queue',
+  );
+
+  emitRoleEvent(Role.CASHIER, 'payments:queue-updated', {
+    type: 'payment_submitted',
+    paymentId: payment._id.toString(),
+    projectId: project._id.toString(),
+    stageId: stage.stageId,
+    amountPaid: remaining,
+    method: PaymentMethod.CASH,
+  });
+
+  return {
+    paymentId: payment._id.toString(),
+    stageId: stage.stageId,
+    amountPaid: remaining,
+    method: payment.method,
+    status: payment.status,
   };
 }
 
@@ -679,6 +866,11 @@ export async function handleStagePaymongoPayment(checkoutSessionId: string) {
     creditFromPrevious: 0,
     excessCredit: 0,
   });
+  appendPaymentEvidenceVersion(payment, {
+    source: 'paymongo_checkout_webhook',
+    note: 'Proof captured from PayMongo webhook, pending cashier verification',
+  });
+  await payment.save();
 
   // Update stage to awaiting verification
   stage.status = PaymentStageStatus.PROOF_SUBMITTED;
@@ -712,6 +904,14 @@ export async function handleStagePaymongoPayment(checkoutSessionId: string) {
     `/cashier-queue`,
   );
 
+  emitRoleEvent(Role.CASHIER, 'payments:queue-updated', {
+    type: 'payment_submitted',
+    paymentId: payment._id.toString(),
+    projectId: project._id.toString(),
+    stageId: stage.stageId,
+    amountPaid,
+  });
+
   return plan;
 }
 
@@ -730,7 +930,11 @@ export async function simulateStagePayment(
   if (!stage) throw AppError.notFound('Stage not found');
 
   if (![PaymentStageStatus.PENDING, PaymentStageStatus.DECLINED].includes(stage.status)) {
-    throw AppError.badRequest('This stage is not accepting payments');
+    throw AppError.badRequest(
+      'This stage is not accepting payments',
+      ErrorCode.PAYMENT_STAGE_NOT_ACCEPTING,
+      { helpPath: '/help/payments-refunds/payment-stage-status-reference#overview' },
+    );
   }
 
   const project = await Project.findById(plan.projectId);
@@ -749,6 +953,12 @@ export async function simulateStagePayment(
     creditFromPrevious: 0,
     excessCredit: 0,
   });
+  appendPaymentEvidenceVersion(payment, {
+    source: 'simulated_checkout',
+    note: 'Simulated proof capture for testing',
+    actorId,
+  });
+  await payment.save();
 
   // Update stage to awaiting verification
   stage.status = PaymentStageStatus.PROOF_SUBMITTED;
@@ -775,6 +985,14 @@ export async function simulateStagePayment(
     `/cashier-queue`,
   );
 
+  emitRoleEvent(Role.CASHIER, 'payments:queue-updated', {
+    type: 'payment_submitted',
+    paymentId: payment._id.toString(),
+    projectId: project._id.toString(),
+    stageId: stage.stageId,
+    amountPaid: remaining,
+  });
+
   return { payment };
 }
 
@@ -794,7 +1012,11 @@ export async function recordCashPayment(
   if (!stage) throw AppError.notFound('Stage not found');
 
   if (![PaymentStageStatus.PENDING, PaymentStageStatus.DECLINED].includes(stage.status)) {
-    throw AppError.badRequest('This stage is not accepting payments');
+    throw AppError.badRequest(
+      'This stage is not accepting payments',
+      ErrorCode.PAYMENT_STAGE_NOT_ACCEPTING,
+      { helpPath: '/help/payments-refunds/payment-stage-status-reference#overview' },
+    );
   }
 
   const project = await Project.findById(plan.projectId);
@@ -851,7 +1073,6 @@ export async function recordCashPayment(
     const excess = Math.abs(remaining);
     if (excess > 0) {
       payment.excessCredit = excess;
-      await payment.save();
       await applyExcessCredit(plan, excess);
     }
   } else {
@@ -860,6 +1081,14 @@ export async function recordCashPayment(
   }
 
   if (!plan.isImmutable) plan.isImmutable = true;
+
+  appendPaymentEvidenceVersion(payment, {
+    source: 'cashier_record_cash',
+    note: 'Cash payment directly recorded and verified by cashier',
+    actorId,
+  });
+  await payment.save();
+
   await plan.save();
 
   await AuditLog.create({
@@ -886,6 +1115,8 @@ export async function recordCashPayment(
       amount: formatCurrency(amountPaid),
       stageLabel: stage.label,
       receiptNumber,
+      projectId: project._id.toString(),
+      paymentStageId: stage.stageId,
     }, cashReceipt.buffer.length > 0 ? cashReceipt.buffer : undefined);
   }
 
@@ -907,6 +1138,14 @@ export async function recordCashPayment(
       `/projects/${project._id}`,
     );
   }
+
+  emitRoleEvent(Role.CASHIER, 'payments:queue-updated', {
+    type: 'cash_payment_recorded',
+    paymentId: payment._id.toString(),
+    projectId: project._id.toString(),
+    stageId: stage.stageId,
+    amountPaid,
+  });
 
   return { payment, receiptNumber };
 }

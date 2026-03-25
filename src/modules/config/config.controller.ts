@@ -17,6 +17,30 @@ export const upsertConfig = asyncHandler(async (req: Request, res: Response) => 
   res.json({ success: true, data: config });
 });
 
+export const previewConfigImpact = asyncHandler(async (req: Request, res: Response) => {
+  const preview = await configService.previewConfigImpact(req.params.key as string, req.body.value);
+  res.json({ success: true, data: preview });
+});
+
+export const listConfigVersions = asyncHandler(async (req: Request, res: Response) => {
+  const result = await configService.listConfigVersions(
+    req.params.key as string,
+    req.query.limit ? Number(req.query.limit) : undefined,
+  );
+  res.json({ success: true, data: result });
+});
+
+export const rollbackConfigVersion = asyncHandler(async (req: Request, res: Response) => {
+  const config = await configService.rollbackConfigVersion(
+    req.params.key as string,
+    req.body,
+    req.userId!,
+    req.ip,
+    req.get('user-agent'),
+  );
+  res.json({ success: true, data: config });
+});
+
 export const listHolidays = asyncHandler(async (req: Request, res: Response) => {
   const holidays = await configService.listHolidays(req.query.year as string);
   res.json({ success: true, data: holidays });

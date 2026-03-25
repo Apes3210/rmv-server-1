@@ -62,4 +62,18 @@ router.get(
   ctrl.getAuditLogs,
 );
 
+router.get(
+  '/lifecycle-mismatch-hotspots',
+  authenticate,
+  authorize(Role.ADMIN),
+  ctrl.getLifecycleMismatchHotspots,
+);
+
+router.post(
+  '/lifecycle-mismatch-hotspots/acknowledge',
+  authenticate,
+  authorize(Role.ADMIN),
+  ctrl.acknowledgeLifecycleMismatchHotspot,
+);
+
 export default router;

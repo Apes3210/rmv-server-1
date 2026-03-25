@@ -33,6 +33,7 @@ export const submitPaymentProofSchema = z.object({
 });
 
 export const verifyPaymentSchema = z.object({
+  signatureKey: z.string().min(1, 'Cashier signature is required'),
   notes: z.string().max(500).trim().optional(),
 });
 
@@ -48,4 +49,5 @@ export const recordCashPaymentSchema = z.object({
 export type CreatePaymentPlanInput = z.infer<typeof createPaymentPlanSchema>;
 export type UpdatePaymentPlanInput = z.infer<typeof updatePaymentPlanSchema>;
 export type SubmitPaymentProofInput = z.infer<typeof submitPaymentProofSchema>;
+export type VerifyPaymentInput = z.infer<typeof verifyPaymentSchema>;
 export type DeclinePaymentInput = z.infer<typeof declinePaymentSchema>;

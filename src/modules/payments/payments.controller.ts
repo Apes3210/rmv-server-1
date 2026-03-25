@@ -19,7 +19,13 @@ export const submitPaymentProof = asyncHandler(async (req: Request, res: Respons
 });
 
 export const verifyPayment = asyncHandler(async (req: Request, res: Response) => {
-  const result = await paymentsService.verifyPayment((req.params.id as string), req.userId!, req.ip, req.get('user-agent'));
+  const result = await paymentsService.verifyPayment(
+    (req.params.id as string),
+    req.body,
+    req.userId!,
+    req.ip,
+    req.get('user-agent'),
+  );
   res.json({ success: true, data: result });
 });
 
@@ -65,6 +71,15 @@ export const getPaymentById = asyncHandler(async (req: Request, res: Response) =
   res.json({ success: true, data: payment });
 });
 
+export const getPaymentEvidenceTrail = asyncHandler(async (req: Request, res: Response) => {
+  const trail = await paymentsService.getPaymentEvidenceTrail(
+    req.params.id as string,
+    req.userId!,
+    req.userRoles!,
+  );
+  res.json({ success: true, data: trail });
+});
+
 // ── Customer: Create QRPH Checkout for a Stage ──
 export const createStageCheckout = asyncHandler(async (req: Request, res: Response) => {
   const origin = `${req.protocol}://${req.get('host')}`;
@@ -75,6 +90,17 @@ export const createStageCheckout = asyncHandler(async (req: Request, res: Respon
     clientOrigin as string,
   );
   res.json({ success: true, data: result });
+});
+
+// ── Customer: Request Cash Payment for a Stage ──
+export const requestStageCashPayment = asyncHandler(async (req: Request, res: Response) => {
+  const result = await paymentsService.requestStageCashPayment(
+    req.params.stageId as string,
+    req.userId!,
+    req.ip,
+    req.get('user-agent'),
+  );
+  res.status(201).json({ success: true, data: result });
 });
 
 // ⚠️ DEV ONLY: Simulate Stage Payment ──

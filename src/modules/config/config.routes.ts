@@ -4,14 +4,26 @@ import { authenticate } from '../../middleware/auth.js';
 import { authorize } from '../../middleware/rbac.js';
 import { validate } from '../../middleware/validate.js';
 import { Role } from '../../utils/constants.js';
-import { updateConfigSchema, createHolidaySchema, maintenanceToggleSchema, createBlockedSlotSchema, bulkBlockSlotsSchema, bulkUnblockSlotsSchema } from './config.validation.js';
+import {
+	updateConfigSchema,
+	createHolidaySchema,
+	maintenanceToggleSchema,
+	createBlockedSlotSchema,
+	bulkBlockSlotsSchema,
+	bulkUnblockSlotsSchema,
+	previewConfigImpactSchema,
+	rollbackConfigVersionSchema,
+} from './config.validation.js';
 
 const router = Router();
 
 // Read configs: any authenticated user; write: admin only
 router.get('/configs', authenticate, ctrl.listConfigs);
 router.get('/configs/:key', authenticate, ctrl.getConfig);
+router.get('/configs/:key/versions', authenticate, authorize(Role.ADMIN), ctrl.listConfigVersions);
 router.put('/configs/:key', authenticate, authorize(Role.ADMIN), validate(updateConfigSchema), ctrl.upsertConfig);
+router.post('/configs/:key/preview', authenticate, authorize(Role.ADMIN), validate(previewConfigImpactSchema), ctrl.previewConfigImpact);
+router.post('/configs/:key/rollback', authenticate, authorize(Role.ADMIN), validate(rollbackConfigVersionSchema), ctrl.rollbackConfigVersion);
 
 router.get('/holidays', authenticate, authorize(Role.ADMIN, Role.APPOINTMENT_AGENT), ctrl.listHolidays);
 router.post('/holidays', authenticate, authorize(Role.ADMIN), validate(createHolidaySchema), ctrl.createHoliday);

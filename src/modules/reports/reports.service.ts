@@ -1,12 +1,101 @@
 import {
   Project, Payment, PaymentPlan, Appointment,
-  FabricationUpdate, User, CashCollection, AuditLog, VisitReport, Blueprint,
+  FabricationUpdate, User, CashCollection, AuditLog, VisitReport, Blueprint, Config,
 } from '../../models/index.js';
 import {
   ProjectStatus, PaymentStageStatus, FabricationStatus,
-  AppointmentStatus, AppointmentType, Role,
+  AppointmentStatus, AppointmentType, Role, AuditAction,
 } from '../../utils/constants.js';
 import type { Types } from 'mongoose';
+
+type LifecycleEscalationProfile = {
+  ownerTeam: string;
+  ownerRole: string;
+  slaHours: number;
+  runbookPath: string;
+};
+
+type LifecycleHotspotAcknowledgeInput = {
+  targetType?: string;
+  currentStatus?: string;
+  attemptedStatus?: string;
+  refreshRequired?: boolean;
+  acknowledged?: boolean;
+  note?: string;
+};
+
+type LifecycleHotspotAcknowledgement = {
+  acknowledgedAt: string;
+  acknowledgedBy: string;
+  note?: string;
+};
+
+type LifecycleHotspotAcknowledgementMap = Record<string, LifecycleHotspotAcknowledgement>;
+
+const LIFECYCLE_HOTSPOT_ACK_CONFIG_KEY = 'lifecycle_hotspot_acknowledgements';
+
+function normalizeHotspotPart(value: unknown): string {
+  const normalized = String(value ?? 'unknown').trim().toLowerCase();
+  return normalized || 'unknown';
+}
+
+function buildLifecycleHotspotKey(input: {
+  targetType?: unknown;
+  currentStatus?: unknown;
+  attemptedStatus?: unknown;
+  refreshRequired?: unknown;
+}): string {
+  const targetType = normalizeHotspotPart(input.targetType);
+  const currentStatus = normalizeHotspotPart(input.currentStatus);
+  const attemptedStatus = normalizeHotspotPart(input.attemptedStatus);
+  const refreshRequired = input.refreshRequired === true ? '1' : '0';
+  return `${targetType}|${currentStatus}|${attemptedStatus}|${refreshRequired}`;
+}
+
+async function readLifecycleHotspotAcknowledgements(): Promise<LifecycleHotspotAcknowledgementMap> {
+  const config = await Config.findOne({ key: LIFECYCLE_HOTSPOT_ACK_CONFIG_KEY }).lean().exec();
+  const value = config?.value;
+  if (!value || typeof value !== 'object') return {};
+  return value as LifecycleHotspotAcknowledgementMap;
+}
+
+function getLifecycleEscalationProfile(targetType?: string): LifecycleEscalationProfile {
+  const normalized = String(targetType || '').toLowerCase();
+
+  if (normalized === 'payments' || normalized === 'cash' || normalized === 'refunds') {
+    return {
+      ownerTeam: 'Cash Operations',
+      ownerRole: 'Cashier Supervisor',
+      slaHours: 2,
+      runbookPath: '/help/payments-refunds/payment-stage-status-reference#overview',
+    };
+  }
+
+  if (normalized === 'blueprints' || normalized === 'fabrication' || normalized === 'projects') {
+    return {
+      ownerTeam: 'Project Operations',
+      ownerRole: 'Engineering Lead',
+      slaHours: 4,
+      runbookPath: '/help/projects-fabrication/project-statuses#overview',
+    };
+  }
+
+  if (normalized === 'appointments' || normalized === 'visit-reports') {
+    return {
+      ownerTeam: 'Sales Operations',
+      ownerRole: 'Sales Supervisor',
+      slaHours: 4,
+      runbookPath: '/help/appointments-visits/appointment-status-reference#overview',
+    };
+  }
+
+  return {
+    ownerTeam: 'Platform Operations',
+    ownerRole: 'Admin',
+    slaHours: 8,
+    runbookPath: '/help/projects-fabrication/project-statuses#overview',
+  };
+}
 
 // ── Recent Audit Logs (Admin) ──
 
@@ -35,6 +124,211 @@ export async function getRecentAuditLogs(query: {
     page,
     limit,
     hasMore: skip + items.length < total,
+  };
+}
+
+// ── Lifecycle Mismatch Hotspots (Admin) ──
+
+export async function getLifecycleMismatchHotspots(query: {
+  dateFrom?: string;
+  dateTo?: string;
+  limit?: number;
+}) {
+  const limit = Math.min(Math.max(query.limit ?? 25, 1), 100);
+
+  const match: Record<string, unknown> = {
+    action: AuditAction.LIFECYCLE_MISMATCH_BLOCKED,
+  };
+
+  if (query.dateFrom || query.dateTo) {
+    match.createdAt = {};
+    if (query.dateFrom) (match.createdAt as Record<string, unknown>).$gte = new Date(query.dateFrom);
+    if (query.dateTo) (match.createdAt as Record<string, unknown>).$lte = new Date(`${query.dateTo}T23:59:59.999Z`);
+  }
+
+  const rows = await AuditLog.aggregate([
+    { $match: match },
+    {
+      $group: {
+        _id: {
+          targetType: '$targetType',
+          currentStatus: '$details.currentStatus',
+          attemptedStatus: '$details.attemptedStatus',
+          refreshRequired: '$details.refreshRequired',
+        },
+        count: { $sum: 1 },
+        lastSeenAt: { $max: '$createdAt' },
+      },
+    },
+    { $sort: { count: -1, lastSeenAt: -1 } },
+    { $limit: limit },
+    {
+      $project: {
+        _id: 0,
+        targetType: '$_id.targetType',
+        currentStatus: '$_id.currentStatus',
+        attemptedStatus: '$_id.attemptedStatus',
+        refreshRequired: '$_id.refreshRequired',
+        count: 1,
+        lastSeenAt: 1,
+      },
+    },
+  ]).exec();
+
+  const acknowledgements = await readLifecycleHotspotAcknowledgements();
+
+  const [total, refreshRequiredTotal, byTargetType] = await Promise.all([
+    AuditLog.countDocuments(match).exec(),
+    AuditLog.countDocuments({ ...match, 'details.refreshRequired': true }).exec(),
+    AuditLog.aggregate([
+      { $match: match },
+      {
+        $group: {
+          _id: '$targetType',
+          count: { $sum: 1 },
+        },
+      },
+      { $sort: { count: -1 } },
+      {
+        $project: {
+          _id: 0,
+          targetType: { $ifNull: ['$_id', 'unknown'] },
+          count: 1,
+        },
+      },
+    ]).exec(),
+  ]);
+
+  let previousWindowTotal: number | null = null;
+  let trendDelta: number | null = null;
+  let trendPercent: number | null = null;
+
+  if (query.dateFrom && query.dateTo) {
+    const windowStart = new Date(query.dateFrom);
+    const windowEnd = new Date(`${query.dateTo}T23:59:59.999Z`);
+    const windowMs = windowEnd.getTime() - windowStart.getTime() + 1;
+
+    if (windowMs > 0) {
+      const previousEnd = new Date(windowStart.getTime() - 1);
+      const previousStart = new Date(previousEnd.getTime() - windowMs + 1);
+
+      previousWindowTotal = await AuditLog.countDocuments({
+        action: AuditAction.LIFECYCLE_MISMATCH_BLOCKED,
+        createdAt: {
+          $gte: previousStart,
+          $lte: previousEnd,
+        },
+      }).exec();
+
+      trendDelta = total - previousWindowTotal;
+      trendPercent = previousWindowTotal > 0
+        ? Math.round((trendDelta / previousWindowTotal) * 1000) / 10
+        : (total > 0 ? 100 : 0);
+    }
+  }
+
+  const topTargetType = byTargetType[0]?.targetType;
+  const escalationSummary = getLifecycleEscalationProfile(topTargetType);
+  const enrichedRows = rows.map((row) => {
+    const hotspotKey = buildLifecycleHotspotKey(row);
+    const acknowledgement = acknowledgements[hotspotKey];
+    return {
+      ...row,
+      hotspotKey,
+      isAcknowledged: !!acknowledgement,
+      acknowledgedAt: acknowledgement?.acknowledgedAt,
+      acknowledgedBy: acknowledgement?.acknowledgedBy,
+      acknowledgmentNote: acknowledgement?.note,
+      escalation: getLifecycleEscalationProfile(row.targetType),
+    };
+  });
+
+  const sortedRows = enrichedRows.sort((a, b) => {
+    if (a.isAcknowledged !== b.isAcknowledged) {
+      return a.isAcknowledged ? 1 : -1;
+    }
+    if (b.count !== a.count) return b.count - a.count;
+    const aTime = a.lastSeenAt ? new Date(a.lastSeenAt).getTime() : 0;
+    const bTime = b.lastSeenAt ? new Date(b.lastSeenAt).getTime() : 0;
+    return bTime - aTime;
+  });
+
+  const limitedRows = sortedRows.slice(0, limit);
+  const acknowledgedCount = limitedRows.filter((row) => row.isAcknowledged).length;
+  const unacknowledgedCount = limitedRows.length - acknowledgedCount;
+
+  return {
+    total,
+    limit,
+    refreshRequiredTotal,
+    byTargetType,
+    acknowledgedCount,
+    unacknowledgedCount,
+    escalationSummary: {
+      topTargetType: topTargetType || 'unknown',
+      ...escalationSummary,
+    },
+    trend: {
+      previousWindowTotal,
+      trendDelta,
+      trendPercent,
+    },
+    items: limitedRows,
+  };
+}
+
+export async function acknowledgeLifecycleMismatchHotspot(
+  input: LifecycleHotspotAcknowledgeInput,
+  actorId: string,
+  ip?: string,
+  userAgent?: string,
+) {
+  const hotspotKey = buildLifecycleHotspotKey(input);
+  const acknowledgements = await readLifecycleHotspotAcknowledgements();
+  const shouldAcknowledge = input.acknowledged !== false;
+
+  if (shouldAcknowledge) {
+    acknowledgements[hotspotKey] = {
+      acknowledgedAt: new Date().toISOString(),
+      acknowledgedBy: actorId,
+      note: input.note?.trim() || undefined,
+    };
+  } else {
+    delete acknowledgements[hotspotKey];
+  }
+
+  await Config.findOneAndUpdate(
+    { key: LIFECYCLE_HOTSPOT_ACK_CONFIG_KEY },
+    {
+      value: acknowledgements,
+      description: 'Lifecycle mismatch hotspot acknowledgement state',
+      updatedBy: actorId,
+    },
+    { upsert: true, new: true },
+  ).exec();
+
+  await AuditLog.create({
+    action: AuditAction.LIFECYCLE_HOTSPOT_ACKNOWLEDGED,
+    actorId,
+    targetType: 'reports',
+    details: {
+      hotspotKey,
+      acknowledged: shouldAcknowledge,
+      note: input.note?.trim() || undefined,
+      targetType: normalizeHotspotPart(input.targetType),
+      currentStatus: normalizeHotspotPart(input.currentStatus),
+      attemptedStatus: normalizeHotspotPart(input.attemptedStatus),
+      refreshRequired: input.refreshRequired === true,
+    },
+    ipAddress: ip,
+    userAgent,
+  });
+
+  return {
+    hotspotKey,
+    acknowledged: shouldAcknowledge,
+    acknowledgedAt: shouldAcknowledge ? acknowledgements[hotspotKey]?.acknowledgedAt : null,
+    acknowledgedBy: shouldAcknowledge ? actorId : null,
   };
 }
 

@@ -9,6 +9,26 @@ import { logger } from '../../utils/logger.js';
 
 type EmailAttachment = { content: string; filename: string; type: string };
 
+type EmailTemplateData = Record<string, unknown> & {
+  customerName?: string;
+  actionLabel?: string;
+  actionUrl?: string;
+  projectId?: string;
+  contextPath?: string;
+  paymentStageId?: string;
+  appointmentId?: string;
+  refundId?: string;
+  projectUrl?: string;
+  paymentUrl?: string;
+  refundUrl?: string;
+  helpUrl?: string;
+};
+
+const APP_URL = env.FRONTEND_URL.replace(/\/$/, '');
+const DEFAULT_HELP_URL = `${APP_URL}/help`;
+const DEFAULT_SOCIAL_FACEBOOK = 'https://facebook.com';
+const DEFAULT_SOCIAL_INSTAGRAM = 'https://instagram.com';
+
 const useSendGridApi = env.EMAIL_PROVIDER === 'sendgrid_api';
 
 if (useSendGridApi) {
@@ -232,6 +252,65 @@ const templates: Record<string, string> = {
       </div>
     </div>
   `,
+  refund_approved: `
+    <div style="font-family: Arial, sans-serif; max-width: 500px; margin: 0 auto; padding: 20px;">
+      <div style="text-align: center; padding: 20px; background: #1a1a2e; color: white; border-radius: 8px 8px 0 0;">
+        <h1 style="margin: 0;">RMV Stainless & Steel Fabrication</h1>
+      </div>
+      <div style="padding: 30px; background: #f9f9f9; border-radius: 0 0 8px 8px;">
+        <h2>Refund Approved</h2>
+        <p>Your refund request has been approved.</p>
+        <div style="background: #d4edda; border: 1px solid #28a745; border-radius: 8px; padding: 15px; margin: 15px 0;">
+          <p style="margin: 0;"><strong>Amount:</strong> {{amount}}</p>
+          <p style="margin: 5px 0 0;"><strong>Method:</strong> {{refundMethod}}</p>
+        </div>
+        <p style="color: #666;">Our finance team will dispatch this refund to your selected destination account.</p>
+      </div>
+    </div>
+  `,
+  refund_denied: `
+    <div style="font-family: Arial, sans-serif; max-width: 500px; margin: 0 auto; padding: 20px;">
+      <div style="text-align: center; padding: 20px; background: #1a1a2e; color: white; border-radius: 8px 8px 0 0;">
+        <h1 style="margin: 0;">RMV Stainless & Steel Fabrication</h1>
+      </div>
+      <div style="padding: 30px; background: #f9f9f9; border-radius: 0 0 8px 8px;">
+        <h2>Refund Request Denied</h2>
+        <p>Your refund request was declined after review.</p>
+        <div style="background: #fff3cd; border: 1px solid #ffc107; border-radius: 8px; padding: 15px; margin: 15px 0;">
+          <p style="margin: 0;"><strong>Reason:</strong> {{reason}}</p>
+        </div>
+        <p style="color: #666;">You may contact support if you need clarification.</p>
+      </div>
+    </div>
+  `,
+  refund_dispatched: `
+    <div style="font-family: Arial, sans-serif; max-width: 500px; margin: 0 auto; padding: 20px;">
+      <div style="text-align: center; padding: 20px; background: #1a1a2e; color: white; border-radius: 8px 8px 0 0;">
+        <h1 style="margin: 0;">RMV Stainless & Steel Fabrication</h1>
+      </div>
+      <div style="padding: 30px; background: #f9f9f9; border-radius: 0 0 8px 8px;">
+        <h2>Refund Dispatched</h2>
+        <p>Your approved refund has been dispatched.</p>
+        <div style="background: #e8f2ff; border: 1px solid #7aa7e0; border-radius: 8px; padding: 15px; margin: 15px 0;">
+          <p style="margin: 0;"><strong>Reference:</strong> {{referenceNumber}}</p>
+          <p style="margin: 5px 0 0;"><strong>Amount:</strong> {{amount}}</p>
+        </div>
+        <p style="color: #666;">Please keep the reference number for your records.</p>
+      </div>
+    </div>
+  `,
+  refund_reconciled: `
+    <div style="font-family: Arial, sans-serif; max-width: 500px; margin: 0 auto; padding: 20px;">
+      <div style="text-align: center; padding: 20px; background: #1a1a2e; color: white; border-radius: 8px 8px 0 0;">
+        <h1 style="margin: 0;">RMV Stainless & Steel Fabrication</h1>
+      </div>
+      <div style="padding: 30px; background: #f9f9f9; border-radius: 0 0 8px 8px;">
+        <h2>Refund Completed</h2>
+        <p>Your refund has been reconciled and marked complete.</p>
+        <p style="color: #666;">No further action is needed unless you have a support concern.</p>
+      </div>
+    </div>
+  `,
 };
 
 // Compile templates
@@ -242,6 +321,93 @@ for (const [key, html] of Object.entries(templates)) {
 
 // Retry config
 const RETRY_DELAYS = [60 * 1000, 5 * 60 * 1000, 15 * 60 * 1000]; // 1min, 5min, 15min
+
+function buildContextActionUrl(data: EmailTemplateData): string {
+  if (data.actionUrl) return String(data.actionUrl);
+
+  if (data.projectId) {
+    const projectId = encodeURIComponent(String(data.projectId));
+    if (data.paymentStageId) {
+      return `${APP_URL}/projects/${projectId}/payments?stage=${encodeURIComponent(String(data.paymentStageId))}`;
+    }
+    if (data.contextPath) {
+      return `${APP_URL}/projects/${projectId}/${encodeURIComponent(String(data.contextPath))}`;
+    }
+    return `${APP_URL}/projects/${projectId}`;
+  }
+
+  if (data.appointmentId) {
+    return `${APP_URL}/appointments/${encodeURIComponent(String(data.appointmentId))}`;
+  }
+
+  if (data.refundId) {
+    return `${APP_URL}/my-refunds?refund=${encodeURIComponent(String(data.refundId))}`;
+  }
+
+  return (data.projectUrl as string)
+    || (data.paymentUrl as string)
+    || (data.refundUrl as string)
+    || APP_URL;
+}
+
+function normalizeTemplateData(data: Record<string, unknown>): EmailTemplateData {
+  const enriched = data as EmailTemplateData;
+  const helpUrl = (enriched.helpUrl as string) || DEFAULT_HELP_URL;
+  const actionUrl = buildContextActionUrl(enriched);
+
+  return {
+    ...enriched,
+    customerName: (enriched.customerName as string) || 'there',
+    actionLabel: (enriched.actionLabel as string) || 'Open RMV Portal',
+    actionUrl,
+    helpUrl,
+    supportEmail: env.SMTP_FROM_EMAIL,
+    supportMailto: `mailto:${env.SMTP_FROM_EMAIL}`,
+    facebookUrl: DEFAULT_SOCIAL_FACEBOOK,
+    instagramUrl: DEFAULT_SOCIAL_INSTAGRAM,
+    appUrl: APP_URL,
+  };
+}
+
+function appendBrandedFooter(htmlContent: string, data: EmailTemplateData): string {
+  const customerName = String(data.customerName || 'there');
+  const actionLabel = String(data.actionLabel || 'Open RMV Portal');
+  const actionUrl = String(data.actionUrl || APP_URL);
+  const helpUrl = String(data.helpUrl || DEFAULT_HELP_URL);
+  const supportEmail = String(data.supportEmail || env.SMTP_FROM_EMAIL);
+  const supportMailto = String(data.supportMailto || `mailto:${env.SMTP_FROM_EMAIL}`);
+  const facebookUrl = String(data.facebookUrl || DEFAULT_SOCIAL_FACEBOOK);
+  const instagramUrl = String(data.instagramUrl || DEFAULT_SOCIAL_INSTAGRAM);
+
+  const personalization = `
+    <div style="font-family: Arial, sans-serif; max-width: 500px; margin: 14px auto 0; padding: 0 20px;">
+      <div style="border-radius: 10px; border: 1px solid #d6dde8; background: #f7fafc; padding: 12px 14px; color: #2c3d51; font-size: 13px;">
+        Hi ${customerName}, here are your quick next steps.
+      </div>
+    </div>
+  `;
+
+  const footer = `
+    <div style="font-family: Arial, sans-serif; max-width: 500px; margin: 14px auto 0; padding: 0 20px 20px;">
+      <div style="border-radius: 10px; border: 1px solid #d6dde8; background: #ffffff; padding: 18px;">
+        <p style="margin: 0 0 12px; font-size: 13px; color: #2c3d51;">
+          Stay updated on your project anytime.
+        </p>
+        <a href="${actionUrl}" style="display: inline-block; background: #1f4f7a; color: #ffffff; text-decoration: none; padding: 10px 14px; border-radius: 8px; font-size: 13px; font-weight: 700;">${actionLabel}</a>
+        <p style="margin: 14px 0 6px; font-size: 12px; color: #5d6f82;">
+          Need help? Visit our <a href="${helpUrl}" style="color: #1f4f7a;">Help Center</a> or email
+          <a href="${supportMailto}" style="color: #1f4f7a;">${supportEmail}</a>.
+        </p>
+        <p style="margin: 0; font-size: 12px; color: #5d6f82;">
+          Follow us: <a href="${facebookUrl}" style="color: #1f4f7a;">Facebook</a> ·
+          <a href="${instagramUrl}" style="color: #1f4f7a;">Instagram</a>
+        </p>
+      </div>
+    </div>
+  `;
+
+  return `${htmlContent}${personalization}${footer}`;
+}
 
 async function sendWithProvider(
   to: string,
@@ -293,9 +459,11 @@ async function sendEmail(
   data: Record<string, unknown>,
   attachments?: EmailAttachment[],
 ): Promise<void> {
-  const htmlContent = compiledTemplates[templateKey]
-    ? compiledTemplates[templateKey](data)
-    : `<p>${JSON.stringify(data)}</p>`;
+  const templateData = normalizeTemplateData(data);
+  const templateHtml = compiledTemplates[templateKey]
+    ? compiledTemplates[templateKey](templateData)
+    : `<p>${JSON.stringify(templateData)}</p>`;
+  const htmlContent = appendBrandedFooter(templateHtml, templateData);
 
   const emailLog = await EmailLog.create({
     to,
@@ -342,54 +510,79 @@ export async function sendAppointmentConfirmedEmail(
   to: string,
   data: { date: string; time: string; type: string },
 ): Promise<void> {
-  await sendEmail(to, 'Appointment Confirmed - RMV Stainless Steel', 'appointment_confirmed', data);
+  await sendEmail(to, 'Appointment Confirmed - RMV Stainless Steel', 'appointment_confirmed', {
+    ...data,
+    actionLabel: 'View Appointments',
+    actionUrl: `${APP_URL}/appointments`,
+  });
 }
 
 export async function sendBlueprintUploadedEmail(
   to: string,
-  data: { version: number; projectTitle: string },
+  data: { version: number; projectTitle: string; projectId?: string },
 ): Promise<void> {
-  await sendEmail(to, 'Blueprint Ready for Review - RMV Stainless Steel', 'blueprint_uploaded', data);
+  await sendEmail(to, 'Blueprint Ready for Review - RMV Stainless Steel', 'blueprint_uploaded', {
+    ...data,
+    actionLabel: 'Review Blueprint',
+    contextPath: 'blueprint',
+  });
 }
 
 export async function sendPaymentVerifiedEmail(
   to: string,
-  data: { amount: string; stageLabel: string; receiptNumber: string },
+  data: { amount: string; stageLabel: string; receiptNumber: string; projectId?: string; paymentStageId?: string },
   receiptPdf?: Buffer,
 ): Promise<void> {
   const attachments = receiptPdf
     ? [{ content: receiptPdf.toString('base64'), filename: `receipt-${data.receiptNumber}.pdf`, type: 'application/pdf' }]
     : undefined;
 
-  await sendEmail(to, `Payment Receipt ${data.receiptNumber} - RMV Stainless Steel`, 'payment_verified', data, attachments);
+  await sendEmail(to, `Payment Receipt ${data.receiptNumber} - RMV Stainless Steel`, 'payment_verified', {
+    ...data,
+    actionLabel: 'Open Payments',
+  }, attachments);
 }
 
 export async function sendPaymentDeclinedEmail(
   to: string,
-  data: { stageLabel: string; reason: string },
+  data: { stageLabel: string; reason: string; projectId?: string; paymentStageId?: string },
 ): Promise<void> {
-  await sendEmail(to, 'Payment Proof Declined - RMV Stainless Steel', 'payment_declined', data);
+  await sendEmail(to, 'Payment Proof Declined - RMV Stainless Steel', 'payment_declined', {
+    ...data,
+    actionLabel: 'Resubmit Payment',
+  });
 }
 
 export async function sendFabricationUpdateEmail(
   to: string,
-  data: { projectTitle: string; status: string; notes: string },
+  data: { projectTitle: string; status: string; notes: string; projectId?: string },
 ): Promise<void> {
-  await sendEmail(to, 'Fabrication Update - RMV Stainless Steel', 'fabrication_update', data);
+  await sendEmail(to, 'Fabrication Update - RMV Stainless Steel', 'fabrication_update', {
+    ...data,
+    actionLabel: 'Track Fabrication',
+    contextPath: 'fabrication',
+  });
 }
 
 export async function sendReadyForDeliveryEmail(
   to: string,
-  data: { projectTitle: string },
+  data: { projectTitle: string; projectId?: string },
 ): Promise<void> {
-  await sendEmail(to, `🎉 Your Project is Ready for Delivery — ${data.projectTitle}`, 'ready_for_delivery', data);
+  await sendEmail(to, `🎉 Your Project is Ready for Delivery — ${data.projectTitle}`, 'ready_for_delivery', {
+    ...data,
+    actionLabel: 'Confirm Installation',
+    contextPath: 'fabrication',
+  });
 }
 
 export async function sendProjectCompletedEmail(
   to: string,
-  data: { projectTitle: string },
+  data: { projectTitle: string; projectId?: string },
 ): Promise<void> {
-  await sendEmail(to, `✅ Project Complete — ${data.projectTitle}`, 'project_completed', data);
+  await sendEmail(to, `✅ Project Complete — ${data.projectTitle}`, 'project_completed', {
+    ...data,
+    actionLabel: 'View Project Summary',
+  });
 }
 
 export async function send2faEmail(to: string, otp: string): Promise<void> {
@@ -398,23 +591,72 @@ export async function send2faEmail(to: string, otp: string): Promise<void> {
 
 export async function sendPaymentHeadsUpEmail(
   to: string,
-  data: { projectTitle: string; stageLabel: string; amount: string; fabricationStatus: string },
+  data: { projectTitle: string; stageLabel: string; amount: string; fabricationStatus: string; projectId?: string; paymentStageId?: string },
 ): Promise<void> {
-  await sendEmail(to, `Upcoming Payment Notice - ${data.projectTitle}`, 'payment_heads_up', data);
+  await sendEmail(to, `Upcoming Payment Notice - ${data.projectTitle}`, 'payment_heads_up', {
+    ...data,
+    actionLabel: 'Prepare Payment',
+  });
 }
 
 export async function sendPaymentDueEmail(
   to: string,
-  data: { projectTitle: string; stageLabel: string; amount: string },
+  data: { projectTitle: string; stageLabel: string; amount: string; projectId?: string; paymentStageId?: string },
 ): Promise<void> {
-  await sendEmail(to, `Payment Now Due - ${data.projectTitle}`, 'payment_due', data);
+  await sendEmail(to, `Payment Now Due - ${data.projectTitle}`, 'payment_due', {
+    ...data,
+    actionLabel: 'Pay Now',
+  });
 }
 
 export async function sendPaymentOverdueEmail(
   to: string,
-  data: { projectTitle: string; stageLabel: string; amount: string; dueDate: string; reminderNumber: number },
+  data: { projectTitle: string; stageLabel: string; amount: string; dueDate: string; reminderNumber: number; projectId?: string; paymentStageId?: string },
 ): Promise<void> {
-  await sendEmail(to, `Payment Overdue Reminder #${data.reminderNumber} - ${data.projectTitle}`, 'payment_overdue', data);
+  await sendEmail(to, `Payment Overdue Reminder #${data.reminderNumber} - ${data.projectTitle}`, 'payment_overdue', {
+    ...data,
+    actionLabel: 'Settle Overdue Payment',
+  });
+}
+
+export async function sendRefundApprovedEmail(
+  to: string,
+  data: { amount: string; refundMethod: string; appointmentId?: string; refundId?: string },
+): Promise<void> {
+  await sendEmail(to, 'Refund Approved - RMV Stainless Steel', 'refund_approved', {
+    ...data,
+    actionLabel: 'Track Refund',
+  });
+}
+
+export async function sendRefundDeniedEmail(
+  to: string,
+  data: { reason: string; appointmentId?: string; refundId?: string },
+): Promise<void> {
+  await sendEmail(to, 'Refund Request Denied - RMV Stainless Steel', 'refund_denied', {
+    ...data,
+    actionLabel: 'View Refund Details',
+  });
+}
+
+export async function sendRefundDispatchedEmail(
+  to: string,
+  data: { amount: string; referenceNumber: string; appointmentId?: string; refundId?: string },
+): Promise<void> {
+  await sendEmail(to, 'Refund Dispatched - RMV Stainless Steel', 'refund_dispatched', {
+    ...data,
+    actionLabel: 'View Dispatch Details',
+  });
+}
+
+export async function sendRefundReconciledEmail(
+  to: string,
+  data: { appointmentId?: string; refundId?: string },
+): Promise<void> {
+  await sendEmail(to, 'Refund Completed - RMV Stainless Steel', 'refund_reconciled', {
+    ...data,
+    actionLabel: 'Open Refund Timeline',
+  });
 }
 
 // Retry processor (called by cron or startup)

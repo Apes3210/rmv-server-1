@@ -49,9 +49,20 @@ export interface IProject extends Document {
   contractGeneratedAt?: Date;
   contractSignedAt?: Date;
   contractSignatureKey?: string;
+  engineerContractSignedAt?: Date;
+  engineerContractSignatureKey?: string;
+  engineerContractSignedBy?: Types.ObjectId;
   originalContractDownloadedAt?: Date; // one-time original download tracking
 
   installationConfirmedAt?: Date;
+  customerReview?: {
+    rating?: number;
+    comment?: string;
+    submittedAt?: Date;
+    submittedBy?: Types.ObjectId;
+    skippedAt?: Date;
+    skippedReason?: string;
+  };
 
   deletedAt?: Date;
   createdAt: Date;
@@ -114,9 +125,20 @@ const projectSchema = new Schema<IProject>(
     contractGeneratedAt: { type: Date },
     contractSignedAt: { type: Date },
     contractSignatureKey: { type: String },
+    engineerContractSignedAt: { type: Date },
+    engineerContractSignatureKey: { type: String },
+    engineerContractSignedBy: { type: Schema.Types.ObjectId, ref: 'User' },
     originalContractDownloadedAt: { type: Date, default: null },
 
     installationConfirmedAt: { type: Date, default: null },
+    customerReview: {
+      rating: { type: Number, min: 1, max: 5 },
+      comment: { type: String },
+      submittedAt: { type: Date },
+      submittedBy: { type: Schema.Types.ObjectId, ref: 'User' },
+      skippedAt: { type: Date },
+      skippedReason: { type: String },
+    },
 
     deletedAt: { type: Date, default: null },
   },

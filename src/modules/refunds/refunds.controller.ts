@@ -22,7 +22,39 @@ export const denyRefundRequest = asyncHandler(async (req: Request, res: Response
   res.json({ success: true, data: result });
 });
 
+export const dispatchRefundRequest = asyncHandler(async (req: Request, res: Response) => {
+  const result = await refundService.dispatchRefundRequest(req.params.id as string, req.body, req.userId!, req.ip, req.get('user-agent'));
+  res.json({ success: true, data: result });
+});
+
+export const reconcileRefundRequest = asyncHandler(async (req: Request, res: Response) => {
+  const result = await refundService.reconcileRefundRequest(req.params.id as string, req.body, req.userId!, req.ip, req.get('user-agent'));
+  res.json({ success: true, data: result });
+});
+
 export const listMyRefundRequests = asyncHandler(async (req: Request, res: Response) => {
   const result = await refundService.listMyRefundRequests(req.userId!);
+  res.json({ success: true, data: result });
+});
+
+export const updateMyRefundRequest = asyncHandler(async (req: Request, res: Response) => {
+  const result = await refundService.updateMyRefundRequest(
+    req.params.id as string,
+    req.body,
+    req.userId!,
+    req.ip,
+    req.get('user-agent'),
+  );
+  res.json({ success: true, data: result });
+});
+
+export const cancelMyRefundRequest = asyncHandler(async (req: Request, res: Response) => {
+  const result = await refundService.cancelMyRefundRequest(
+    req.params.id as string,
+    req.body,
+    req.userId!,
+    req.ip,
+    req.get('user-agent'),
+  );
   res.json({ success: true, data: result });
 });

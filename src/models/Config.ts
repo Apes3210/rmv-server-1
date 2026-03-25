@@ -5,16 +5,34 @@ export interface IConfig extends Document {
   key: string;
   value: unknown;
   description?: string;
+  versions: Array<{
+    _id: Types.ObjectId;
+    value: unknown;
+    description?: string;
+    updatedBy?: Types.ObjectId;
+    updatedAt: Date;
+  }>;
   updatedBy?: Types.ObjectId;
   updatedAt: Date;
   createdAt: Date;
 }
+
+const configVersionSchema = new Schema(
+  {
+    value: { type: Schema.Types.Mixed, required: true },
+    description: { type: String },
+    updatedBy: { type: Schema.Types.ObjectId, ref: 'User' },
+    updatedAt: { type: Date, required: true },
+  },
+  { _id: true },
+);
 
 const configSchema = new Schema<IConfig>(
   {
     key: { type: String, required: true, unique: true },
     value: { type: Schema.Types.Mixed, required: true },
     description: { type: String },
+    versions: { type: [configVersionSchema], default: [] },
     updatedBy: { type: Schema.Types.ObjectId, ref: 'User' },
   },
   { timestamps: true },

@@ -59,6 +59,10 @@ export const signContractSchema = z.object({
   signatureKey: z.string().min(1, 'Signature is required'),
 });
 
+export const signEngineerContractSchema = z.object({
+  signatureKey: z.string().min(1, 'Engineer signature is required'),
+});
+
 export const reviewInitialDesignSchema = z.object({
   decision: z.enum(['approved', 'declined']),
   notes: z.string().max(2000).trim().optional(),
@@ -91,13 +95,25 @@ export const selectPaymentPlanSchema = z.object({
   paymentType: z.enum(['full', 'installment']),
 });
 
+export const submitProjectReviewSchema = z.object({
+  rating: z.number().int().min(1).max(5),
+  comment: z.string().max(1200).trim().optional(),
+});
+
+export const skipProjectReviewSchema = z.object({
+  reason: z.string().max(400).trim().optional(),
+});
+
 export type CreateProjectInput = z.infer<typeof createProjectSchema>;
 export type UpdateProjectInput = z.infer<typeof updateProjectSchema>;
 export type AssignEngineersInput = z.infer<typeof assignEngineersSchema>;
 export type AssignFabricationInput = z.infer<typeof assignFabricationSchema>;
 export type TransitionProjectInput = z.infer<typeof transitionProjectSchema>;
 export type SignContractInput = z.infer<typeof signContractSchema>;
+export type SignEngineerContractInput = z.infer<typeof signEngineerContractSchema>;
 export type ReviewInitialDesignInput = z.infer<typeof reviewInitialDesignSchema>;
 export type ResubmitInitialDesignInput = z.infer<typeof resubmitInitialDesignSchema>;
 export type BackfillInitialDesignInput = z.infer<typeof backfillInitialDesignSchema>;
 export type SelectPaymentPlanInput = z.infer<typeof selectPaymentPlanSchema>;
+export type SubmitProjectReviewInput = z.infer<typeof submitProjectReviewSchema>;
+export type SkipProjectReviewInput = z.infer<typeof skipProjectReviewSchema>;

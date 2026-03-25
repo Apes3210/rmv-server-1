@@ -33,6 +33,14 @@ describe('appointmentStateMachine', () => {
       expect(error).toBeInstanceOf(AppError);
       const appError = error as AppError;
       expect(appError.code).toBe(ErrorCode.INVALID_TRANSITION);
+      expect(appError.details).toMatchObject({
+        diagnosticsType: 'LIFECYCLE_MISMATCH',
+        refreshRequired: true,
+        currentStatus: AppointmentStatus.REQUESTED,
+        attemptedStatus: AppointmentStatus.COMPLETED,
+      });
+      expect(Array.isArray(appError.details?.allowedNextStatuses)).toBe(true);
+      expect(appError.details?.allowedNextStatuses).toContain(AppointmentStatus.CONFIRMED);
     }
   });
 });

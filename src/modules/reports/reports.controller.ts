@@ -1,6 +1,10 @@
 import type { Request, Response } from 'express';
 import { asyncHandler } from '../../utils/asyncHandler.js';
 import * as reportsService from './reports.service.js';
+import { getConfigValue } from '../config/config.service.js';
+import { AppError } from '../../utils/appError.js';
+
+const LIFECYCLE_ANALYTICS_FLAG = 'feature_lifecycle_mismatch_analytics';
 
 export const getDashboardSummary = asyncHandler(async (req: Request, res: Response) => {
   const data = await reportsService.getDashboardSummary(req.userId, req.userRoles);
@@ -42,5 +46,46 @@ export const getAuditLogs = asyncHandler(async (req: Request, res: Response) => 
     limit: req.query.limit ? Number(req.query.limit) : undefined,
     page: req.query.page ? Number(req.query.page) : undefined,
   });
+  res.json({ success: true, data });
+});
+
+export const getLifecycleMismatchHotspots = asyncHandler(async (req: Request, res: Response) => {
+  const isEnabled = await getConfigValue<boolean>(LIFECYCLE_ANALYTICS_FLAG, true);
+  if (!isEnabled) {
+    throw AppError.notFound('Lifecycle mismatch analytics is currently disabled');
+  }
+
+  const data = await reportsService.getLifecycleMismatchHotspots({
+    dateFrom: req.query.dateFrom ? String(req.query.dateFrom) : undefined,
+    dateTo: req.query.dateTo ? String(req.query.dateTo) : undefined,
+    limit: req.query.limit ? Number(req.query.limit) : undefined,
+  });
+  res.json({ success: true, data });
+});
+
+export const acknowledgeLifecycleMismatchHotspot = asyncHandler(async (req: Request, res: Response) => {
+  const isEnabled = await getConfigValue<boolean>(LIFECYCLE_ANALYTICS_FLAG, true);
+  if (!isEnabled) {
+    throw AppError.notFound('Lifecycle mismatch analytics is currently disabled');
+  }
+
+  if (!req.userId) {
+    throw AppError.unauthorized('Unauthorized');
+  }
+
+  const data = await reportsService.acknowledgeLifecycleMismatchHotspot(
+    {
+      targetType: req.body?.targetType,
+      currentStatus: req.body?.currentStatus,
+      attemptedStatus: req.body?.attemptedStatus,
+      refreshRequired: req.body?.refreshRequired === true,
+      acknowledged: req.body?.acknowledged !== false,
+      note: req.body?.note ? String(req.body.note) : undefined,
+    },
+    req.userId,
+    req.ip,
+    req.headers['user-agent'],
+  );
+
   res.json({ success: true, data });
 });

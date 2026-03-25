@@ -15,9 +15,42 @@ export interface IRefundRequest extends Document {
   reviewedBy?: Types.ObjectId; // Cashier/Admin who approved/denied
   reviewedAt?: Date;
   denialReason?: string;
+  dispatchedAt?: Date;
+  dispatchedBy?: Types.ObjectId;
+  dispatchReferenceNumber?: string;
+  dispatchNote?: string;
+  reconciledAt?: Date;
+  reconciledBy?: Types.ObjectId;
+  reconciliationNote?: string;
+  dispatchTrail: Array<{
+    event: 'submitted' | 'updated' | 'approved' | 'denied' | 'cancelled' | 'dispatched' | 'reconciled';
+    at: Date;
+    actorId?: Types.ObjectId;
+    note?: string;
+    referenceNumber?: string;
+    amount?: number;
+  }>;
+  cancelledAt?: Date;
+  cancelledReason?: string;
   createdAt: Date;
   updatedAt: Date;
 }
+
+const refundTrailEventSchema = new Schema(
+  {
+    event: {
+      type: String,
+      enum: ['submitted', 'updated', 'approved', 'denied', 'cancelled', 'dispatched', 'reconciled'],
+      required: true,
+    },
+    at: { type: Date, required: true },
+    actorId: { type: Schema.Types.ObjectId, ref: 'User' },
+    note: { type: String, maxlength: 1000 },
+    referenceNumber: { type: String, maxlength: 120 },
+    amount: { type: Number, min: 0 },
+  },
+  { _id: false },
+);
 
 const refundRequestSchema = new Schema<IRefundRequest>(
   {
@@ -37,6 +70,16 @@ const refundRequestSchema = new Schema<IRefundRequest>(
     reviewedBy: { type: Schema.Types.ObjectId, ref: 'User' },
     reviewedAt: { type: Date },
     denialReason: { type: String, maxlength: 1000 },
+    dispatchedAt: { type: Date },
+    dispatchedBy: { type: Schema.Types.ObjectId, ref: 'User' },
+    dispatchReferenceNumber: { type: String, maxlength: 120 },
+    dispatchNote: { type: String, maxlength: 1000 },
+    reconciledAt: { type: Date },
+    reconciledBy: { type: Schema.Types.ObjectId, ref: 'User' },
+    reconciliationNote: { type: String, maxlength: 1000 },
+    dispatchTrail: { type: [refundTrailEventSchema], default: [] },
+    cancelledAt: { type: Date },
+    cancelledReason: { type: String, maxlength: 1000 },
   },
   { timestamps: true },
 );
