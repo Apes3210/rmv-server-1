@@ -79,7 +79,7 @@ router.post(
 router.post(
   '/agent-create-ocular',
   authenticate,
-  authorize(Role.APPOINTMENT_AGENT, Role.ADMIN),
+  authorize(Role.SALES_STAFF),
   validate(agentCreateOcularSchema),
   ctrl.agentCreateOcular,
 );
@@ -97,7 +97,7 @@ router.post(
 router.post(
   '/:id/finalize-ocular',
   authenticate,
-  authorize(Role.APPOINTMENT_AGENT, Role.ADMIN),
+  authorize(Role.SALES_STAFF),
   validate(agentFinalizeOcularSchema),
   ctrl.agentFinalizeOcular,
 );

@@ -91,6 +91,12 @@ const envSchema = z.object({
   // Frontend URL (for redirect URLs)
   FRONTEND_URL: z.string().default('http://localhost:5173'),
 
+  // Feature flags: direct ocular booking flows
+  FEATURE_DIRECT_OCULAR_STAFF_ENABLED: booleanFromEnv.default(false),
+  FEATURE_DIRECT_OCULAR_CUSTOMER_ENABLED: booleanFromEnv.default(false),
+  FEATURE_DIRECT_OCULAR_STAFF_PILOT_IDS: z.string().default(''),
+  FEATURE_DIRECT_OCULAR_CUSTOMER_PILOT_IDS: z.string().default(''),
+
   // Firebase (base64-encoded service account JSON)
   FIREBASE_SERVICE_ACCOUNT_B64: z.string().default(''),
 });

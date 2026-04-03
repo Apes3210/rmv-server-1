@@ -104,8 +104,8 @@ export class AppError extends Error {
     return new AppError(message, 401, code);
   }
 
-  static forbidden(message = 'Forbidden', code = ErrorCode.FORBIDDEN) {
-    return new AppError(message, 403, code);
+  static forbidden(message = 'Forbidden', code = ErrorCode.FORBIDDEN, details?: Record<string, unknown>) {
+    return new AppError(message, 403, code, details);
   }
 
   static notFound(message = 'Resource not found') {

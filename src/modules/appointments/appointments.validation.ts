@@ -16,7 +16,7 @@ const addressStructuredSchema = z.object({
   zip: z.string().max(10).trim(),
 });
 
-export const requestAppointmentSchema = z.object({
+const appointmentRequestBaseSchema = z.object({
   type: z.nativeEnum(AppointmentType),
   date: z.string().regex(dateRegex, 'Date must be YYYY-MM-DD'),
   slotCode: z.enum(SLOT_CODES as unknown as [string, ...string[]]),
@@ -27,15 +27,11 @@ export const requestAppointmentSchema = z.object({
   customerLocation: locationSchema.optional(),
   addressStructured: addressStructuredSchema.optional(),
   ocularFeePaymentChoice: z.nativeEnum(OcularFeePaymentChoice).optional(),
-}).refine(
-  (data) => data.type !== AppointmentType.OCULAR || !!data.customerLocation,
-  {
-    message: 'Ocular appointments require a pinned map location',
-    path: ['customerLocation'],
-  },
-);
+});
 
-export const agentCreateAppointmentSchema = requestAppointmentSchema.extend({
+export const requestAppointmentSchema = appointmentRequestBaseSchema;
+
+export const agentCreateAppointmentSchema = appointmentRequestBaseSchema.extend({
   customerId: z.string().min(1),
 });
 
@@ -155,7 +151,6 @@ export type SubmitOcularLocationInput = z.infer<typeof submitOcularLocationSchem
 
 // ── Agent Finalize Ocular ──
 export const agentFinalizeOcularSchema = z.object({
-  salesStaffId: z.string().min(1).optional(),
   internalNotes: z.string().max(1000).trim().optional(),
 });
 

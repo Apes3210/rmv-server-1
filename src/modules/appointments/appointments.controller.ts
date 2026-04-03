@@ -6,8 +6,30 @@ import { AppointmentStatus, Role } from '../../utils/constants.js';
 /** Map populated appointment to the shape the frontend expects */
 function formatAppointment(appt: any) {
   const obj = appt.toObject ? appt.toObject() : { ...appt };
-  const cust = obj.customerId && typeof obj.customerId === 'object' ? obj.customerId : null;
-  const sales = obj.salesStaffId && typeof obj.salesStaffId === 'object' ? obj.salesStaffId : null;
+  const isPopulatedUser = (value: any) => (
+    !!value
+    && typeof value === 'object'
+    && (typeof value.firstName === 'string' || typeof value.lastName === 'string')
+  );
+  const toIdString = (value: any): string | undefined => {
+    if (!value) return undefined;
+    if (typeof value === 'string') return value;
+    if (typeof value._id?.toString === 'function') return value._id.toString();
+    if (typeof value.toString === 'function') {
+      const str = value.toString();
+      return str && str !== '[object Object]' ? str : undefined;
+    }
+    return undefined;
+  };
+  const fullName = (value: any): string | undefined => {
+    const first = typeof value?.firstName === 'string' ? value.firstName.trim() : '';
+    const last = typeof value?.lastName === 'string' ? value.lastName.trim() : '';
+    const joined = [first, last].filter(Boolean).join(' ');
+    return joined || undefined;
+  };
+
+  const cust = isPopulatedUser(obj.customerId) ? obj.customerId : null;
+  const sales = isPopulatedUser(obj.salesStaffId) ? obj.salesStaffId : null;
   const location = obj.customerLocation || (
     typeof obj.latitude === 'number' && typeof obj.longitude === 'number'
       ? { lat: obj.latitude, lng: obj.longitude }
@@ -15,10 +37,10 @@ function formatAppointment(appt: any) {
   );
   return {
     ...obj,
-    customerId: cust?._id?.toString() || obj.customerId,
-    customerName: cust ? `${cust.firstName} ${cust.lastName}` : undefined,
-    salesStaffId: sales?._id?.toString() || obj.salesStaffId || undefined,
-    salesStaffName: sales ? `${sales.firstName} ${sales.lastName}` : undefined,
+    customerId: toIdString(obj.customerId) || obj.customerId,
+    customerName: obj.customerName || fullName(cust),
+    salesStaffId: toIdString(obj.salesStaffId) || obj.salesStaffId || undefined,
+    salesStaffName: obj.salesStaffName || fullName(sales),
     address: obj.formattedAddress || obj.customerAddress,
     formattedAddress: obj.formattedAddress || obj.customerAddress,
     latitude: location?.lat,
@@ -39,6 +61,7 @@ export const requestAppointment = asyncHandler(async (req: Request, res: Respons
   const appointment = await appointmentsService.requestAppointment(
     req.body,
     req.userId!,
+    req.userRoles ?? [],
     req.ip,
     req.get('user-agent'),
   );
@@ -296,6 +319,7 @@ export const agentCreateOcular = asyncHandler(async (req: Request, res: Response
   const appointment = await appointmentsService.agentCreateOcular(
     req.body,
     req.userId!,
+    req.userRoles ?? [],
     req.ip,
     req.get('user-agent'),
   );
@@ -304,13 +328,21 @@ export const agentCreateOcular = asyncHandler(async (req: Request, res: Response
 
 // ── Customer: Submit Ocular Location ──
 export const customerSubmitOcularLocation = asyncHandler(async (req: Request, res: Response) => {
-  const appointment = await appointmentsService.customerSubmitOcularLocation(
+  await appointmentsService.customerSubmitOcularLocation(
     req.params.id as string,
     req.body,
     req.userId!,
     req.ip,
     req.get('user-agent'),
   );
+
+  // Re-fetch with populated refs so response keeps stable customer/sales display fields.
+  const appointment = await appointmentsService.getAppointmentById(
+    req.params.id as string,
+    req.userId!,
+    req.userRoles!,
+  );
+
   res.json({ success: true, data: formatAppointment(appointment) });
 });
 
@@ -320,6 +352,7 @@ export const agentFinalizeOcular = asyncHandler(async (req: Request, res: Respon
     req.params.id as string,
     req.body,
     req.userId!,
+    req.userRoles ?? [],
     req.ip,
     req.get('user-agent'),
   );

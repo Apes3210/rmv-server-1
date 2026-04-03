@@ -73,14 +73,14 @@ router.get(
 router.get(
   '/customers',
   authenticate,
-  authorize(Role.APPOINTMENT_AGENT, Role.ADMIN),
+  authorize(Role.APPOINTMENT_AGENT, Role.ADMIN, Role.SALES_STAFF),
   usersController.listCustomers,
 );
 
 router.get(
   '/customers/:id',
   authenticate,
-  authorize(Role.APPOINTMENT_AGENT, Role.ADMIN),
+  authorize(Role.APPOINTMENT_AGENT, Role.ADMIN, Role.SALES_STAFF),
   usersController.getCustomerById,
 );
 

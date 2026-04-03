@@ -15,7 +15,6 @@ import { sendAppointmentConfirmedEmail } from '../notifications/email.service.js
 import { autoCreateDraft as autoCreateVisitReport } from '../visit-reports/visit-reports.service.js';
 import { computeOcularFee, reverseGeocode } from '../maps/maps.service.js';
 import { createCheckoutSession, retrieveCheckoutSession } from '../../services/paymongo.service.js';
-import { env } from '../../config/env.js';
 import { logger } from '../../utils/logger.js';
 import type {
   RequestAppointmentInput,
@@ -39,6 +38,27 @@ const TZ = 'Asia/Manila';
 async function getConfigValue<T>(key: string, defaultVal: T): Promise<T> {
   const config = await Config.findOne({ key });
   return config ? (config.value as T) : defaultVal;
+}
+
+async function getLatestEligibleConsultationForOcular(customerId: string) {
+  const consultation = await Appointment.findOne({
+    customerId,
+    type: AppointmentType.OFFICE,
+    salesStaffId: { $exists: true },
+    status: AppointmentStatus.COMPLETED,
+  }).sort({ createdAt: -1 });
+
+  if (!consultation) return null;
+
+  const consultationReport = await VisitReport.findOne({
+    appointmentId: consultation._id,
+    visitType: 'consultation',
+    status: { $in: [VisitReportStatus.SUBMITTED, VisitReportStatus.COMPLETED] },
+  }).sort({ createdAt: -1 });
+
+  if (!consultationReport) return null;
+
+  return { consultation, consultationReport };
 }
 
 function formatSlotTime(slotCode: string): string {
@@ -247,14 +267,24 @@ export async function getAvailableSlots(query: AvailableSlotsQuery) {
 export async function requestAppointment(
   input: RequestAppointmentInput,
   customerId: string,
+  userRoles: Role[],
   ip?: string,
   ua?: string,
 ) {
-  // Customers can only book office visits; oculars are agent-created
+  if (!userRoles.includes(Role.CUSTOMER)) {
+    throw AppError.forbidden('Only customers can request appointments from this endpoint');
+  }
+
+  // Customer self-booking is consultation-first only.
   if (input.type === AppointmentType.OCULAR) {
     throw AppError.badRequest(
-      'Ocular visits cannot be booked directly. Please book an office consultation first.',
+      'Ocular visits cannot be booked directly by customers. Please book an office consultation first.',
       ErrorCode.VALIDATION_ERROR,
+      {
+        flow: 'customer_booking',
+        reason: 'consultation_first_only',
+        action: 'book_office_consultation_first',
+      },
     );
   }
 
@@ -544,10 +574,23 @@ export async function skipSiteDetails(
 
 export async function agentCreateOcular(
   input: AgentCreateOcularInput,
-  agentId: string,
+  actorId: string,
+  actorRoles: Role[],
   ip?: string,
   ua?: string,
 ) {
+  if (!actorRoles.includes(Role.SALES_STAFF)) {
+    throw AppError.forbidden(
+      'Only sales staff can schedule ocular visits after consultation. Appointment agents should assign consultation first.',
+      ErrorCode.FORBIDDEN,
+      {
+        flow: 'staff_direct_ocular',
+        reason: 'only_sales_staff_can_schedule_ocular_after_consultation',
+        action: 'assign_sales_staff_for_consultation_first',
+      },
+    );
+  }
+
   const customer = await User.findById(input.customerId);
   if (!customer || !customer.roles.includes(Role.CUSTOMER)) {
     throw AppError.notFound('Customer not found');
@@ -557,6 +600,33 @@ export async function agentCreateOcular(
   await assertDateAvailable(input.date);
   await assertSlotAvailable(input.date, input.slotCode, AppointmentType.OCULAR);
 
+  const consultationContext = await getLatestEligibleConsultationForOcular(input.customerId);
+  if (!consultationContext?.consultation.salesStaffId) {
+    throw AppError.badRequest(
+      'A completed consultation with submitted consultation details is required before scheduling an ocular visit',
+      ErrorCode.VALIDATION_ERROR,
+      {
+        flow: 'staff_direct_ocular',
+        reason: 'completed_consultation_with_report_required',
+        action: 'complete_consultation_then_submit_consultation_report',
+      },
+    );
+  }
+
+  if (consultationContext.consultation.salesStaffId.toString() !== actorId) {
+    throw AppError.forbidden(
+      'Only the sales staff assigned in the completed consultation can schedule this ocular visit',
+      ErrorCode.FORBIDDEN,
+      {
+        flow: 'staff_direct_ocular',
+        reason: 'staff_assignment_mismatch',
+        action: 'use_assigned_consultation_staff_account',
+      },
+    );
+  }
+
+  const preassignedSalesStaffId: string | undefined = actorId;
+
   // Create ocular WITHOUT location/fee — customer provides these later
   const appointment = await Appointment.create({
     customerId: input.customerId,
@@ -564,15 +634,16 @@ export async function agentCreateOcular(
     date: input.date,
     slotCode: input.slotCode,
     status: AppointmentStatus.REQUESTED,
+    salesStaffId: preassignedSalesStaffId,
     customerNotes: input.visitReportId
       ? `Ocular follow-up from consultation report ${input.visitReportId}`
-      : 'Ocular visit scheduled by agent',
-    bookedBy: agentId,
+      : 'Ocular visit scheduled directly by sales staff',
+    bookedBy: actorId,
   });
 
   await AuditLog.create({
     action: AuditAction.APPOINTMENT_CREATED,
-    actorId: agentId,
+    actorId,
     targetType: 'appointment',
     targetId: appointment._id,
     details: {
@@ -581,7 +652,8 @@ export async function agentCreateOcular(
       slotCode: input.slotCode,
       customerId: input.customerId,
       visitReportId: input.visitReportId,
-      createdByAgent: true,
+      createdByAgent: false,
+      createdBySalesStaffDirect: true,
       isOcularFollowUp: true,
     },
     ipAddress: ip,
@@ -596,6 +668,16 @@ export async function agentCreateOcular(
     `An ocular visit has been scheduled for ${input.date} at ${formatSlotTime(input.slotCode)}. Please provide your site address.`,
     `/appointments/${appointment._id}`,
   );
+
+  if (preassignedSalesStaffId) {
+    await createAndSendNotification(
+      preassignedSalesStaffId,
+      NotificationCategory.APPOINTMENT,
+      'Direct Ocular Booking Created',
+      `You scheduled an ocular visit for ${input.date} at ${formatSlotTime(input.slotCode)}. Waiting for customer location submission.`,
+      `/appointments/${appointment._id}`,
+    );
+  }
 
   return appointment;
 }
@@ -675,14 +757,15 @@ export async function customerSubmitOcularLocation(
     userAgent: ua,
   });
 
-  // Notify agent that customer has provided location
-  await notifyRole(
-    Role.APPOINTMENT_AGENT,
-    NotificationCategory.APPOINTMENT,
-    'Ocular Location Submitted',
-    `Customer has submitted their location for ocular appointment on ${appointment.date} at ${formatSlotTime(appointment.slotCode)}.${!isWithinNCR ? ` Fee: ₱${ocularVisitData.ocularFee.toLocaleString()}` : ' Within NCR - no fee.'}`,
-    `/appointments/${appointment._id}`,
-  );
+  if (appointment.salesStaffId) {
+    await createAndSendNotification(
+      appointment.salesStaffId.toString(),
+      NotificationCategory.APPOINTMENT,
+      'Customer Location Submitted',
+      `Customer submitted their location for ocular visit on ${appointment.date} at ${formatSlotTime(appointment.slotCode)}.`,
+      `/appointments/${appointment._id}`,
+    );
+  }
 
   return appointment;
 }
@@ -692,10 +775,18 @@ export async function customerSubmitOcularLocation(
 export async function agentFinalizeOcular(
   appointmentId: string,
   input: AgentFinalizeOcularInput,
-  agentId: string,
+  actorId: string,
+  actorRoles: Role[],
   ip?: string,
   ua?: string,
 ) {
+  if (!actorRoles.includes(Role.SALES_STAFF)) {
+    throw AppError.forbidden(
+      'Only sales staff can finalize ocular visits',
+      ErrorCode.FORBIDDEN,
+    );
+  }
+
   const appointment = await Appointment.findById(appointmentId);
   if (!appointment) throw AppError.notFound('Appointment not found');
 
@@ -719,47 +810,47 @@ export async function agentFinalizeOcular(
     );
   }
 
-  // Resolve sales staff: prefer explicit, otherwise inherit from customer's previous consultation
-  let resolvedSalesStaffId = input.salesStaffId;
-  if (!resolvedSalesStaffId) {
-    const prevConsultation = await Appointment.findOne({
-      customerId: appointment.customerId,
-      type: AppointmentType.OFFICE,
-      salesStaffId: { $exists: true },
-      status: { $in: [AppointmentStatus.CONFIRMED, AppointmentStatus.COMPLETED] },
-    }).sort({ createdAt: -1 });
-    if (prevConsultation?.salesStaffId) {
-      resolvedSalesStaffId = prevConsultation.salesStaffId.toString();
-    }
-  }
-  if (!resolvedSalesStaffId) {
-    throw AppError.badRequest('No sales staff specified and no previous consultation found for this customer');
+  if (!appointment.salesStaffId) {
+    throw AppError.badRequest(
+      'This ocular visit has no assigned sales staff. Please re-schedule it through the assigned sales staff workflow.',
+      ErrorCode.VALIDATION_ERROR,
+    );
   }
 
+  if (appointment.salesStaffId.toString() !== actorId) {
+    throw AppError.forbidden(
+      'Only the assigned sales staff can finalize this ocular visit',
+      ErrorCode.FORBIDDEN,
+    );
+  }
+
+  const resolvedSalesStaffId = actorId;
+
   const salesStaff = await User.findOne({
-    _id: resolvedSalesStaffId,
+    _id: actorId,
     roles: Role.SALES_STAFF,
     isActive: true,
   });
   if (!salesStaff) throw AppError.notFound('Sales staff not found');
+
   await assertSalesAvailable(resolvedSalesStaffId, appointment.date);
 
   // Lock slot for ocular
-  await lockSlot(appointment.date, appointment.slotCode as SlotCode, resolvedSalesStaffId, agentId);
+  await lockSlot(appointment.date, appointment.slotCode as SlotCode, resolvedSalesStaffId, actorId);
   await confirmSlotLock(appointment.date, appointment.slotCode as SlotCode, resolvedSalesStaffId, appointment._id);
 
   appointment.status = AppointmentStatus.CONFIRMED;
   appointment.salesStaffId = salesStaff._id;
-  appointment.confirmedBy = agentId as unknown as Types.ObjectId;
+  appointment.confirmedBy = actorId as unknown as Types.ObjectId;
   if (input.internalNotes) appointment.internalNotes = input.internalNotes;
   await appointment.save();
 
   await AuditLog.create({
     action: AuditAction.APPOINTMENT_CONFIRMED,
-    actorId: agentId,
+    actorId,
     targetType: 'appointment',
     targetId: appointment._id,
-    details: { salesStaffId: resolvedSalesStaffId, finalizedOcular: true, autoAssigned: !input.salesStaffId },
+    details: { salesStaffId: resolvedSalesStaffId, finalizedOcular: true },
     ipAddress: ip,
     userAgent: ua,
   });
@@ -1312,17 +1403,19 @@ export async function verifyOcularFeeCheckout(appointmentId: string, customerId:
         appointment.customerId._id ?? appointment.customerId,
         NotificationCategory.PAYMENT,
         'Ocular Fee Payment Confirmed',
-        `Your ocular fee payment of ₱${appointment.ocularFee?.toLocaleString()} has been confirmed via PayMongo. An appointment agent will assign your sales staff shortly.`,
+        `Your ocular fee payment of ₱${appointment.ocularFee?.toLocaleString()} has been confirmed via PayMongo. Your assigned sales staff can now finalize your ocular visit.`,
         `/appointments/${appointment._id}`,
       );
 
-      await notifyRole(
-        Role.APPOINTMENT_AGENT,
-        NotificationCategory.PAYMENT,
-        'Ocular Fee Payment Received',
-        `A customer has paid the ocular fee of ₱${appointment.ocularFee?.toLocaleString()} for appointment on ${appointment.date}.`,
-        `/admin/appointments/${appointment._id}`,
-      );
+      if (appointment.salesStaffId) {
+        await createAndSendNotification(
+          appointment.salesStaffId.toString(),
+          NotificationCategory.PAYMENT,
+          'Ocular Fee Payment Received',
+          `Customer has paid the ocular fee of ₱${appointment.ocularFee?.toLocaleString()} for appointment on ${appointment.date}. You can now finalize this ocular visit.`,
+          `/appointments/${appointment._id}`,
+        );
+      }
 
       return { verified: true, appointment };
     }
@@ -1368,18 +1461,19 @@ export async function handlePaymongoPayment(checkoutSessionId: string) {
     appointment.customerId._id ?? appointment.customerId,
     NotificationCategory.PAYMENT,
     'Ocular Fee Payment Confirmed',
-    `Your ocular fee payment of ₱${appointment.ocularFee?.toLocaleString()} has been confirmed via PayMongo. An appointment agent will assign your sales staff shortly.`,
+    `Your ocular fee payment of ₱${appointment.ocularFee?.toLocaleString()} has been confirmed via PayMongo. Your assigned sales staff can now finalize your ocular visit.`,
     `/appointments/${appointment._id}`,
   );
 
-  // Notify appointment agents
-  await notifyRole(
-    Role.APPOINTMENT_AGENT,
-    NotificationCategory.APPOINTMENT,
-    'Ocular Fee Paid — Ready for Assignment',
-    `Ocular fee for appointment on ${appointment.date} has been paid via PayMongo. You can now assign a sales staff.`,
-    `/appointments/${appointment._id}`,
-  );
+  if (appointment.salesStaffId) {
+    await createAndSendNotification(
+      appointment.salesStaffId.toString(),
+      NotificationCategory.APPOINTMENT,
+      'Ocular Fee Paid — Ready to Finalize',
+      `Ocular fee for appointment on ${appointment.date} has been paid via PayMongo. You can now finalize this ocular visit.`,
+      `/appointments/${appointment._id}`,
+    );
+  }
 
   // Notify cashiers (for their records)
   await notifyRole(
@@ -1486,18 +1580,19 @@ export async function verifyOcularFee(
     appointment.customerId._id ?? appointment.customerId,
     NotificationCategory.PAYMENT,
     'Ocular Fee Verified',
-    `Your ocular fee payment of ₱${appointment.ocularFee?.toLocaleString()} has been verified. An appointment agent will assign your sales staff shortly.`,
+    `Your ocular fee payment of ₱${appointment.ocularFee?.toLocaleString()} has been verified. Your assigned sales staff can now finalize your ocular visit.`,
     `/appointments/${appointment._id}`,
   );
 
-  // Notify appointment agents
-  await notifyRole(
-    Role.APPOINTMENT_AGENT,
-    NotificationCategory.APPOINTMENT,
-    'Ocular Fee Paid — Ready for Assignment',
-    `Ocular fee for appointment on ${appointment.date} has been verified. You can now assign a sales staff.`,
-    `/appointments/${appointment._id}`,
-  );
+  if (appointment.salesStaffId) {
+    await createAndSendNotification(
+      appointment.salesStaffId.toString(),
+      NotificationCategory.APPOINTMENT,
+      'Ocular Fee Verified — Ready to Finalize',
+      `Ocular fee for appointment on ${appointment.date} has been verified. You can now finalize this ocular visit.`,
+      `/appointments/${appointment._id}`,
+    );
+  }
 
   return appointment;
 }

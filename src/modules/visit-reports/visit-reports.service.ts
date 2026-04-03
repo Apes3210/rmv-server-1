@@ -4,7 +4,7 @@ import {
 import { VisitReportStatus } from '../../models/VisitReport.js';
 import { AppError, ErrorCode } from '../../utils/appError.js';
 import {
-  AppointmentStatus, ProjectStatus, Role, AuditAction, NotificationCategory,
+  AppointmentStatus, AppointmentType, ProjectStatus, Role, AuditAction, NotificationCategory,
   ServiceType,
 } from '../../utils/constants.js';
 import { visitReportStateMachine, appointmentStateMachine } from '../../utils/stateMachine.js';
@@ -575,6 +575,74 @@ export async function submitReport(
 
       // Mark the appointment so the agent list can display "Ready for Ocular"
       await Appointment.findByIdAndUpdate(report.appointmentId, { consultationReportSubmitted: true });
+
+      // If consultation included a recommended ocular schedule, auto-create ocular request
+      // so the customer can immediately submit site pin/address from their account.
+      const recommendedOcularDate = report.recommendedOcularDate
+        ? report.recommendedOcularDate.toISOString().split('T')[0]
+        : undefined;
+      const recommendedOcularSlot = report.recommendedOcularSlot;
+
+      if (recommendedOcularDate && recommendedOcularSlot) {
+        const hasActiveOcular = await Appointment.exists({
+          customerId: report.customerId,
+          type: AppointmentType.OCULAR,
+          status: {
+            $in: [
+              AppointmentStatus.REQUESTED,
+              AppointmentStatus.CONFIRMED,
+              AppointmentStatus.PREPARING,
+              AppointmentStatus.ON_THE_WAY,
+              AppointmentStatus.RESCHEDULE_REQUESTED,
+            ],
+          },
+        });
+
+        if (!hasActiveOcular) {
+          const ocularAppointment = await Appointment.create({
+            customerId: report.customerId,
+            type: AppointmentType.OCULAR,
+            date: recommendedOcularDate,
+            slotCode: recommendedOcularSlot,
+            status: AppointmentStatus.REQUESTED,
+            salesStaffId: report.salesStaffId,
+            bookedBy: report.salesStaffId,
+            customerNotes: `Ocular follow-up scheduled from consultation report ${report._id}`,
+          });
+
+          await AuditLog.create({
+            action: AuditAction.APPOINTMENT_CREATED,
+            actorId: salesStaffId,
+            targetType: 'appointment',
+            targetId: ocularAppointment._id,
+            details: {
+              triggeredBy: 'system',
+              reason: 'consultation_report_recommended_ocular',
+              sourceVisitReportId: report._id,
+            },
+            ipAddress: ip,
+            userAgent: ua,
+          });
+
+          const readableSlot = formatOcularSlot(recommendedOcularSlot);
+
+          await createAndSendNotification(
+            report.customerId,
+            NotificationCategory.APPOINTMENT,
+            'Ocular Visit Needs Your Location Confirmation',
+            `An ocular visit is ready for ${recommendedOcularDate} at ${readableSlot}. Open the appointment and submit your site map pin/address to continue.`,
+            `/appointments/${ocularAppointment._id}`,
+          );
+
+          await createAndSendNotification(
+            report.customerId,
+            NotificationCategory.SYSTEM,
+            'Action Required: Submit Ocular Map Address',
+            `Please confirm your ocular appointment by submitting your map pin/address for ${recommendedOcularDate} at ${readableSlot}.`,
+            `/appointments/${ocularAppointment._id}`,
+          );
+        }
+      }
     }
   } else {
     // ── Ocular: update existing project with measurements, transition DRAFT → SUBMITTED ──
