@@ -157,6 +157,11 @@ export async function register(input: RegisterInput, ip?: string, ua?: string) {
   // Check existing
   const existing = await User.findOne({ email });
   if (existing) {
+    if (!existing.isEmailVerified) {
+      await createAndSendOtp(email, OtpPurpose.EMAIL_VERIFICATION);
+      return { message: 'Registration already exists but email is not verified. A new verification code has been sent.' };
+    }
+
     throw AppError.conflict('Email already registered', ErrorCode.DUPLICATE_ENTRY);
   }
 

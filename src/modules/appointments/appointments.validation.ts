@@ -33,6 +33,7 @@ export const requestAppointmentSchema = appointmentRequestBaseSchema;
 
 export const agentCreateAppointmentSchema = appointmentRequestBaseSchema.extend({
   customerId: z.string().min(1),
+  type: z.literal(AppointmentType.OFFICE),
 });
 
 export const confirmAppointmentSchema = z.object({

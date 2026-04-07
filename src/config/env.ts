@@ -54,7 +54,7 @@ const envSchema = z.object({
   CORS_ORIGIN: z.string().default('http://localhost:5173'),
 
   // Mail provider
-  EMAIL_PROVIDER: z.enum(['smtp', 'sendgrid_api']).default('smtp'),
+  EMAIL_PROVIDER: z.enum(['smtp', 'sendgrid_api', 'resend_api']).default('smtp'),
 
   // SMTP
   SMTP_HOST: z.string().default('smtp.gmail.com'),
@@ -64,6 +64,7 @@ const envSchema = z.object({
   SMTP_FROM_EMAIL: z.string().email(),
   SMTP_FROM_NAME: z.string().default('RMV Stainless Steel'),
   SENDGRID_API_KEY: z.string().default(''),
+  RESEND_API_KEY: z.string().default(''),
 
   // R2 (optional in dev)
   R2_ACCOUNT_ID: z.string().default('placeholder'),
@@ -143,6 +144,10 @@ if (envData.NODE_ENV === 'production') {
 
   if (envData.EMAIL_PROVIDER === 'sendgrid_api' && !envData.SENDGRID_API_KEY) {
     prodConfigErrors.push('SENDGRID_API_KEY is required when EMAIL_PROVIDER=sendgrid_api');
+  }
+
+  if (envData.EMAIL_PROVIDER === 'resend_api' && !envData.RESEND_API_KEY) {
+    prodConfigErrors.push('RESEND_API_KEY is required when EMAIL_PROVIDER=resend_api');
   }
 
   if (prodConfigErrors.length > 0) {

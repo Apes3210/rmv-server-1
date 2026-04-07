@@ -334,6 +334,18 @@ export async function agentCreateAppointment(
   ip?: string,
   ua?: string,
 ) {
+  if (input.type !== AppointmentType.OFFICE) {
+    throw AppError.badRequest(
+      'Appointment agents can only create the first office consultation for a customer. Ocular scheduling is handled by sales staff after consultation.',
+      ErrorCode.VALIDATION_ERROR,
+      {
+        flow: 'agent_create_appointment',
+        reason: 'office_consultation_only',
+        action: 'use_sales_staff_ocular_flow',
+      },
+    );
+  }
+
   const customer = await User.findById(input.customerId);
   if (!customer || !customer.roles.includes(Role.CUSTOMER)) {
     throw AppError.notFound('Customer not found');
@@ -343,26 +355,12 @@ export async function agentCreateAppointment(
   await assertDateAvailable(input.date);
   await assertSlotAvailable(input.date, input.slotCode, input.type);
 
-  const ocularVisitData = await resolveOcularVisitData(
-    input.type,
-    input.formattedAddress,
-    input.customerLocation,
-  );
-
   const appointment = await Appointment.create({
     customerId: input.customerId,
     type: input.type,
     date: input.date,
     slotCode: input.slotCode,
     status: AppointmentStatus.REQUESTED,
-    latitude: ocularVisitData?.latitude,
-    longitude: ocularVisitData?.longitude,
-    formattedAddress: ocularVisitData?.formattedAddress,
-    customerAddress: ocularVisitData?.formattedAddress,
-    customerLocation: ocularVisitData?.customerLocation,
-    distanceKm: ocularVisitData?.distanceKm,
-    ocularFee: ocularVisitData?.ocularFee,
-    ocularFeeBreakdown: ocularVisitData?.ocularFeeBreakdown,
     customerNotes: input.purpose,
     addressStructured: input.addressStructured,
     bookedBy: agentId,

@@ -64,8 +64,10 @@ node run-ssh.mjs "<command>"
 cat /opt/rmv/.color-api   # or .color-web
 
 # Restart active API (force-recreate to pick up .env changes)
+# Then restart nginx so it refreshes the upstream container IP.
 cd /opt/rmv/rmv-server/deploy
 docker compose -f docker-compose.prod.yml --profile green up -d --force-recreate api-green
+docker restart rmv-nginx
 
 # Check container health
 docker exec rmv-api-green wget -qO- http://localhost:5000/api/v1/health

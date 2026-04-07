@@ -10,6 +10,25 @@ const ADMIN_EMAIL = process.env.SMOKE_ADMIN_EMAIL || process.env.SUPER_ADMIN_EMA
 const ADMIN_PASSWORD = process.env.SMOKE_ADMIN_PASSWORD || process.env.SUPER_ADMIN_PASSWORD || 'Admin@12345';
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
+function formatLocalDate(date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function addBusinessDays(baseDate, businessDays) {
+  const date = new Date(baseDate);
+  let remaining = businessDays;
+  while (remaining > 0) {
+    date.setDate(date.getDate() + 1);
+    if (date.getDay() !== 0 && date.getDay() !== 6) {
+      remaining -= 1;
+    }
+  }
+  return date;
+}
+
 // ── Helpers ──
 async function request(method, path, body, cookies = {}) {
   const headers = { 'Content-Type': 'application/json' };
@@ -17,6 +36,14 @@ async function request(method, path, body, cookies = {}) {
   // Build cookie string
   const cookieStr = Object.entries(cookies).map(([k, v]) => `${k}=${v}`).join('; ');
   if (cookieStr) headers['Cookie'] = cookieStr;
+
+  if (cookies.accessToken) {
+    headers.Authorization = `Bearer ${cookies.accessToken}`;
+  }
+
+  if (cookies.refreshToken) {
+    headers['X-Refresh-Token'] = cookies.refreshToken;
+  }
   
   // Add CSRF header
   if (cookies.csrfToken) headers['X-CSRF-Token'] = cookies.csrfToken;
@@ -73,6 +100,12 @@ async function login(email, password, _depth = 0) {
   Object.assign(cookies, res.cookies);
   if (res.data?.data?.csrfToken) {
     cookies.csrfToken = res.data.data.csrfToken;
+  }
+  if (res.data?.data?.accessToken) {
+    cookies.accessToken = res.data.data.accessToken;
+  }
+  if (res.data?.data?.refreshToken) {
+    cookies.refreshToken = res.data.data.refreshToken;
   }
   
   // Handle mustChangePassword
@@ -184,7 +217,7 @@ async function main() {
   // Skip weekends
   if (futureDate.getDay() === 0) futureDate.setDate(futureDate.getDate() + 1);
   if (futureDate.getDay() === 6) futureDate.setDate(futureDate.getDate() + 2);
-  const dateStr = futureDate.toISOString().split('T')[0];
+  const dateStr = formatLocalDate(futureDate);
   
   const slotsRes = await request('GET', `/appointments/slots?date=${dateStr}&type=office`, null, customer.cookies);
   info(`Slots for ${dateStr}: status=${slotsRes.status}`);
@@ -255,8 +288,8 @@ async function main() {
     }
   }
   
-  // ━━━━━━━━━━━━ STEP 3: SALES STAFF FILLS VISIT REPORT ━━━━━━━━━━━━
-  section('STEP 3: Sales Staff Views Appointment & Fills Visit Report');
+  // ━━━━━━━━━━━━ STEP 3: SALES STAFF COMPLETES CONSULTATION REPORT ━━━━━━━━━━━━
+  section('STEP 3: Sales Staff Completes Consultation Visit Report');
   
   const sales = await login('sales-test@example.com', 'Test@12345');
   if (sales.status !== 200) {
@@ -275,9 +308,12 @@ async function main() {
   let visitReportId = null;
   if (appointmentId && appointmentConfirmed) {
     const vrRes = await request('GET', `/visit-reports/appointment/${appointmentId}`, null, sales.cookies);
-    if (vrRes.status === 200 && vrRes.data?.data) {
-      visitReportId = vrRes.data.data._id;
-      pass(`Visit report auto-created: ${visitReportId} (status: ${vrRes.data.data.status})`);
+    const reports = Array.isArray(vrRes.data?.data) ? vrRes.data.data : vrRes.data?.data ? [vrRes.data.data] : [];
+    const consultationReport = reports.find((report) => report.visitType === 'consultation') || reports[0];
+
+    if (vrRes.status === 200 && consultationReport?._id) {
+      visitReportId = consultationReport._id;
+      pass(`Visit report auto-created: ${visitReportId} (status: ${consultationReport.status})`);
     } else {
       fail('Visit report not found for appointment', vrRes.data);
       errors.push('auto_create_visit_report');
@@ -289,35 +325,43 @@ async function main() {
   
   // Fill in visit report
   if (visitReportId) {
+    const recommendedOcularDate = formatLocalDate(addBusinessDays(futureDate, 3));
     const updateVrRes = await request('PUT', `/visit-reports/${visitReportId}`, {
-      visitType: 'ocular',
+      visitType: 'consultation',
       actualVisitDateTime: new Date().toISOString(),
-      measurements: {
-        length: 500,
-        width: 200,
-        height: 100,
-        thickness: 3,
-        unit: 'cm',
-        raw: 'Standard railings, 3 sections',
-      },
+      serviceType: 'door',
+      productsDiscussed: 'Custom stainless steel framed door with tempered glass inserts',
+      designPreferences: 'Modern minimalist frame with brushed finish and clear glass',
+      materialOptions: 'Stainless Steel 304, tempered glass, concealed hardware',
+      projectScope: 'Measure and fabricate one main door with side panel detailing',
       materials: 'Stainless Steel 304, Tempered Glass',
       finishes: 'Brushed Finish',
       preferredDesign: 'Modern minimalist with glass panels',
-      customerRequirements: 'Customer wants railings for 2nd floor balcony. 3 sections total, approx 5m each.',
-      notes: 'Site accessible. No special equipment needed.',
+      customerRequirements: 'Customer wants a custom stainless door for the main entrance with a matching side panel.',
+      notes: 'Consultation completed in office. Customer approved ocular follow-up for site measurements.',
+      recommendedOcularDate: new Date(`${recommendedOcularDate}T13:00:00+08:00`).toISOString(),
+      recommendedOcularSlot: '13:00',
     }, sales.cookies);
     
     if (updateVrRes.status === 200) {
-      pass('Visit report updated with site data');
+      pass('Consultation visit report updated');
     } else {
       fail('Update visit report failed', updateVrRes.data);
       errors.push('update_visit_report');
     }
-    
-    // Submit visit report (auto-completes appointment, auto-creates project)
+
+    const completeConsultationRes = await request('POST', `/appointments/${appointmentId}/complete`, null, sales.cookies);
+    if (completeConsultationRes.status === 200) {
+      pass(`Consultation appointment completed (status: ${completeConsultationRes.data?.data?.status})`);
+    } else {
+      fail('Complete consultation appointment failed', completeConsultationRes.data);
+      errors.push('complete_consultation_appointment');
+    }
+
+    // Submit visit report (creates draft project and an ocular follow-up request)
     const submitVrRes = await request('POST', `/visit-reports/${visitReportId}/submit`, null, sales.cookies);
     if (submitVrRes.status === 200) {
-      pass(`Visit report submitted (status: ${submitVrRes.data?.data?.status})`);
+      pass(`Consultation visit report submitted (status: ${submitVrRes.data?.data?.status})`);
     } else {
       fail('Submit visit report failed', submitVrRes.data);
       errors.push('submit_visit_report');
@@ -325,7 +369,7 @@ async function main() {
   }
   
   // ━━━━━━━━━━━━ STEP 4: CHECK AUTO-CREATED PROJECT ━━━━━━━━━━━━
-  section('STEP 4: Verify Auto-Created Project');
+  section('STEP 4: Verify Draft Project from Consultation');
   
   // The project should have been auto-created on visit report submit
   // Use admin cookies to see all projects
@@ -351,9 +395,150 @@ async function main() {
     fail('No projects found after visit report submission');
     errors.push('auto_create_project');
   }
+
+  // ━━━━━━━━━━━━ STEP 5: OCULAR FOLLOW-UP FLOW ━━━━━━━━━━━━
+  section('STEP 5: Ocular Follow-Up (Location, Fee, Finalize, Report)');
+
+  let ocularAppointmentId = null;
+  if (projectId) {
+    const customerAppointmentsRes = await request('GET', '/appointments', null, customer.cookies);
+    const customerAppointments = customerAppointmentsRes.data?.data?.items || [];
+    const ocularAppointment = customerAppointments.find((appt) => appt.type === 'ocular');
+
+    if (ocularAppointment?._id) {
+      ocularAppointmentId = ocularAppointment._id;
+      pass(`Ocular appointment available: ${ocularAppointmentId} (status: ${ocularAppointment.status})`);
+    } else {
+      fail('No ocular appointment was created from the consultation flow', customerAppointmentsRes.data);
+      errors.push('auto_create_ocular');
+    }
+  }
+
+  if (ocularAppointmentId) {
+    const submitLocationRes = await request('POST', `/appointments/${ocularAppointmentId}/submit-location`, {
+      customerLocation: {
+        lat: 16.4023,
+        lng: 120.596,
+      },
+      formattedAddress: 'Session Road, Baguio City, Benguet, Philippines',
+      addressStructured: {
+        street: 'Session Road',
+        barangay: 'Session Road Area',
+        city: 'Baguio City',
+        province: 'Benguet',
+        zip: '2600',
+      },
+    }, customer.cookies);
+
+    if (submitLocationRes.status === 200) {
+      pass(`Customer submitted ocular location (fee: ${submitLocationRes.data?.data?.ocularFee ?? 'n/a'})`);
+    } else {
+      fail('Submit ocular location failed', submitLocationRes.data);
+      errors.push('submit_ocular_location');
+    }
+
+    const simulateOcularPaymentRes = await request('POST', `/appointments/${ocularAppointmentId}/simulate-ocular-payment`, null, customer.cookies);
+    if (simulateOcularPaymentRes.status === 200) {
+      pass('Ocular fee simulated successfully');
+    } else {
+      fail('Simulate ocular fee payment failed', simulateOcularPaymentRes.data);
+      errors.push('simulate_ocular_payment');
+    }
+
+    const finalizeOcularRes = await request('POST', `/appointments/${ocularAppointmentId}/finalize-ocular`, {
+      internalNotes: 'Smoke test finalized after customer submitted location and payment.',
+    }, sales.cookies);
+    if (finalizeOcularRes.status === 200) {
+      pass(`Ocular appointment finalized (status: ${finalizeOcularRes.data?.data?.status})`);
+    } else {
+      fail('Finalize ocular appointment failed', finalizeOcularRes.data);
+      errors.push('finalize_ocular');
+    }
+
+    const completeOcularRes = await request('POST', `/appointments/${ocularAppointmentId}/complete`, null, sales.cookies);
+    if (completeOcularRes.status === 200) {
+      pass(`Ocular appointment completed (status: ${completeOcularRes.data?.data?.status})`);
+    } else {
+      fail('Complete ocular appointment failed', completeOcularRes.data);
+      errors.push('complete_ocular_appointment');
+    }
+
+    const ocularVrRes = await request('GET', `/visit-reports/appointment/${ocularAppointmentId}`, null, sales.cookies);
+    const ocularReports = Array.isArray(ocularVrRes.data?.data) ? ocularVrRes.data.data : ocularVrRes.data?.data ? [ocularVrRes.data.data] : [];
+    const ocularReport = ocularReports.find((report) => report.visitType === 'ocular') || ocularReports[0];
+    const ocularVisitReportId = ocularReport?._id || null;
+
+    if (ocularVisitReportId) {
+      pass(`Ocular visit report auto-created: ${ocularVisitReportId} (status: ${ocularReport.status})`);
+
+      const updateOcularVrRes = await request('PUT', `/visit-reports/${ocularVisitReportId}`, {
+        visitType: 'ocular',
+        actualVisitDateTime: new Date().toISOString(),
+        measurementUnit: 'cm',
+        lineItems: [
+          {
+            label: 'Main entrance door frame',
+            length: 210,
+            width: 95,
+            height: 210,
+            area: 19950,
+            thickness: 3,
+            quantity: 1,
+            notes: 'Measured from finished floor to top lintel; frame opening confirmed on site.',
+          },
+        ],
+        siteConditions: {
+          environment: 'outdoor',
+          floorType: 'concrete',
+          wallMaterial: 'reinforced concrete',
+          hasElectrical: true,
+          hasPlumbing: false,
+          accessNotes: 'Front entrance is accessible through the main gate with clear unloading access.',
+          obstaclesOrConstraints: 'Work area is near existing glass panels and requires edge protection.',
+        },
+        materials: 'Stainless Steel 304 with tempered glass infill',
+        finishes: 'Brushed finish',
+        preferredDesign: 'Modern minimalist glass door with slim stainless framing',
+        customerRequirements: 'Customer requested child-safe clearances and a concealed closer.',
+        notes: 'Final site measurements captured and confirmed with the customer during ocular visit.',
+        photoKeys: ['site-photos/ocular-1.jpg'],
+        initialDesignKeys: ['initial-designs/ocular-sketch-1.pdf'],
+        initialDesignNotes: 'Initial ocular sketch prepared on site for engineer turnover.',
+        linkedProjectId: projectId,
+      }, sales.cookies);
+
+      if (updateOcularVrRes.status === 200) {
+        pass('Ocular visit report updated with site measurements');
+      } else {
+        fail('Update ocular visit report failed', updateOcularVrRes.data);
+        errors.push('update_ocular_visit_report');
+      }
+
+      const submitOcularVrRes = await request('POST', `/visit-reports/${ocularVisitReportId}/submit`, null, sales.cookies);
+      if (submitOcularVrRes.status === 200) {
+        pass(`Ocular visit report submitted (status: ${submitOcularVrRes.data?.data?.status})`);
+      } else {
+        fail('Submit ocular visit report failed', submitOcularVrRes.data);
+        errors.push('submit_ocular_visit_report');
+      }
+
+      const projectAfterOcularRes = await request('GET', `/projects/${projectId}`, null, admin.cookies);
+      const projectStatusAfterOcular = projectAfterOcularRes.data?.data?.status;
+      info(`Project status after ocular report: ${projectStatusAfterOcular}`);
+      if (projectStatusAfterOcular === 'submitted') {
+        pass('Project is engineer-ready after ocular submission');
+      } else {
+        fail('Project did not reach submitted status after ocular report', projectAfterOcularRes.data);
+        errors.push('project_not_submitted_after_ocular');
+      }
+    } else {
+      fail('Ocular visit report not found for follow-up appointment', ocularVrRes.data);
+      errors.push('auto_create_ocular_visit_report');
+    }
+  }
   
   // ━━━━━━━━━━━━ STEP 5: ENGINEER ASSIGNS + CREATES BLUEPRINT ━━━━━━━━━━━━
-  section('STEP 5: Engineer Reviews, Creates Blueprint & Quotation');
+  section('STEP 6: Engineer Reviews, Creates Blueprint & Quotation');
   
   const engineer = await login('engineer-test@example.com', 'Test@12345');
   if (engineer.status !== 200) {
@@ -376,11 +561,35 @@ async function main() {
       fail('Assign engineer failed', assignRes.data);
       errors.push('assign_engineer');
     }
+
+    const reviewInitialDesignRes = await request('POST', `/projects/${projectId}/review-initial-design`, {
+      decision: 'approved',
+      notes: 'Initial sales design package is sufficient for blueprint preparation.',
+    }, engineer.cookies);
+
+    if (reviewInitialDesignRes.status === 200) {
+      pass('Engineer approved the initial design package');
+    } else {
+      fail('Engineer initial design review failed', reviewInitialDesignRes.data);
+      errors.push('review_initial_design');
+    }
+
+    const signEngineerContractRes = await request('POST', `/projects/${projectId}/sign-contract-engineer`, {
+      signatureKey: 'signatures/engineer-smoke-signature.png',
+    }, engineer.cookies);
+
+    if (signEngineerContractRes.status === 200) {
+      pass('Engineer contract signed');
+    } else {
+      fail('Engineer contract signing failed', signEngineerContractRes.data);
+      errors.push('sign_engineer_contract');
+    }
     
-    // Upload blueprint with quotation (needs blueprintKey + costingKey)
+    // Upload blueprint with quotation (needs blueprintKey + designKey + costingKey)
     const blueprintRes = await request('POST', `/blueprints`, {
       projectId: projectId,
       blueprintKey: 'blueprints/test-blueprint.pdf',
+      designKey: 'blueprints/test-design.pdf',
       costingKey: 'blueprints/test-costing.pdf',
       quotation: {
         materials: 45000,
@@ -402,7 +611,7 @@ async function main() {
   }
   
   // ━━━━━━━━━━━━ STEP 6: CUSTOMER REVIEWS & ACCEPTS BLUEPRINT ━━━━━━━━━━━━
-  section('STEP 6: Customer Reviews & Accepts Blueprint');
+  section('STEP 7: Customer Reviews & Accepts Blueprint');
   
   if (projectId) {
     // Get blueprints for this project (use /blueprints/project/:projectId)
@@ -450,10 +659,9 @@ async function main() {
   
   // ━━━━━━━━━━━━ STEP 7: PAYMENT PLAN CREATION & FIRST PAYMENT ━━━━━━━━━━━━
   let projectInFabrication = false;
-  section('STEP 7: Payment Plan & First Payment (30-40-30)');
+  section('STEP 8: Payment Plan & Stage Payments');
   
   if (projectId) {
-    // Cashier creates payment plan
     const cashier = await login('cashier-test@example.com', 'Test@12345');
     if (cashier.status !== 200) {
       fail('Cashier login failed', cashier.data);
@@ -471,91 +679,86 @@ async function main() {
       });
       errors.push('project_not_approved_for_payment');
     } else {
-    
-    // Create payment plan (POST /payments/plans, stages need percentages summing to 100)
-    const paymentPlanRes = await request('POST', '/payments/plans', {
-      projectId: projectId,
-      totalAmount: 75000,
-      stages: [
-        { percentage: 30 },
-        { percentage: 40 },
-        { percentage: 30 },
-      ]
-    }, cashier.cookies);
-    
-    if (paymentPlanRes.status === 201 || paymentPlanRes.status === 200) {
-      pass(`Payment plan created: ${paymentPlanRes.data?.data?._id}`);
-    } else {
-      fail('Create payment plan failed', paymentPlanRes.data);
-      errors.push('create_payment_plan');
-    }
-    const paymentPlanCreated = paymentPlanRes.status === 201 || paymentPlanRes.status === 200;
-    if (paymentPlanCreated) {
-    
-    // Check project status (should be PAYMENT_PENDING)
-    const projAfterPlan = await request('GET', `/projects/${projectId}`, null, admin.cookies);
-    info(`Project status after payment plan: ${projAfterPlan.data?.data?.status}`);
-    
-    // Get payment plan to see stage IDs
-    const planRes = await request('GET', `/payments/plan/${projectId}`, null, customer.cookies);
-    info(`Payment plan stages: ${planRes.data?.data?.stages?.length || 0}`);
-    
-    const plan = planRes.data?.data;
-    const stages = plan?.stages || [];
-    
-    if (stages.length > 0) {
-      // Submit and verify all 3 stages so project transitions to fabrication
-      for (let i = 0; i < stages.length; i++) {
-        const stage = stages[i];
-        const sId = stage.stageId || stage._id;
-        info(`Processing payment stage ${i + 1}: ${sId} (${stage.percentage}%, $${stage.amount})`);
-        
-        // Customer submits proof (POST /payments/submit-proof)
-        const proofRes = await request('POST', `/payments/submit-proof`, {
-          stageId: sId,
-          method: 'paymongo',
-          amountPaid: stage.amount,
-          referenceNumber: `PMNG-${10000 + i}`,
-          proofKey: `proofs/payment-proof-${i + 1}.jpg`,
-        }, customer.cookies);
-        
+      const selectPlanRes = await request('POST', `/projects/${projectId}/select-payment-plan`, {
+        paymentType: 'installment',
+      }, customer.cookies);
+
+      if (selectPlanRes.status === 200) {
+        pass('Customer selected installment payment plan');
+      } else {
+        fail('Customer payment plan selection failed', selectPlanRes.data);
+        errors.push('select_payment_plan');
+      }
+
+      const signContractRes = await request('POST', `/projects/${projectId}/sign-contract`, {
+        signatureKey: 'signatures/customer-smoke-signature.png',
+      }, customer.cookies);
+
+      if (signContractRes.status === 200) {
+        pass('Customer contract signed');
+      } else {
+        fail('Customer contract signing failed', signContractRes.data);
+        errors.push('sign_customer_contract');
+      }
+
+      const projAfterPlan = await request('GET', `/projects/${projectId}`, null, admin.cookies);
+      info(`Project status after payment plan + contract: ${projAfterPlan.data?.data?.status}`);
+
+      // Get payment plan to see stage IDs
+      const planRes = await request('GET', `/payments/plan/${projectId}`, null, customer.cookies);
+      info(`Payment plan stages: ${planRes.data?.data?.stages?.length || 0}`);
+
+      const plan = planRes.data?.data;
+      const stages = plan?.stages || [];
+
+      if (stages.length > 0) {
+        const firstStage = stages[0];
+        const firstStageId = firstStage.stageId || firstStage._id;
+        info(`Processing initial payment stage: ${firstStageId} (${firstStage.percentage}%, ${firstStage.amount})`);
+
+        const proofRes = await request('POST', `/payments/stages/${firstStageId}/simulate`, null, customer.cookies);
+
         if (proofRes.status === 200 || proofRes.status === 201) {
-          pass(`Payment proof submitted for stage ${i + 1}`);
-          const paymentId = proofRes.data?.data?._id;
-          
-          // Cashier verifies the payment (POST /payments/:id/verify)
+          pass('Payment proof submitted for initial stage');
+          const paymentId = proofRes.data?.data?.payment?._id;
+
           if (paymentId) {
-            const verifyRes = await request('POST', `/payments/${paymentId}/verify`, null, cashier.cookies);
+            const verifyRes = await request('POST', `/payments/${paymentId}/verify`, {
+              signatureKey: 'signatures/cashier-smoke-signature.png',
+            }, cashier.cookies);
             if (verifyRes.status === 200) {
-              pass(`Payment stage ${i + 1} verified by cashier`);
+              pass('Initial payment stage verified by cashier');
             } else {
-              fail(`Verify payment stage ${i + 1} failed`, verifyRes.data);
-              errors.push(`verify_payment_${i + 1}`);
+              fail('Verify initial payment stage failed', verifyRes.data);
+              errors.push('verify_payment_1');
             }
+          } else {
+            fail('Simulated payment did not return a payment ID', proofRes.data);
+            errors.push('missing_payment_id');
           }
         } else {
-          fail(`Submit payment proof stage ${i + 1} failed`, proofRes.data);
-          errors.push(`submit_proof_${i + 1}`);
+          fail('Submit payment proof for initial stage failed', proofRes.data);
+          errors.push('submit_proof_1');
         }
+
+        const projAfterPayments = await request('GET', `/projects/${projectId}`, null, admin.cookies);
+        const projectStatusAfterPayments = projAfterPayments.data?.data?.status;
+        info(`Project status after first payment verification: ${projectStatusAfterPayments}`);
+        if (projectStatusAfterPayments === 'fabrication') {
+          projectInFabrication = true;
+        } else {
+          fail('Project did not enter fabrication after first verified payment', projAfterPayments.data);
+          errors.push('project_not_in_fabrication_after_payment');
+        }
+      } else {
+        info('No stages found in payment plan');
+        errors.push('no_stages');
       }
-      
-      // Check project status — should now be FABRICATION
-      const projAfterPayments = await request('GET', `/projects/${projectId}`, null, admin.cookies);
-      const projectStatusAfterPayments = projAfterPayments.data?.data?.status;
-      info(`Project status after all payments verified: ${projectStatusAfterPayments}`);
-      if (projectStatusAfterPayments === 'fabrication') {
-        projectInFabrication = true;
-      }
-    } else {
-      info('No stages found in payment plan');
-      errors.push('no_stages');
-    }
-    }
     }
   }
   
   // ━━━━━━━━━━━━ STEP 8: FABRICATION FLOW ━━━━━━━━━━━━
-  section('STEP 8: Fabrication Flow');
+  section('STEP 9: Fabrication Flow');
   
   const fabricator = await login('fabricator-test@example.com', 'Test@12345');
   if (fabricator.status !== 200) {
@@ -587,15 +790,57 @@ async function main() {
     const currentFabStatus = fabStatusRes.data?.data?.status;
     info(`Current fabrication status: ${currentFabStatus || 'none'}`);
     
-    const allStages = ['queued', 'material_prep', 'cutting', 'welding', 'finishing', 'quality_check', 'ready_for_delivery', 'done'];
+    const allStages = ['queued', 'material_prep', 'cutting', 'welding', 'assembly', 'finishing', 'quality_check', 'ready_for_delivery', 'done'];
     // When no updates exist, current status defaults to 'queued', so skip it
     // Also skip stages already completed
     const effectiveStatus = currentFabStatus || 'queued';
     const startIdx = Math.max(allStages.indexOf(effectiveStatus) + 1, 1); // always start at material_prep minimum
     const stages = allStages.slice(startIdx);
+
+    async function settleNextPaymentStage(triggerStage) {
+      const latestPlanRes = await request('GET', `/payments/plan/${projectId}`, null, customer.cookies);
+      const latestStages = latestPlanRes.data?.data?.stages || [];
+      const unpaidStage = latestStages.find((stage) => stage.status !== 'verified');
+
+      if (!unpaidStage) {
+        fail(`No unpaid payment stage available to clear fabrication gate at ${triggerStage}`, latestPlanRes.data);
+        errors.push(`missing_payment_gate_stage_${triggerStage}`);
+        return false;
+      }
+
+      const gateStageId = unpaidStage.stageId || unpaidStage._id;
+      info(`Clearing fabrication gate for ${triggerStage} via payment stage ${unpaidStage.label} (${gateStageId})`);
+
+      const proofRes = await request('POST', `/payments/stages/${gateStageId}/simulate`, null, customer.cookies);
+      if (proofRes.status !== 200 && proofRes.status !== 201) {
+        fail(`Submit payment proof for fabrication gate (${triggerStage}) failed`, proofRes.data);
+        errors.push(`submit_proof_gate_${triggerStage}`);
+        return false;
+      }
+
+      const paymentId = proofRes.data?.data?.payment?._id;
+      if (!paymentId) {
+        fail(`Fabrication gate payment for ${triggerStage} did not return a payment ID`, proofRes.data);
+        errors.push(`missing_payment_id_gate_${triggerStage}`);
+        return false;
+      }
+
+      const verifyRes = await request('POST', `/payments/${paymentId}/verify`, {
+        signatureKey: 'signatures/admin-smoke-signature.png',
+      }, admin.cookies);
+
+      if (verifyRes.status === 200) {
+        pass(`Payment gate cleared for fabrication stage ${triggerStage}`);
+        return true;
+      }
+
+      fail(`Verify payment for fabrication gate (${triggerStage}) failed`, verifyRes.data);
+      errors.push(`verify_payment_gate_${triggerStage}`);
+      return false;
+    }
     
     for (const stage of stages) {
-      const fabRes = await request('POST', '/fabrication', {
+      let fabRes = await request('POST', '/fabrication', {
         projectId: projectId,
         status: stage,
         notes: `Stage update: ${stage}`,
@@ -605,15 +850,52 @@ async function main() {
       if (fabRes.status === 201 || fabRes.status === 200) {
         pass(`Fabrication → ${stage}`);
       } else {
-        fail(`Fabrication ${stage} failed`, fabRes.data);
-        errors.push(`fab_${stage}`);
-        break;
+        const fabErrorCode = fabRes.data?.error?.code;
+
+        if (fabErrorCode === 'FABRICATION_PAYMENT_GATE') {
+          const gateCleared = await settleNextPaymentStage(stage);
+          if (gateCleared) {
+            fabRes = await request('POST', '/fabrication', {
+              projectId: projectId,
+              status: stage,
+              notes: `Stage update: ${stage}`,
+              photoKeys: ['fabrication/stage-photo.jpg'],
+            }, fabricator.cookies);
+          }
+        } else if (fabErrorCode === 'FABRICATION_INSTALLATION_NOT_CONFIRMED') {
+          const confirmInstallRes = await request('POST', `/projects/${projectId}/confirm-installation`, null, customer.cookies);
+          if (confirmInstallRes.status === 200) {
+            pass('Customer confirmed installation schedule');
+            fabRes = await request('POST', '/fabrication', {
+              projectId: projectId,
+              status: stage,
+              notes: `Stage update: ${stage}`,
+              photoKeys: ['fabrication/stage-photo.jpg'],
+            }, fabricator.cookies);
+          } else {
+            fail('Customer installation confirmation failed', confirmInstallRes.data);
+            errors.push('confirm_installation');
+          }
+        }
+
+        if (fabRes.status === 201 || fabRes.status === 200) {
+          pass(`Fabrication → ${stage}`);
+        } else {
+          fail(`Fabrication ${stage} failed`, fabRes.data);
+          errors.push(`fab_${stage}`);
+          break;
+        }
       }
     }
     
     // Final project status check
     const finalProj = await request('GET', `/projects/${projectId}`, null, admin.cookies);
     info(`Final project status: ${finalProj.data?.data?.status}`);
+    if (finalProj.data?.data?.status === 'completed') {
+      pass('Project reached completed status after fabrication flow');
+    } else {
+      errors.push('project_not_completed');
+    }
   } else if (projectId && !projectInFabrication) {
     info('Skipping fabrication flow because project is not yet in fabrication status');
     errors.push('project_not_in_fabrication');

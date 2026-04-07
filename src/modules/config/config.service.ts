@@ -575,7 +575,7 @@ export async function seedDefaultConfigs(): Promise<void> {
           },
           {
             heading: 'Payments and refunds',
-            body: 'Use Payments for stage payments and My Refunds for your refund request timeline.',
+            body: 'Use Payments for stage payments and the Refund Requests flow for your refund timeline.',
           },
           {
             heading: 'Project tracking',

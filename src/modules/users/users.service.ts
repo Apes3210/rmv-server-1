@@ -1,4 +1,4 @@
-﻿import bcrypt from 'bcryptjs';
+import bcrypt from 'bcryptjs';
 import { User, AuditLog, RefreshToken, SalesAvailability, Notification, OtpToken } from '../../models/index.js';
 import { AppError, ErrorCode } from '../../utils/appError.js';
 import { AuditAction, Role } from '../../utils/constants.js';
@@ -294,23 +294,29 @@ export async function deleteAccount(userId: string, input: DeleteAccountInput, i
   }
 
   // Soft-delete: mark inactive and set deletedAt
+  const originalEmail = user.email;
   user.isActive = false;
   user.deletedAt = new Date();
+  // Scramble the email so the unique index frees up the address for re-registration
+  user.email = `deleted_${Date.now()}_${user.email}`;
+  // Clear firebaseUid so Google sign-up can reuse the UID
+  user.firebaseUid = undefined;
   await user.save();
 
   // Revoke all sessions
   await RefreshToken.deleteMany({ userId: user._id });
 
   // Delete OTP tokens and notifications
-  await OtpToken.deleteMany({ email: user.email });
+  await OtpToken.deleteMany({ email: originalEmail });
   await Notification.deleteMany({ userId: user._id });
 
   await AuditLog.create({
     action: AuditAction.USER_DELETED,
     actorId: user._id,
-    actorEmail: user.email,
+    actorEmail: originalEmail,
     targetType: 'user',
     targetId: user._id,
+    details: { originalEmail },
     ipAddress: ip,
     userAgent: ua,
   });

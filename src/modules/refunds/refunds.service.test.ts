@@ -3,9 +3,15 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 const {
   mockRefundFindById,
   mockAuditCreate,
+  mockUserFindById,
+  mockSendRefundDispatchedEmail,
+  mockSendRefundReconciledEmail,
 } = vi.hoisted(() => ({
   mockRefundFindById: vi.fn(),
   mockAuditCreate: vi.fn(),
+  mockUserFindById: vi.fn(),
+  mockSendRefundDispatchedEmail: vi.fn(),
+  mockSendRefundReconciledEmail: vi.fn(),
 }));
 
 vi.mock('../../models/index.js', () => ({
@@ -16,12 +22,22 @@ vi.mock('../../models/index.js', () => ({
   AuditLog: {
     create: mockAuditCreate,
   },
+  User: {
+    findById: mockUserFindById,
+  },
 }));
 
 vi.mock('../notifications/socket.service.js', () => ({
   createAndSendNotification: vi.fn(),
   notifyRole: vi.fn(),
   emitRoleEvent: vi.fn(),
+}));
+
+vi.mock('../notifications/email.service.js', () => ({
+  sendRefundApprovedEmail: vi.fn(),
+  sendRefundDeniedEmail: vi.fn(),
+  sendRefundDispatchedEmail: mockSendRefundDispatchedEmail,
+  sendRefundReconciledEmail: mockSendRefundReconciledEmail,
 }));
 
 import { dispatchRefundRequest, reconcileRefundRequest } from './refunds.service.js';
@@ -45,8 +61,12 @@ describe('refunds.service dispatch/reconcile trails', () => {
   });
 
   it('dispatches approved refund and writes dispatch audit/trail', async () => {
-    const refund = buildRefund();
+    const refund = buildRefund({
+      customerId: 'customer-1',
+      appointmentId: 'appointment-1',
+    });
     mockRefundFindById.mockResolvedValueOnce(refund);
+    mockUserFindById.mockResolvedValueOnce({ email: 'customer@example.com' });
 
     const result = await dispatchRefundRequest(
       'refund-1',
@@ -72,6 +92,14 @@ describe('refunds.service dispatch/reconcile trails', () => {
       actorId: 'cashier-1',
       targetType: 'refund_request',
     }));
+    expect(mockSendRefundDispatchedEmail).toHaveBeenCalledWith(
+      'customer@example.com',
+      expect.objectContaining({
+        appointmentId: 'appointment-1',
+        refundId: 'refund-1',
+        referenceNumber: 'REF-2026-001',
+      }),
+    );
   });
 
   it('blocks dispatch when refund is not approved', async () => {
@@ -88,10 +116,13 @@ describe('refunds.service dispatch/reconcile trails', () => {
 
   it('reconciles dispatched refund and records trail/audit', async () => {
     const refund = buildRefund({
+      customerId: 'customer-1',
+      appointmentId: 'appointment-1',
       dispatchedAt: new Date('2026-03-17T00:00:00.000Z'),
       dispatchReferenceNumber: 'REF-2026-001',
     });
     mockRefundFindById.mockResolvedValueOnce(refund);
+    mockUserFindById.mockResolvedValueOnce({ email: 'customer@example.com' });
 
     const result = await reconcileRefundRequest(
       'refund-1',
@@ -111,6 +142,13 @@ describe('refunds.service dispatch/reconcile trails', () => {
     expect(mockAuditCreate).toHaveBeenCalledWith(expect.objectContaining({
       action: AuditAction.REFUND_RECONCILED,
     }));
+    expect(mockSendRefundReconciledEmail).toHaveBeenCalledWith(
+      'customer@example.com',
+      expect.objectContaining({
+        appointmentId: 'appointment-1',
+        refundId: 'refund-1',
+      }),
+    );
   });
 
   it('blocks reconciliation before dispatch', async () => {
