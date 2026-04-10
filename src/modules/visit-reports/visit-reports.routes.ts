@@ -17,7 +17,7 @@ const router = Router();
 router.get(
   '/',
   authenticate,
-  authorize(Role.SALES_STAFF, Role.ENGINEER, Role.ADMIN),
+  authorize(Role.SALES_STAFF, Role.ENGINEER, Role.ADMIN, Role.FABRICATION_STAFF),
   ctrl.listVisitReports,
 );
 
@@ -42,7 +42,7 @@ router.get(
 router.get(
   '/:id',
   authenticate,
-  authorize(Role.SALES_STAFF, Role.ENGINEER, Role.ADMIN),
+  authorize(Role.SALES_STAFF, Role.ENGINEER, Role.ADMIN, Role.FABRICATION_STAFF),
   ctrl.getVisitReport,
 );
 
