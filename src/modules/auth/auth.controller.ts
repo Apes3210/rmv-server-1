@@ -183,6 +183,7 @@ export const me = asyncHandler(async (req: Request, res: Response) => {
       notificationPreferences: user.notificationPreferences,
       twoFactorEnabled: user.twoFactorEnabled,
       provider: user.provider || 'local',
+      firebaseUid: user.firebaseUid,
       photoURL: user.photoURL,
       createdAt: user.createdAt,
     },

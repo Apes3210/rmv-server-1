@@ -46,6 +46,8 @@ export const updateProfileSchema = z.object({
     payment: z.boolean().optional(),
     blueprint: z.boolean().optional(),
     fabrication: z.boolean().optional(),
+    project: z.boolean().optional(),
+    emailNotifications: z.boolean().optional(),
   }).optional(),
   themePreference: z.enum(['light', 'dark', 'system']).optional(),
 });

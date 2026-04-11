@@ -7,6 +7,7 @@ import { AppError, ErrorCode } from '../../utils/appError.js';
 import { Role, OtpPurpose, AuditAction } from '../../utils/constants.js';
 import { generateOtp } from '../../utils/helpers.js';
 import { sendOtpEmail, sendPasswordResetEmail, send2faEmail } from '../notifications/email.service.js';
+import { logger } from '../../utils/logger.js';
 import { parseDevice } from '../../utils/deviceInfo.js';
 import type { ClientHints } from '../../utils/deviceInfo.js';
 import type {
@@ -97,7 +98,9 @@ async function createAndSendOtp(email: string, purpose: OtpPurpose): Promise<voi
   if (purpose === OtpPurpose.EMAIL_VERIFICATION) {
     await sendOtpEmail(email, otp);
   } else if (purpose === OtpPurpose.LOGIN_2FA || purpose === OtpPurpose.ENABLE_2FA) {
-    await send2faEmail(email, otp);
+    void send2faEmail(email, otp).catch((error) => {
+      logger.error('Failed to send 2FA email in background:', error);
+    });
   } else {
     await sendPasswordResetEmail(email, otp);
   }
@@ -654,15 +657,16 @@ export async function confirmEnable2fa(userId: string, otp: string, ip?: string,
 export async function disable2fa(userId: string, input: Disable2faInput, ip?: string, ua?: string) {
   const { password } = input;
 
-  const user = await User.findById(userId).select('+password +provider');
+  const user = await User.findById(userId).select('+password +provider +firebaseUid');
   if (!user) throw AppError.notFound('User not found');
 
   if (!user.twoFactorEnabled) {
     throw AppError.badRequest('Two-factor authentication is not enabled');
   }
 
-  // Google users have no local password — identity already proven by bearer token
-  if (user.provider !== 'google') {
+  // Google-linked accounts are already identity-verified by bearer token.
+  const isGoogleLinkedAccount = user.provider === 'google' || Boolean(user.firebaseUid);
+  if (!isGoogleLinkedAccount) {
     if (!password) throw AppError.badRequest('Password is required', ErrorCode.VALIDATION_ERROR);
     const isMatch = await bcrypt.compare(password, user.password);
     if (!isMatch) {
@@ -945,6 +949,7 @@ async function issueGoogleLogin(user: InstanceType<typeof User>, ip?: string, ua
       roles: user.roles,
       mustChangePassword: false,
       provider: user.provider,
+      firebaseUid: user.firebaseUid,
     },
   };
 }

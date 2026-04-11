@@ -4,6 +4,7 @@ import sgMail from '@sendgrid/mail';
 import Handlebars from 'handlebars';
 import { env } from '../../config/env.js';
 import { EmailLog } from '../../models/index.js';
+import { User } from '../../models/index.js';
 import { EmailLogStatus } from '../../utils/constants.js';
 import { logger } from '../../utils/logger.js';
 
@@ -31,6 +32,22 @@ const DEFAULT_SOCIAL_INSTAGRAM = 'https://instagram.com';
 
 const useResendApi = env.EMAIL_PROVIDER === 'resend_api';
 const useSendGridApi = env.EMAIL_PROVIDER === 'sendgrid_api';
+const notificationEmailTemplates = new Set([
+  'appointment_confirmed',
+  'blueprint_uploaded',
+  'payment_verified',
+  'payment_declined',
+  'fabrication_update',
+  'ready_for_delivery',
+  'project_completed',
+  'payment_heads_up',
+  'payment_due',
+  'payment_overdue',
+  'refund_approved',
+  'refund_denied',
+  'refund_dispatched',
+  'refund_reconciled',
+]);
 
 if (useSendGridApi) {
   sgMail.setApiKey(env.SENDGRID_API_KEY);
@@ -487,6 +504,21 @@ async function sendEmail(
   data: Record<string, unknown>,
   attachments?: EmailAttachment[],
 ): Promise<void> {
+  if (notificationEmailTemplates.has(templateKey)) {
+    const recipient = await User.findOne({ email: to.toLowerCase().trim() })
+      .select('notificationPreferences.emailNotifications')
+      .lean();
+
+    if (recipient?.notificationPreferences?.emailNotifications === false) {
+      logger.info('📧 Email suppressed by notification preference', {
+        to,
+        subject,
+        template: templateKey,
+      });
+      return;
+    }
+  }
+
   const templateData = normalizeTemplateData(data);
   const templateHtml = compiledTemplates[templateKey]
     ? compiledTemplates[templateKey](templateData)
@@ -722,6 +754,20 @@ export async function processEmailRetries(): Promise<void> {
 
   for (const emailLog of failedEmails) {
     try {
+      if (notificationEmailTemplates.has(emailLog.template)) {
+        const recipient = await User.findOne({ email: emailLog.to.toLowerCase().trim() })
+          .select('notificationPreferences.emailNotifications')
+          .lean();
+
+        if (recipient?.notificationPreferences?.emailNotifications === false) {
+          emailLog.status = EmailLogStatus.SENT;
+          emailLog.lastAttemptAt = new Date();
+          emailLog.attempts += 1;
+          await emailLog.save();
+          continue;
+        }
+      }
+
       const htmlContent = compiledTemplates[emailLog.template]
         ? compiledTemplates[emailLog.template]({})
         : '';

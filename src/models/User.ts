@@ -36,6 +36,7 @@ export interface IUser extends Document {
     blueprint: boolean;
     fabrication: boolean;
     project: boolean;
+    emailNotifications?: boolean;
   };
   themePreference: 'light' | 'dark' | 'system';
   signatureKey?: string; // R2 key for e-signature PNG
@@ -96,6 +97,7 @@ const userSchema = new Schema<IUser>(
       blueprint: { type: Boolean, default: true },
       fabrication: { type: Boolean, default: true },
       project: { type: Boolean, default: true },
+      emailNotifications: { type: Boolean, default: true },
     },
     themePreference: { type: String, enum: ['light', 'dark', 'system'], default: 'light' },
     signatureKey: { type: String },
