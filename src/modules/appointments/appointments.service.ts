@@ -1785,7 +1785,13 @@ export async function listAppointments(query: {
     ];
   }
 
-  if (query.status) filter.status = query.status;
+  if (query.status) {
+    if (query.status.includes(',')) {
+      filter.status = { $in: query.status.split(',') };
+    } else {
+      filter.status = query.status;
+    }
+  }
   if (query.type) filter.type = query.type;
   if (query.date) filter.date = query.date;
   if (query.ocularFeeStatus) filter.ocularFeeStatus = query.ocularFeeStatus;
