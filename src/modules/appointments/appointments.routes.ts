@@ -173,6 +173,14 @@ router.post(
   ctrl.createOcularFeeCheckout,
 );
 
+// ── Customer: Request Ocular Fee Cash Payment ──
+router.post(
+  '/:id/request-cash',
+  authenticate,
+  authorize(Role.CUSTOMER),
+  ctrl.requestOcularCashPayment,
+);
+
 // ── Customer: Submit Ocular Fee Proof (manual fallback) ──
 router.post(
   '/:id/ocular-fee-proof',
@@ -182,13 +190,14 @@ router.post(
   ctrl.submitOcularFeeProof,
 );
 
-// ── Cashier: Verify or Decline Ocular Fee ──
+// ── Cashier: Verify Ocular Fee ──
 router.post(
   '/:id/ocular-fee-verify',
   authenticate,
   authorize(Role.CASHIER, Role.ADMIN),
   ctrl.verifyOcularFee,
 );
+
 
 router.post(
   '/:id/ocular-fee-decline',

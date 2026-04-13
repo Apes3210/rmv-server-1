@@ -216,6 +216,17 @@ export const createOcularFeeCheckout = asyncHandler(async (req: Request, res: Re
   });
 });
 
+// ── Customer: Request Ocular Fee Cash Payment ──
+export const requestOcularCashPayment = asyncHandler(async (req: Request, res: Response) => {
+  const appointment = await appointmentsService.requestOcularCashPayment(
+    req.params.id as string,
+    req.userId!,
+    req.ip,
+    req.get('user-agent'),
+  );
+  res.json({ success: true, data: appointment });
+});
+
 // ── Customer: Submit Ocular Fee Proof (manual fallback) ──
 export const submitOcularFeeProof = asyncHandler(async (req: Request, res: Response) => {
   const appointment = await appointmentsService.submitOcularFeeProof(

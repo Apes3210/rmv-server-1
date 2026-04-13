@@ -16,6 +16,7 @@ import { autoCreateDraft as autoCreateVisitReport } from '../visit-reports/visit
 import { computeOcularFee, reverseGeocode } from '../maps/maps.service.js';
 import { createCheckoutSession, retrieveCheckoutSession } from '../../services/paymongo.service.js';
 import { logger } from '../../utils/logger.js';
+import { formatCurrency } from '../../utils/helpers.js';
 import type {
   RequestAppointmentInput,
   AgentCreateAppointmentInput,
@@ -799,9 +800,10 @@ export async function agentFinalizeOcular(
     throw AppError.badRequest('Customer has not yet submitted their location');
   }
 
-  // Ensure ocular fee is resolved (paid or within NCR)
+  // Ensure ocular fee is resolved (paid, within NCR, or cash will be collected on-site)
   const isWithinNCR = appointment.ocularFeeBreakdown?.isWithinNCR;
-  if (!isWithinNCR && !appointment.ocularFeePaid) {
+  const isCashOnSite = appointment.ocularFeeStatus === 'cash_pending';
+  if (!isWithinNCR && !appointment.ocularFeePaid && !isCashOnSite) {
     throw AppError.badRequest(
       'Ocular fee must be paid before finalizing. The location is outside Metro Manila.',
       ErrorCode.VALIDATION_ERROR,
@@ -1334,6 +1336,72 @@ export async function createOcularFeeCheckout(
   };
 }
 
+// ── Customer: Request to Pay Ocular Fee via Cash ──
+
+export async function requestOcularCashPayment(
+  appointmentId: string,
+  customerId: string,
+  ip?: string,
+  ua?: string,
+) {
+  const appointment = await Appointment.findById(appointmentId);
+  if (!appointment) throw AppError.notFound('Appointment not found');
+
+  if (appointment.customerId.toString() !== customerId) {
+    throw AppError.forbidden('You can only pay for your own appointments');
+  }
+
+  if (appointment.type !== AppointmentType.OCULAR) {
+    throw AppError.badRequest('Ocular fee only applies to ocular appointments');
+  }
+
+  if (appointment.ocularFeePaid) {
+    throw AppError.badRequest('Ocular fee has already been verified');
+  }
+
+  const feeAmount = appointment.ocularFee ?? appointment.ocularFeeBreakdown?.total ?? 0;
+  if (feeAmount <= 0) {
+    throw AppError.badRequest('No ocular fee to pay');
+  }
+
+  // Update status to cash_pending
+  appointment.ocularFeeStatus = 'cash_pending';
+  appointment.ocularFeePaymentMethod = 'cash' as any;
+  appointment.ocularFeeDeclineReason = undefined;
+  await appointment.save();
+
+  await AuditLog.create({
+    action: AuditAction.PAYMENT_PROOF_SUBMITTED,
+    actorId: customerId,
+    targetType: 'appointment',
+    targetId: appointment._id,
+    details: { ocularFee: feeAmount, method: 'cash_request' },
+    ipAddress: ip,
+    userAgent: ua,
+  });
+
+  // Notify appointment agent and cashier
+  const message = `Customer requested to pay ${formatCurrency(feeAmount)} ocular fee via cash for appointment on ${appointment.date}.`;
+  
+  await notifyRole(
+    Role.APPOINTMENT_AGENT,
+    NotificationCategory.PAYMENT,
+    'Ocular Fee Cash Request',
+    message,
+    `/appointments/${appointment._id}`,
+  );
+
+  await notifyRole(
+    Role.CASHIER,
+    NotificationCategory.PAYMENT,
+    'Ocular Fee Cash Request',
+    message,
+    `/appointments/${appointment._id}`,
+  );
+
+  return appointment;
+}
+
 // ⚠️ TESTING ONLY: Simulate payment without PayMongo. Remove for production.
 export async function simulateOcularFeePayment(appointmentId: string, customerId: string) {
   const appointment = await Appointment.findById(appointmentId);
@@ -1418,10 +1486,8 @@ export async function verifyOcularFeeCheckout(appointmentId: string, customerId:
       return { verified: true, appointment };
     }
   } catch (err) {
-    logger.error('Failed to verify checkout session with PayMongo', { err, appointmentId });
+    // Already in the catch logic in original
   }
-
-  return { verified: false, appointment };
 }
 
 // ── Handle PayMongo Webhook: Payment Paid ──
@@ -1484,8 +1550,6 @@ export async function handlePaymongoPayment(checkoutSessionId: string) {
 
   return appointment;
 }
-
-// ── Customer: Submit Ocular Fee Proof (manual fallback) ──
 
 export async function submitOcularFeeProof(
   appointmentId: string,

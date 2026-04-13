@@ -5,7 +5,7 @@ import { VisitReportStatus } from '../../models/VisitReport.js';
 import { AppError, ErrorCode } from '../../utils/appError.js';
 import {
   AppointmentStatus, AppointmentType, ProjectStatus, Role, AuditAction, NotificationCategory,
-  ServiceType,
+  ServiceType, OcularFeePaymentChoice,
 } from '../../utils/constants.js';
 import { visitReportStateMachine, appointmentStateMachine } from '../../utils/stateMachine.js';
 import { createAndSendNotification, notifyRole } from '../notifications/socket.service.js';
@@ -471,6 +471,19 @@ export async function submitReport(
   if (appt.status !== AppointmentStatus.COMPLETED) {
     throw AppError.badRequest(
       'The appointment must be marked as complete before submitting reports',
+      ErrorCode.VALIDATION_ERROR,
+    );
+  }
+
+  // Block submission for ocular visits with unpaid cash fees (outside NCR)
+  if (
+    report.visitType === 'ocular' &&
+    appt.ocularFeePaymentChoice === OcularFeePaymentChoice.CASH &&
+    !appt.ocularFeeBreakdown?.isWithinNCR &&
+    !appt.ocularFeePaid
+  ) {
+    throw AppError.badRequest(
+      'The ocular visit fee must be collected and verified by the cashier before submitting this report.',
       ErrorCode.VALIDATION_ERROR,
     );
   }
