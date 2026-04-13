@@ -1485,8 +1485,11 @@ export async function verifyOcularFeeCheckout(appointmentId: string, customerId:
 
       return { verified: true, appointment };
     }
+
+    return { verified: false, appointment };
   } catch (err) {
-    // Already in the catch logic in original
+    console.error('[Verify Ocular Fee] Polling failed:', err);
+    return { verified: false, appointment };
   }
 }
 
