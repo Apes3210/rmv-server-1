@@ -106,6 +106,7 @@ export async function deleteFiles(keys: string[]): Promise<void> {
 // ── Folder Helpers ──
 
 export const R2Folders = {
+  BLUEPRINT_DRAFTS: 'blueprint-drafts',
   BLUEPRINTS: 'blueprints',
   COSTINGS: 'costings',
   PAYMENT_PROOFS: 'payment-proofs',

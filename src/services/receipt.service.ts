@@ -21,6 +21,7 @@ export interface ReceiptData {
   totalProjectCost: number;
   totalPaid: number;
   totalOutstanding: number;
+  cashierSignatureUrl?: string;
 }
 
 /**

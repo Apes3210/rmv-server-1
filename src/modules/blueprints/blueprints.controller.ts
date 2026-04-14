@@ -49,6 +49,41 @@ export const getLatestBlueprint = asyncHandler(async (req: Request, res: Respons
   res.json({ success: true, data: blueprint });
 });
 
+export const getBlueprintDraft = asyncHandler(async (req: Request, res: Response) => {
+  const draft = await blueprintsService.getBlueprintDraft(
+    (req.params.projectId as string),
+    req.userId!,
+  );
+  res.json({ success: true, data: draft });
+});
+
+export const upsertBlueprintDraft = asyncHandler(async (req: Request, res: Response) => {
+  const draft = await blueprintsService.upsertBlueprintDraft(
+    (req.params.projectId as string),
+    req.body,
+    req.userId!,
+  );
+  res.json({ success: true, data: draft });
+});
+
+export const finalizeBlueprintDraft = asyncHandler(async (req: Request, res: Response) => {
+  const blueprint = await blueprintsService.finalizeBlueprintDraft(
+    (req.params.projectId as string),
+    req.userId!,
+    req.ip,
+    req.get('user-agent'),
+  );
+  res.status(201).json({ success: true, data: blueprint });
+});
+
+export const deleteBlueprintDraft = asyncHandler(async (req: Request, res: Response) => {
+  await blueprintsService.deleteBlueprintDraft(
+    (req.params.projectId as string),
+    req.userId!,
+  );
+  res.status(204).send();
+});
+
 export const acceptBlueprint = asyncHandler(async (req: Request, res: Response) => {
   const result = await blueprintsService.acceptBlueprint(
     (req.params.id as string),

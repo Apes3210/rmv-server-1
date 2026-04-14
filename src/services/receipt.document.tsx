@@ -4,6 +4,7 @@ import {
   Page,
   View,
   Text,
+  Image,
   StyleSheet,
 } from '@react-pdf/renderer';
 import type { ReceiptData } from './receipt.service.js';
@@ -231,6 +232,9 @@ export const ReceiptDocument: React.FC<ReceiptDocumentProps> = ({ data }) => {
         <View style={s.sigWrap}>
           <View style={s.sigBox}>
             <Text style={s.sigLabel}>Authorized Signature:</Text>
+            {data.cashierSignatureUrl ? (
+              <Image source={{ uri: data.cashierSignatureUrl }} style={{ width: 120, height: 48, objectFit: 'contain', marginBottom: 4 }} />
+            ) : null}
             <View style={s.sigLine} />
             <Text style={s.sigName}>{data.verifiedByName}</Text>
             <Text style={s.sigSub}>Printed Name / Verified By</Text>

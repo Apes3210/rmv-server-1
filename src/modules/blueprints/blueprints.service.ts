@@ -1,5 +1,5 @@
 import {
-  Blueprint, Project, User, AuditLog, PaymentPlan,
+  Blueprint, BlueprintDraft, Project, User, AuditLog, PaymentPlan,
 } from '../../models/index.js';
 import { AppError, ErrorCode } from '../../utils/appError.js';
 import {
@@ -11,6 +11,7 @@ import { createAndSendNotification } from '../notifications/socket.service.js';
 import { sendBlueprintUploadedEmail } from '../notifications/email.service.js';
 import { getInstallmentConfig } from '../config/config.service.js';
 import { generateAndUploadContract } from '../../services/contract.service.js';
+import { deleteFile } from '../uploads/upload.service.js';
 import { v4 as uuidv4 } from 'uuid';
 import { logger } from '../../utils/logger.js';
 import type {
@@ -19,10 +20,144 @@ import type {
   ApproveBlueprintInput,
   RequestRevisionInput,
   AcceptBlueprintInput,
+  UpsertBlueprintDraftInput,
 } from './blueprints.validation.js';
 import type { Types } from 'mongoose';
 
 const MAX_REVISIONS = 3;
+
+interface BlueprintDraftFileInput {
+  key: string;
+  name: string;
+  type: string;
+  size: number;
+  uploadedAt: Date;
+}
+
+interface BlueprintDraftQuotationInput {
+  lineItems?: Array<{
+    label: string;
+    quantity: number;
+    materials: string;
+    labor: string;
+  }>;
+  fees?: string;
+  validityDays?: string;
+  breakdown?: string;
+  estimatedDuration?: string;
+  engineerNotes?: string;
+  paymentMilestones?: Array<{ label: string; description: string }>;
+}
+
+function normalizeDraftFile(
+  file?: BlueprintDraftFileInput | null,
+): BlueprintDraftFileInput | null | undefined {
+  if (file === undefined) return undefined;
+  if (file === null) return null;
+
+  return {
+    key: file.key,
+    name: file.name,
+    type: file.type,
+    size: file.size,
+    uploadedAt: new Date(file.uploadedAt),
+  };
+}
+
+function normalizeDraftQuotation(
+  quotation?: BlueprintDraftQuotationInput,
+): BlueprintDraftQuotationInput | undefined {
+  if (!quotation) return undefined;
+
+  return {
+    lineItems: quotation.lineItems?.map((lineItem) => ({
+      label: lineItem.label,
+      quantity: lineItem.quantity,
+      materials: lineItem.materials,
+      labor: lineItem.labor,
+    })),
+    fees: quotation.fees ?? '',
+    validityDays: quotation.validityDays ?? '30',
+    breakdown: quotation.breakdown ?? '',
+    estimatedDuration: quotation.estimatedDuration ?? '',
+    engineerNotes: quotation.engineerNotes ?? '',
+    paymentMilestones: quotation.paymentMilestones?.map((milestone) => ({
+      label: milestone.label,
+      description: milestone.description,
+    })),
+  };
+}
+
+function getDraftFileKeys(files?: {
+  blueprint?: { key: string } | null;
+  design?: { key: string } | null;
+  costing?: { key: string } | null;
+}) {
+  return [files?.blueprint?.key, files?.design?.key, files?.costing?.key]
+    .filter((value): value is string => Boolean(value));
+}
+
+function buildQuotationFromDraft(quotation?: BlueprintDraftQuotationInput) {
+  const lineItems = (quotation?.lineItems || [])
+    .filter((lineItem) => lineItem.label.trim())
+    .map((lineItem) => {
+      const materials = Number(lineItem.materials) || 0;
+      const labor = Number(lineItem.labor) || 0;
+      return {
+        label: lineItem.label,
+        quantity: lineItem.quantity,
+        materials,
+        labor,
+        amount: (materials + labor) * lineItem.quantity,
+      };
+    });
+
+  const totalMaterials = lineItems.reduce(
+    (sum, lineItem) => sum + lineItem.materials * lineItem.quantity,
+    0,
+  );
+  const totalLabor = lineItems.reduce(
+    (sum, lineItem) => sum + lineItem.labor * lineItem.quantity,
+    0,
+  );
+  const fees = Number(quotation?.fees) || 0;
+  const total = totalMaterials + totalLabor + fees;
+  const validMilestones = (quotation?.paymentMilestones || [])
+    .filter((milestone) => milestone.label.trim() && milestone.description.trim());
+
+  if (total <= 0) {
+    return undefined;
+  }
+
+  return {
+    materials: totalMaterials,
+    labor: totalLabor,
+    fees,
+    total,
+    lineItems: lineItems.length > 0 ? lineItems : undefined,
+    validityDays: Number(quotation?.validityDays) || 30,
+    breakdown: quotation?.breakdown?.trim() || undefined,
+    estimatedDuration: quotation?.estimatedDuration?.trim() || undefined,
+    engineerNotes: quotation?.engineerNotes?.trim() || undefined,
+    paymentMilestones: validMilestones.length > 0 ? validMilestones : undefined,
+  };
+}
+
+async function assertAssignedEngineerForProject(projectId: string, actorId: string) {
+  const project = await Project.findById(projectId).select('engineerIds status');
+  if (!project) throw AppError.notFound('Project not found');
+
+  const isAssignedEngineer = project.engineerIds.some((id) => id.toString() === actorId);
+  if (!isAssignedEngineer) {
+    throw AppError.forbidden('Only engineers assigned to this project can manage blueprint drafts');
+  }
+
+  return project;
+}
+
+async function deleteDraftFiles(keys: string[]) {
+  await Promise.allSettled(keys.map((key) => deleteFile(key)));
+}
 
 function assertEngineerContractSigned(project: { engineerContractSignedAt?: Date | null }) {
   if (!project.engineerContractSignedAt) {
@@ -41,7 +176,7 @@ export async function uploadBlueprint(
   const project = await Project.findById(input.projectId);
   if (!project) throw AppError.notFound('Project not found');
 
-  assertEngineerContractSigned(project);
+
 
   if ((project.initialDesignKeys?.length || project.initialDesignNotes?.trim()) && !['approved', 'not_required'].includes(project.designReviewStatus || 'not_required')) {
     throw AppError.badRequest('The sales initial design must be approved by engineering before the first blueprint upload');
@@ -133,7 +268,7 @@ export async function uploadRevision(
   const project = await Project.findById(currentBlueprint.projectId);
   if (!project) throw AppError.notFound('Project not found');
 
-  assertEngineerContractSigned(project);
+
 
   // Mark current as superseded by updating status
   currentBlueprint.status = BlueprintStatus.REVISION_UPLOADED;
@@ -315,6 +450,176 @@ export async function requestRevision(
   );
 
   return blueprint;
+}
+
+// ── Engineer: Draft Autosave ──
+
+export async function getBlueprintDraft(projectId: string, actorId: string) {
+  await assertAssignedEngineerForProject(projectId, actorId);
+
+  return BlueprintDraft.findOne({ projectId })
+    .populate('createdBy', 'firstName lastName phone')
+    .populate('lastEditedBy', 'firstName lastName phone');
+}
+
+export async function upsertBlueprintDraft(
+  projectId: string,
+  input: UpsertBlueprintDraftInput,
+  actorId: string,
+) {
+  const project = await assertAssignedEngineerForProject(projectId, actorId);
+  const latestBlueprint = await Blueprint.findOne({ projectId })
+    .sort({ version: -1 })
+    .select('_id status');
+
+  if (input.mode === 'initial') {
+    if (latestBlueprint) {
+      throw AppError.badRequest('Initial blueprint draft is not available after a blueprint has been uploaded');
+    }
+
+    if (![ProjectStatus.SUBMITTED, ProjectStatus.BLUEPRINT].includes(project.status)) {
+      throw AppError.badRequest('Blueprint drafts are not available for this project right now');
+    }
+  }
+
+  if (input.mode === 'revision') {
+    if (!latestBlueprint || latestBlueprint.status !== BlueprintStatus.REVISION_REQUESTED) {
+      throw AppError.badRequest('Revision draft is only available when a customer has requested a revision');
+    }
+
+    if (input.sourceBlueprintId && input.sourceBlueprintId !== latestBlueprint._id.toString()) {
+      throw AppError.badRequest('Revision draft must target the latest revision-requested blueprint');
+    }
+  }
+
+  let draft = await BlueprintDraft.findOne({ projectId });
+  const previousFiles = {
+    blueprint: draft?.files?.blueprint ?? null,
+    design: draft?.files?.design ?? null,
+    costing: draft?.files?.costing ?? null,
+  };
+
+  if (!draft) {
+    draft = new BlueprintDraft({
+      projectId,
+      createdBy: actorId,
+    });
+  }
+
+  const nextFiles = {
+    blueprint:
+      input.files && 'blueprint' in input.files
+        ? normalizeDraftFile(input.files.blueprint ?? null) ?? null
+        : draft.files?.blueprint ?? null,
+    design:
+      input.files && 'design' in input.files
+        ? normalizeDraftFile(input.files.design ?? null) ?? null
+        : draft.files?.design ?? null,
+    costing:
+      input.files && 'costing' in input.files
+        ? normalizeDraftFile(input.files.costing ?? null) ?? null
+        : draft.files?.costing ?? null,
+  };
+
+  draft.mode = input.mode;
+  draft.sourceBlueprintId =
+    input.mode === 'revision' && latestBlueprint ? latestBlueprint._id : undefined;
+  draft.files = nextFiles;
+  draft.quotation = input.quotation !== undefined
+    ? normalizeDraftQuotation(input.quotation)
+    : draft.quotation;
+  draft.lastEditedBy = actorId as unknown as Types.ObjectId;
+
+  await draft.save();
+
+  const replacedKeys = [
+    previousFiles.blueprint?.key && previousFiles.blueprint.key !== nextFiles.blueprint?.key
+      ? previousFiles.blueprint.key
+      : null,
+    previousFiles.design?.key && previousFiles.design.key !== nextFiles.design?.key
+      ? previousFiles.design.key
+      : null,
+    previousFiles.costing?.key && previousFiles.costing.key !== nextFiles.costing?.key
+      ? previousFiles.costing.key
+      : null,
+  ].filter((value): value is string => Boolean(value));
+
+  if (replacedKeys.length > 0) {
+    await deleteDraftFiles(replacedKeys);
+  }
+
+  return BlueprintDraft.findById(draft._id)
+    .populate('createdBy', 'firstName lastName phone')
+    .populate('lastEditedBy', 'firstName lastName phone');
+}
+
+export async function finalizeBlueprintDraft(
+  projectId: string,
+  actorId: string,
+  ip?: string,
+  ua?: string,
+) {
+  await assertAssignedEngineerForProject(projectId, actorId);
+
+  const draft = await BlueprintDraft.findOne({ projectId });
+  if (!draft) throw AppError.notFound('Blueprint draft not found');
+
+  const blueprintKey = draft.files?.blueprint?.key;
+  const designKey = draft.files?.design?.key;
+  const costingKey = draft.files?.costing?.key;
+
+  if (!blueprintKey || !designKey || !costingKey) {
+    throw AppError.badRequest('Blueprint, design, and costing files are required before finalizing the draft');
+  }
+
+  const quotation = buildQuotationFromDraft(draft.quotation);
+
+  if (draft.mode === 'revision' && !draft.sourceBlueprintId) {
+    throw AppError.badRequest('Revision draft is missing its source blueprint reference');
+  }
+
+  const finalizedBlueprint = draft.mode === 'revision'
+    ? await uploadRevision(
+        draft.sourceBlueprintId!.toString(),
+        {
+          blueprintKey,
+          designKey,
+          costingKey,
+          quotation,
+        },
+        actorId,
+        ip,
+        ua,
+      )
+    : await uploadBlueprint(
+        {
+          projectId,
+          blueprintKey,
+          designKey,
+          costingKey,
+          quotation,
+        },
+        actorId,
+        ip,
+        ua,
+      );
+
+  await draft.deleteOne();
+  return finalizedBlueprint;
+}
+
+export async function deleteBlueprintDraft(projectId: string, actorId: string) {
+  await assertAssignedEngineerForProject(projectId, actorId);
+
+  const draft = await BlueprintDraft.findOne({ projectId });
+  if (!draft) return;
+
+  const keys = getDraftFileKeys(draft.files);
+  await draft.deleteOne();
+
+  if (keys.length > 0) {
+    await deleteDraftFiles(keys);
+  }
 }
 
 // ── Get Blueprint by ID ──

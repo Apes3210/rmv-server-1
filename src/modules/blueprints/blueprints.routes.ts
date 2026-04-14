@@ -10,6 +10,7 @@ import {
   approveBlueprintSchema,
   requestRevisionSchema,
   acceptBlueprintSchema,
+  upsertBlueprintDraftSchema,
 } from './blueprints.validation.js';
 
 const router = Router();
@@ -54,6 +55,35 @@ router.post(
   authorize(Role.CUSTOMER),
   validate(acceptBlueprintSchema),
   ctrl.acceptBlueprint,
+);
+
+router.get(
+  '/project/:projectId/draft',
+  authenticate,
+  authorize(Role.ENGINEER),
+  ctrl.getBlueprintDraft,
+);
+
+router.put(
+  '/project/:projectId/draft',
+  authenticate,
+  authorize(Role.ENGINEER),
+  validate(upsertBlueprintDraftSchema),
+  ctrl.upsertBlueprintDraft,
+);
+
+router.post(
+  '/project/:projectId/draft/finalize',
+  authenticate,
+  authorize(Role.ENGINEER),
+  ctrl.finalizeBlueprintDraft,
+);
+
+router.delete(
+  '/project/:projectId/draft',
+  authenticate,
+  authorize(Role.ENGINEER),
+  ctrl.deleteBlueprintDraft,
 );
 
 // ── Read ──

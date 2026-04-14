@@ -6,6 +6,7 @@ export { Appointment, type IAppointment } from './Appointment.js';
 export { SlotLock, type ISlotLock } from './SlotLock.js';
 export { Project, type IProject } from './Project.js';
 export { Blueprint, type IBlueprint } from './Blueprint.js';
+export { BlueprintDraft, type IBlueprintDraft } from './BlueprintDraft.js';
 export { PaymentPlan, type IPaymentPlan, Payment, type IPayment, type IPaymentStage } from './Payment.js';
 export { CashCollection, type ICashCollection } from './CashCollection.js';
 export { CashDiscrepancy, type ICashDiscrepancy } from './CashDiscrepancy.js';

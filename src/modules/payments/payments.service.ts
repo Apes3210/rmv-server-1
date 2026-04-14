@@ -295,6 +295,11 @@ export async function verifyPayment(
   const customerAddr = customer?.addressData
     ? [customer.addressData.street, customer.addressData.barangay, customer.addressData.city, customer.addressData.province, customer.addressData.zip].filter(Boolean).join(', ')
     : (customer as any)?.address || '';
+  
+  const cashierSignatureUrl = input.signatureKey 
+    ? await generateDownloadUrl(input.signatureKey)
+    : undefined;
+
   const receipt = await generateAndUploadReceipt({
     receiptNumber,
     customerName: customer ? `${customer.firstName} ${customer.lastName}` : 'Customer',
@@ -312,6 +317,7 @@ export async function verifyPayment(
     totalProjectCost: plan.totalAmount,
     totalPaid,
     totalOutstanding: Math.max(0, plan.totalAmount - totalPaid),
+    cashierSignatureUrl,
   });
   if (receipt.key) payment.receiptKey = receipt.key;
 
