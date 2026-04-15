@@ -5,6 +5,7 @@ import { connectDB } from './config/database.js';
 import { initializeSocket } from './modules/notifications/socket.service.js';
 import { processEmailRetries } from './modules/notifications/email.service.js';
 import { processPaymentReminders } from './jobs/paymentReminders.js';
+import { processContractExpiries } from './jobs/contractExpiry.js';
 import { seedDefaultConfigs } from './modules/config/config.service.js';
 import { logger } from './utils/logger.js';
 
@@ -17,6 +18,8 @@ initializeSocket(server);
 let emailRetryInterval: NodeJS.Timeout;
 // ── Payment Reminder Processor (every hour) ──
 let paymentReminderInterval: NodeJS.Timeout;
+// ── Contract Expiry Processor (every 12 hours) ──
+let contractExpiryInterval: NodeJS.Timeout;
 
 async function startServer(): Promise<void> {
   try {
@@ -45,6 +48,20 @@ async function startServer(): Promise<void> {
       }
     }, 60 * 60 * 1000); // every hour
 
+    // Start contract expiry processor
+    contractExpiryInterval = setInterval(async () => {
+      try {
+        await processContractExpiries();
+      } catch (error) {
+        logger.error('Contract expiry processor error:', error);
+      }
+    }, 12 * 60 * 60 * 1000); // every 12 hours
+
+    // Run contract check once on startup
+    processContractExpiries().catch(err =>
+      logger.error('Initial contract expiry check failed:', err)
+    );
+
     // Start HTTP server
     server.listen(env.PORT, () => {
       logger.info(`🚀 Server running on port ${env.PORT} in ${env.NODE_ENV} mode`);
@@ -70,6 +87,9 @@ function gracefulShutdown(signal: string): void {
     }
     if (paymentReminderInterval) {
       clearInterval(paymentReminderInterval);
+    }
+    if (contractExpiryInterval) {
+      clearInterval(contractExpiryInterval);
     }
 
     // Close MongoDB connection

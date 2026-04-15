@@ -30,6 +30,7 @@ export interface IUser extends Document {
   twoFactorEnabled: boolean;
   twoFactorMethod: 'email';
   expiresAt?: Date; // For temporary outsourced accounts
+  contractWarnings?: { '7d'?: boolean; '1d'?: boolean };
   notificationPreferences: {
     appointment: boolean;
     payment: boolean;
@@ -91,6 +92,10 @@ const userSchema = new Schema<IUser>(
     twoFactorEnabled: { type: Boolean, default: false },
     twoFactorMethod: { type: String, enum: ['email'], default: 'email' },
     expiresAt: { type: Date },
+    contractWarnings: {
+      '7d': { type: Boolean },
+      '1d': { type: Boolean },
+    },
     notificationPreferences: {
       appointment: { type: Boolean, default: true },
       payment: { type: Boolean, default: true },

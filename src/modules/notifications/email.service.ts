@@ -27,7 +27,7 @@ type EmailTemplateData = Record<string, unknown> & {
 
 const APP_URL = env.FRONTEND_URL.replace(/\/$/, '');
 const DEFAULT_HELP_URL = `${APP_URL}/help`;
-const DEFAULT_SOCIAL_FACEBOOK = 'https://facebook.com';
+const DEFAULT_SOCIAL_FACEBOOK = 'https://www.facebook.com/profile.php?id=61564847510309';
 const DEFAULT_SOCIAL_INSTAGRAM = 'https://instagram.com';
 
 const useResendApi = env.EMAIL_PROVIDER === 'resend_api';
@@ -47,6 +47,7 @@ const notificationEmailTemplates = new Set([
   'refund_denied',
   'refund_dispatched',
   'refund_reconciled',
+  'contract_expiring',
 ]);
 
 if (useSendGridApi) {
@@ -65,269 +66,241 @@ const transporter: Transporter | null = env.EMAIL_PROVIDER === 'smtp'
     })
   : null;
 
+/* ─────────────────────────────────────────────────────────────
+ * Premium Email Shell
+ * Dark gradient body with gold accent stripe. All templates
+ * inject their content into {{body}} inside this wrapper.
+ * ─────────────────────────────────────────────────────────── */
+const SHELL_OPEN = `
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
+<body style="margin:0;padding:0;background:#0a0b0d;font-family:'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#0a0b0d;">
+<tr><td align="center" style="padding:32px 16px 0;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:600px;background:#141416;border:1px solid rgba(255,255,255,0.06);border-radius:12px;overflow:hidden;">
+
+    <!-- Gold accent stripe -->
+    <tr><td style="height:4px;background:linear-gradient(90deg,#c49a62 0%,#e2cba1 50%,#b89552 100%);"></td></tr>
+
+    <!-- Logo header -->
+    <tr><td style="padding:32px 40px 24px;text-align:center;border-bottom:1px solid rgba(255,255,255,0.06);">
+      <p style="margin:0;font-size:20px;font-weight:800;letter-spacing:0.12em;text-transform:uppercase;color:#c49a62;">RMV</p>
+      <p style="margin:4px 0 0;font-size:11px;font-weight:600;letter-spacing:0.2em;text-transform:uppercase;color:rgba(255,255,255,0.35);">Stainless &amp; Steel Fabrication</p>
+    </td></tr>
+
+    <!-- Body content -->
+    <tr><td style="padding:36px 40px;">
+`;
+
+const SHELL_CLOSE = `
+    </td></tr>
+  </table>
+</td></tr>
+</table>
+</body>
+</html>
+`;
+
+/* Helper: styled heading */
+const heading = (text: string) =>
+  `<h2 style="margin:0 0 20px;font-size:22px;font-weight:700;color:#ffffff;line-height:1.3;">${text}</h2>`;
+
+/* Helper: body paragraph */
+const p = (text: string) =>
+  `<p style="margin:0 0 16px;font-size:15px;line-height:1.7;color:rgba(255,255,255,0.60);">${text}</p>`;
+
+/* Helper: OTP code block */
+const otpBlock = (placeholder: string) => `
+<div style="text-align:center;padding:24px;background:rgba(196,154,98,0.08);border:1px solid rgba(196,154,98,0.20);border-radius:10px;margin:24px 0;">
+  <span style="font-size:36px;font-weight:800;letter-spacing:10px;color:#c49a62;font-family:'Courier New',monospace;">${placeholder}</span>
+</div>
+`;
+
+/* Helper: gold CTA button */
+const ctaButton = (label: string, url: string) => `
+<div style="text-align:center;margin:28px 0 8px;">
+  <a href="${url}" style="display:inline-block;padding:14px 36px;background:linear-gradient(180deg,#c49a62 0%,#a07d4a 100%);color:#0a0b0d;font-size:13px;font-weight:800;letter-spacing:0.14em;text-transform:uppercase;text-decoration:none;border-radius:6px;">
+    ${label}
+  </a>
+</div>
+`;
+
+/* Helper: info card with colored left border */
+const infoCard = (borderColor: string, bgColor: string, content: string) => `
+<div style="border-left:4px solid ${borderColor};background:${bgColor};border-radius:0 8px 8px 0;padding:16px 20px;margin:24px 0;">
+  ${content}
+</div>
+`;
+
+/* Helper: key-value detail line */
+const detail = (label: string, value: string) =>
+  `<p style="margin:0 0 6px;font-size:14px;color:rgba(255,255,255,0.50);"><strong style="color:rgba(255,255,255,0.80);">${label}:</strong> ${value}</p>`;
+
 // Template definitions
 const templates: Record<string, string> = {
   otp: `
-    <div style="font-family: Arial, sans-serif; max-width: 500px; margin: 0 auto; padding: 20px;">
-      <div style="text-align: center; padding: 20px; background: #1a1a2e; color: white; border-radius: 8px 8px 0 0;">
-        <h1 style="margin: 0;">RMV Stainless & Steel Fabrication</h1>
-      </div>
-      <div style="padding: 30px; background: #f9f9f9; border-radius: 0 0 8px 8px;">
-        <h2>Email Verification</h2>
-        <p>Your OTP code is:</p>
-        <div style="text-align: center; padding: 20px; background: white; border-radius: 8px; margin: 20px 0;">
-          <span style="font-size: 32px; font-weight: bold; letter-spacing: 8px; color: #1a1a2e;">{{otp}}</span>
-        </div>
-        <p style="color: #666;">This code expires in 3 minutes. Do not share it with anyone.</p>
-      </div>
-    </div>
+    ${heading('Email Verification')}
+    ${p('Use the code below to verify your email address. It expires in <strong style="color:#fff;">3 minutes</strong>.')}
+    ${otpBlock('{{otp}}')}
+    ${p('If you didn\'t request this code, you can safely ignore this email.')}
   `,
   password_reset: `
-    <div style="font-family: Arial, sans-serif; max-width: 500px; margin: 0 auto; padding: 20px;">
-      <div style="text-align: center; padding: 20px; background: #1a1a2e; color: white; border-radius: 8px 8px 0 0;">
-        <h1 style="margin: 0;">RMV Stainless & Steel Fabrication</h1>
-      </div>
-      <div style="padding: 30px; background: #f9f9f9; border-radius: 0 0 8px 8px;">
-        <h2>Password Reset</h2>
-        <p>Your password reset OTP is:</p>
-        <div style="text-align: center; padding: 20px; background: white; border-radius: 8px; margin: 20px 0;">
-          <span style="font-size: 32px; font-weight: bold; letter-spacing: 8px; color: #1a1a2e;">{{otp}}</span>
-        </div>
-        <p style="color: #666;">This code expires in 3 minutes. If you didn't request this, ignore this email.</p>
-      </div>
-    </div>
-  `,
-  appointment_confirmed: `
-    <div style="font-family: Arial, sans-serif; max-width: 500px; margin: 0 auto; padding: 20px;">
-      <div style="text-align: center; padding: 20px; background: #1a1a2e; color: white; border-radius: 8px 8px 0 0;">
-        <h1 style="margin: 0;">RMV Stainless & Steel Fabrication</h1>
-      </div>
-      <div style="padding: 30px; background: #f9f9f9; border-radius: 0 0 8px 8px;">
-        <h2>Appointment Confirmed</h2>
-        <p>Your appointment has been confirmed:</p>
-        <ul>
-          <li><strong>Date:</strong> {{date}}</li>
-          <li><strong>Time:</strong> {{time}}</li>
-          <li><strong>Type:</strong> {{type}}</li>
-        </ul>
-        <p style="color: #666;">Please arrive on time. Contact us if you need to reschedule.</p>
-      </div>
-    </div>
-  `,
-  blueprint_uploaded: `
-    <div style="font-family: Arial, sans-serif; max-width: 500px; margin: 0 auto; padding: 20px;">
-      <div style="text-align: center; padding: 20px; background: #1a1a2e; color: white; border-radius: 8px 8px 0 0;">
-        <h1 style="margin: 0;">RMV Stainless & Steel Fabrication</h1>
-      </div>
-      <div style="padding: 30px; background: #f9f9f9; border-radius: 0 0 8px 8px;">
-        <h2>Blueprint Ready for Review</h2>
-        <p>A new blueprint (Version {{version}}) has been uploaded for your project <strong>{{projectTitle}}</strong>.</p>
-        <p>Please review and approve or request changes within 1 day.</p>
-      </div>
-    </div>
-  `,
-  payment_verified: `
-    <div style="font-family: Arial, sans-serif; max-width: 500px; margin: 0 auto; padding: 20px;">
-      <div style="text-align: center; padding: 20px; background: #1a1a2e; color: white; border-radius: 8px 8px 0 0;">
-        <h1 style="margin: 0;">RMV Stainless & Steel Fabrication</h1>
-      </div>
-      <div style="padding: 30px; background: #f9f9f9; border-radius: 0 0 8px 8px;">
-        <h2>Payment Verified</h2>
-        <p>Your payment of <strong>{{amount}}</strong> for <strong>{{stageLabel}}</strong> has been verified.</p>
-        <p>Receipt number: <strong>{{receiptNumber}}</strong></p>
-        <p>A receipt PDF is attached to this email.</p>
-      </div>
-    </div>
-  `,
-  payment_declined: `
-    <div style="font-family: Arial, sans-serif; max-width: 500px; margin: 0 auto; padding: 20px;">
-      <div style="text-align: center; padding: 20px; background: #1a1a2e; color: white; border-radius: 8px 8px 0 0;">
-        <h1 style="margin: 0;">RMV Stainless & Steel Fabrication</h1>
-      </div>
-      <div style="padding: 30px; background: #f9f9f9; border-radius: 0 0 8px 8px;">
-        <h2>Payment Proof Declined</h2>
-        <p>Your payment proof for <strong>{{stageLabel}}</strong> has been declined.</p>
-        <p><strong>Reason:</strong> {{reason}}</p>
-        <p>Please resubmit a valid proof of payment.</p>
-      </div>
-    </div>
-  `,
-  fabrication_update: `
-    <div style="font-family: Arial, sans-serif; max-width: 500px; margin: 0 auto; padding: 20px;">
-      <div style="text-align: center; padding: 20px; background: #1a1a2e; color: white; border-radius: 8px 8px 0 0;">
-        <h1 style="margin: 0;">RMV Stainless & Steel Fabrication</h1>
-      </div>
-      <div style="padding: 30px; background: #f9f9f9; border-radius: 0 0 8px 8px;">
-        <h2>Fabrication Update</h2>
-        <p>Your project <strong>{{projectTitle}}</strong> has been updated to: <strong>{{status}}</strong></p>
-        <p>{{notes}}</p>
-      </div>
-    </div>
-  `,
-  ready_for_delivery: `
-    <div style="font-family: Arial, sans-serif; max-width: 500px; margin: 0 auto; padding: 20px;">
-      <div style="text-align: center; padding: 20px; background: #1a1a2e; color: white; border-radius: 8px 8px 0 0;">
-        <h1 style="margin: 0;">RMV Stainless & Steel Fabrication</h1>
-      </div>
-      <div style="padding: 30px; background: #f9f9f9; border-radius: 0 0 8px 8px;">
-        <h2 style="color: #1a1a2e;">🎉 Your Project is Ready for Delivery!</h2>
-        <p>Great news! Your project <strong>{{projectTitle}}</strong> has completed fabrication and is now ready for installation.</p>
-        <div style="background: #d4edda; border: 1px solid #28a745; border-radius: 8px; padding: 20px; margin: 20px 0; text-align: center;">
-          <p style="margin: 0; font-size: 18px; font-weight: bold; color: #1a1a2e;">Action Required</p>
-          <p style="margin: 8px 0 0; color: #333;">Please confirm your installation schedule so our team can proceed.</p>
-        </div>
-        <p><strong>What happens next:</strong></p>
-        <ol style="color: #555; line-height: 1.8;">
-          <li>Log in to your project portal</li>
-          <li>Open project <strong>{{projectTitle}}</strong></li>
-          <li>Tap <strong>"Confirm Installation"</strong> on the Fabrication tab</li>
-          <li>Our team will coordinate the installation date with you</li>
-        </ol>
-        <p style="color: #666; font-size: 13px;">We cannot proceed with installation without your confirmation. Please confirm at your earliest convenience.</p>
-      </div>
-    </div>
-  `,
-  project_completed: `
-    <div style="font-family: Arial, sans-serif; max-width: 500px; margin: 0 auto; padding: 20px;">
-      <div style="text-align: center; padding: 20px; background: #1a1a2e; color: white; border-radius: 8px 8px 0 0;">
-        <h1 style="margin: 0;">RMV Stainless & Steel Fabrication</h1>
-      </div>
-      <div style="padding: 30px; background: #f9f9f9; border-radius: 0 0 8px 8px;">
-        <h2 style="color: #1a1a2e;">✅ Project Complete!</h2>
-        <p>Your project <strong>{{projectTitle}}</strong> has been successfully installed and is now complete.</p>
-        <div style="background: #d4edda; border: 1px solid #28a745; border-radius: 8px; padding: 15px; margin: 15px 0; text-align: center;">
-          <p style="margin: 0; font-weight: bold; color: #155724;">Installation Completed</p>
-        </div>
-        <p>Thank you for trusting RMV Stainless & Steel Fabrication for your fabrication needs. We hope you are satisfied with the result!</p>
-        <p style="color: #666; font-size: 13px;">If you have any concerns about the installation, please contact us within 7 days.</p>
-      </div>
-    </div>
+    ${heading('Password Reset')}
+    ${p('We received a request to reset your password. Enter the code below to continue.')}
+    ${otpBlock('{{otp}}')}
+    ${p('This code expires in <strong style="color:#fff;">3 minutes</strong>. If you didn\'t request this, ignore this email.')}
   `,
   login_2fa: `
-    <div style="font-family: Arial, sans-serif; max-width: 500px; margin: 0 auto; padding: 20px;">
-      <div style="text-align: center; padding: 20px; background: #1a1a2e; color: white; border-radius: 8px 8px 0 0;">
-        <h1 style="margin: 0;">RMV Stainless & Steel Fabrication</h1>
-      </div>
-      <div style="padding: 30px; background: #f9f9f9; border-radius: 0 0 8px 8px;">
-        <h2>Login Verification</h2>
-        <p>We detected a login attempt on your account. Enter the code below to verify your identity:</p>
-        <div style="text-align: center; padding: 20px; background: white; border-radius: 8px; margin: 20px 0;">
-          <span style="font-size: 32px; font-weight: bold; letter-spacing: 8px; color: #1a1a2e;">{{otp}}</span>
-        </div>
-        <p style="color: #666;">This code expires in 3 minutes. If you didn't attempt to log in, please change your password immediately.</p>
-      </div>
-    </div>
+    ${heading('Login Verification')}
+    ${p('We detected a login attempt on your account. Enter this code to verify your identity.')}
+    ${otpBlock('{{otp}}')}
+    ${p('This code expires in <strong style="color:#fff;">3 minutes</strong>. If you didn\'t attempt to log in, please change your password immediately.')}
+  `,
+  appointment_confirmed: `
+    ${heading('Appointment Confirmed')}
+    ${p('Your appointment has been confirmed. Here are the details:')}
+    ${infoCard('#c49a62', 'rgba(196,154,98,0.06)', `
+      ${detail('Date', '{{date}}')}
+      ${detail('Time', '{{time}}')}
+      ${detail('Type', '{{type}}')}
+    `)}
+    ${p('Please arrive on time. Contact us if you need to reschedule.')}
+  `,
+  blueprint_uploaded: `
+    ${heading('Blueprint Ready for Review')}
+    ${p('A new blueprint <strong style="color:#fff;">Version {{version}}</strong> has been uploaded for your project <strong style="color:#fff;">{{projectTitle}}</strong>.')}
+    ${infoCard('#c49a62', 'rgba(196,154,98,0.06)', `
+      ${detail('Project', '{{projectTitle}}')}
+      ${detail('Blueprint Version', '{{version}}')}
+    `)}
+    ${p('Please review and approve or request changes within 1 day.')}
+  `,
+  payment_verified: `
+    ${heading('Payment Verified ✓')}
+    ${p('Your payment has been successfully verified.')}
+    ${infoCard('#22c55e', 'rgba(34,197,94,0.06)', `
+      ${detail('Amount', '{{amount}}')}
+      ${detail('Stage', '{{stageLabel}}')}
+      ${detail('Receipt', '{{receiptNumber}}')}
+    `)}
+    ${p('A receipt PDF is attached to this email for your records.')}
+  `,
+  payment_declined: `
+    ${heading('Payment Proof Declined')}
+    ${p('Your payment proof for <strong style="color:#fff;">{{stageLabel}}</strong> has been declined.')}
+    ${infoCard('#ef4444', 'rgba(239,68,68,0.06)', `
+      ${detail('Stage', '{{stageLabel}}')}
+      ${detail('Reason', '{{reason}}')}
+    `)}
+    ${p('Please resubmit a valid proof of payment.')}
+  `,
+  fabrication_update: `
+    ${heading('Fabrication Update')}
+    ${p('Your project <strong style="color:#fff;">{{projectTitle}}</strong> has a new status update.')}
+    ${infoCard('#3b82f6', 'rgba(59,130,246,0.06)', `
+      ${detail('Current Status', '{{status}}')}
+    `)}
+    ${p('{{notes}}')}
+  `,
+  ready_for_delivery: `
+    ${heading('🎉 Ready for Installation!')}
+    ${p('Great news! Your project <strong style="color:#fff;">{{projectTitle}}</strong> has completed fabrication and is ready for installation.')}
+    ${infoCard('#22c55e', 'rgba(34,197,94,0.06)', `
+      <p style="margin:0;font-size:16px;font-weight:700;color:#22c55e;">Action Required</p>
+      <p style="margin:8px 0 0;font-size:14px;color:rgba(255,255,255,0.60);">Please confirm your installation schedule so our team can proceed.</p>
+    `)}
+    ${p('<strong style="color:#fff;">What happens next:</strong>')}
+    <ol style="margin:0 0 16px;padding-left:20px;color:rgba(255,255,255,0.55);font-size:14px;line-height:2;">
+      <li>Log in to your project portal</li>
+      <li>Open project <strong style="color:#fff;">{{projectTitle}}</strong></li>
+      <li>Tap <strong style="color:#c49a62;">"Confirm Installation"</strong> on the Fabrication tab</li>
+      <li>Our team will coordinate the installation date with you</li>
+    </ol>
+  `,
+  project_completed: `
+    ${heading('✅ Project Complete!')}
+    ${p('Your project <strong style="color:#fff;">{{projectTitle}}</strong> has been successfully installed and is now complete.')}
+    ${infoCard('#22c55e', 'rgba(34,197,94,0.06)', `
+      <p style="margin:0;font-size:15px;font-weight:700;color:#22c55e;">Installation Completed</p>
+    `)}
+    ${p('Thank you for trusting RMV Stainless & Steel Fabrication. We hope you are satisfied with the result!')}
+    ${p('<span style="font-size:13px;">If you have any concerns about the installation, please contact us within 7 days.</span>')}
   `,
   payment_heads_up: `
-    <div style="font-family: Arial, sans-serif; max-width: 500px; margin: 0 auto; padding: 20px;">
-      <div style="text-align: center; padding: 20px; background: #1a1a2e; color: white; border-radius: 8px 8px 0 0;">
-        <h1 style="margin: 0;">RMV Stainless & Steel Fabrication</h1>
-      </div>
-      <div style="padding: 30px; background: #f9f9f9; border-radius: 0 0 8px 8px;">
-        <h2>Upcoming Payment Notice</h2>
-        <p>Hi! This is a friendly heads-up that a payment for your project <strong>{{projectTitle}}</strong> will be due soon.</p>
-        <div style="background: #fff3cd; border: 1px solid #ffc107; border-radius: 8px; padding: 15px; margin: 15px 0;">
-          <p style="margin: 0;"><strong>{{stageLabel}}</strong></p>
-          <p style="margin: 5px 0 0; font-size: 24px; font-weight: bold; color: #1a1a2e;">{{amount}}</p>
-        </div>
-        <p>Fabrication is currently at <strong>{{fabricationStatus}}</strong>. Once it advances to the next stage, this payment will become due.</p>
-        <p style="color: #666;">Please prepare your payment method so you can pay promptly when notified.</p>
-      </div>
-    </div>
+    ${heading('Upcoming Payment Notice')}
+    ${p('A payment for your project <strong style="color:#fff;">{{projectTitle}}</strong> will be due soon.')}
+    ${infoCard('#eab308', 'rgba(234,179,8,0.06)', `
+      ${detail('Stage', '{{stageLabel}}')}
+      <p style="margin:8px 0 0;font-size:26px;font-weight:800;color:#c49a62;">{{amount}}</p>
+    `)}
+    ${p('Fabrication is currently at <strong style="color:#fff;">{{fabricationStatus}}</strong>. Once it advances, this payment will become due.')}
+    ${p('Please prepare your payment method so you can pay promptly.')}
   `,
   payment_due: `
-    <div style="font-family: Arial, sans-serif; max-width: 500px; margin: 0 auto; padding: 20px;">
-      <div style="text-align: center; padding: 20px; background: #1a1a2e; color: white; border-radius: 8px 8px 0 0;">
-        <h1 style="margin: 0;">RMV Stainless & Steel Fabrication</h1>
-      </div>
-      <div style="padding: 30px; background: #f9f9f9; border-radius: 0 0 8px 8px;">
-        <h2>Payment Now Due</h2>
-        <p>Your project <strong>{{projectTitle}}</strong> has reached a fabrication milestone, and a payment is now due.</p>
-        <div style="background: #d4edda; border: 1px solid #28a745; border-radius: 8px; padding: 15px; margin: 15px 0;">
-          <p style="margin: 0;"><strong>{{stageLabel}}</strong></p>
-          <p style="margin: 5px 0 0; font-size: 24px; font-weight: bold; color: #1a1a2e;">{{amount}}</p>
-        </div>
-        <p>Please submit your payment proof as soon as possible to keep fabrication moving.</p>
-        <p style="color: #666;">You can pay via GCash, bank transfer, or cash at our office.</p>
-      </div>
-    </div>
+    ${heading('Payment Now Due')}
+    ${p('Your project <strong style="color:#fff;">{{projectTitle}}</strong> has reached a fabrication milestone.')}
+    ${infoCard('#c49a62', 'rgba(196,154,98,0.08)', `
+      ${detail('Stage', '{{stageLabel}}')}
+      <p style="margin:8px 0 0;font-size:26px;font-weight:800;color:#c49a62;">{{amount}}</p>
+    `)}
+    ${p('Please submit your payment proof as soon as possible to keep fabrication moving.')}
+    ${p('You can pay via GCash, bank transfer, or cash at our office.')}
   `,
   payment_overdue: `
-    <div style="font-family: Arial, sans-serif; max-width: 500px; margin: 0 auto; padding: 20px;">
-      <div style="text-align: center; padding: 20px; background: #1a1a2e; color: white; border-radius: 8px 8px 0 0;">
-        <h1 style="margin: 0;">RMV Stainless & Steel Fabrication</h1>
-      </div>
-      <div style="padding: 30px; background: #f9f9f9; border-radius: 0 0 8px 8px;">
-        <h2>Payment Overdue Reminder</h2>
-        <p>This is reminder #{{reminderNumber}} that a payment for your project <strong>{{projectTitle}}</strong> is overdue.</p>
-        <div style="background: #f8d7da; border: 1px solid #dc3545; border-radius: 8px; padding: 15px; margin: 15px 0;">
-          <p style="margin: 0;"><strong>{{stageLabel}}</strong></p>
-          <p style="margin: 5px 0 0; font-size: 24px; font-weight: bold; color: #dc3545;">{{amount}}</p>
-          <p style="margin: 5px 0 0; color: #666;">Due since {{dueDate}}</p>
-        </div>
-        <p><strong>Please submit your payment immediately.</strong> Continued delays may affect your fabrication timeline.</p>
-        <p style="color: #666;">Contact us if you need assistance with payment arrangements.</p>
-      </div>
-    </div>
+    ${heading('Payment Overdue — Reminder #{{reminderNumber}}')}
+    ${p('A payment for your project <strong style="color:#fff;">{{projectTitle}}</strong> is overdue.')}
+    ${infoCard('#ef4444', 'rgba(239,68,68,0.08)', `
+      ${detail('Stage', '{{stageLabel}}')}
+      <p style="margin:8px 0 0;font-size:26px;font-weight:800;color:#ef4444;">{{amount}}</p>
+      <p style="margin:6px 0 0;font-size:13px;color:rgba(255,255,255,0.45);">Due since {{dueDate}}</p>
+    `)}
+    ${p('<strong style="color:#fff;">Please submit your payment immediately.</strong> Continued delays may affect your fabrication timeline.')}
+    ${p('Contact us if you need assistance with payment arrangements.')}
   `,
   refund_approved: `
-    <div style="font-family: Arial, sans-serif; max-width: 500px; margin: 0 auto; padding: 20px;">
-      <div style="text-align: center; padding: 20px; background: #1a1a2e; color: white; border-radius: 8px 8px 0 0;">
-        <h1 style="margin: 0;">RMV Stainless & Steel Fabrication</h1>
-      </div>
-      <div style="padding: 30px; background: #f9f9f9; border-radius: 0 0 8px 8px;">
-        <h2>Refund Approved</h2>
-        <p>Your refund request has been approved.</p>
-        <div style="background: #d4edda; border: 1px solid #28a745; border-radius: 8px; padding: 15px; margin: 15px 0;">
-          <p style="margin: 0;"><strong>Amount:</strong> {{amount}}</p>
-          <p style="margin: 5px 0 0;"><strong>Method:</strong> {{refundMethod}}</p>
-        </div>
-        <p style="color: #666;">Our finance team will dispatch this refund to your selected destination account.</p>
-      </div>
-    </div>
+    ${heading('Refund Approved')}
+    ${p('Your refund request has been approved.')}
+    ${infoCard('#22c55e', 'rgba(34,197,94,0.06)', `
+      ${detail('Amount', '{{amount}}')}
+      ${detail('Method', '{{refundMethod}}')}
+    `)}
+    ${p('Our finance team will dispatch this refund to your selected destination account.')}
   `,
   refund_denied: `
-    <div style="font-family: Arial, sans-serif; max-width: 500px; margin: 0 auto; padding: 20px;">
-      <div style="text-align: center; padding: 20px; background: #1a1a2e; color: white; border-radius: 8px 8px 0 0;">
-        <h1 style="margin: 0;">RMV Stainless & Steel Fabrication</h1>
-      </div>
-      <div style="padding: 30px; background: #f9f9f9; border-radius: 0 0 8px 8px;">
-        <h2>Refund Request Denied</h2>
-        <p>Your refund request was declined after review.</p>
-        <div style="background: #fff3cd; border: 1px solid #ffc107; border-radius: 8px; padding: 15px; margin: 15px 0;">
-          <p style="margin: 0;"><strong>Reason:</strong> {{reason}}</p>
-        </div>
-        <p style="color: #666;">You may contact support if you need clarification.</p>
-      </div>
-    </div>
+    ${heading('Refund Request Denied')}
+    ${p('Your refund request was declined after review.')}
+    ${infoCard('#eab308', 'rgba(234,179,8,0.06)', `
+      ${detail('Reason', '{{reason}}')}
+    `)}
+    ${p('You may contact support if you need clarification.')}
   `,
   refund_dispatched: `
-    <div style="font-family: Arial, sans-serif; max-width: 500px; margin: 0 auto; padding: 20px;">
-      <div style="text-align: center; padding: 20px; background: #1a1a2e; color: white; border-radius: 8px 8px 0 0;">
-        <h1 style="margin: 0;">RMV Stainless & Steel Fabrication</h1>
-      </div>
-      <div style="padding: 30px; background: #f9f9f9; border-radius: 0 0 8px 8px;">
-        <h2>Refund Dispatched</h2>
-        <p>Your approved refund has been dispatched.</p>
-        <div style="background: #e8f2ff; border: 1px solid #7aa7e0; border-radius: 8px; padding: 15px; margin: 15px 0;">
-          <p style="margin: 0;"><strong>Reference:</strong> {{referenceNumber}}</p>
-          <p style="margin: 5px 0 0;"><strong>Amount:</strong> {{amount}}</p>
-        </div>
-        <p style="color: #666;">Please keep the reference number for your records.</p>
-      </div>
-    </div>
+    ${heading('Refund Dispatched')}
+    ${p('Your approved refund has been sent.')}
+    ${infoCard('#3b82f6', 'rgba(59,130,246,0.06)', `
+      ${detail('Reference', '{{referenceNumber}}')}
+      ${detail('Amount', '{{amount}}')}
+    `)}
+    ${p('Please keep the reference number for your records.')}
   `,
   refund_reconciled: `
-    <div style="font-family: Arial, sans-serif; max-width: 500px; margin: 0 auto; padding: 20px;">
-      <div style="text-align: center; padding: 20px; background: #1a1a2e; color: white; border-radius: 8px 8px 0 0;">
-        <h1 style="margin: 0;">RMV Stainless & Steel Fabrication</h1>
-      </div>
-      <div style="padding: 30px; background: #f9f9f9; border-radius: 0 0 8px 8px;">
-        <h2>Refund Completed</h2>
-        <p>Your refund has been reconciled and marked complete.</p>
-        <p style="color: #666;">No further action is needed unless you have a support concern.</p>
-      </div>
-    </div>
+    ${heading('Refund Completed')}
+    ${p('Your refund has been reconciled and marked complete.')}
+    ${infoCard('#22c55e', 'rgba(34,197,94,0.06)', `
+      <p style="margin:0;font-size:15px;font-weight:600;color:#22c55e;">Refund Finalized</p>
+    `)}
+    ${p('No further action is needed unless you have a support concern.')}
+  `,
+  contract_expiring: `
+    ${heading('Contract Expiration Notice')}
+    ${p('This is a reminder that your contract with RMV is expiring soon.')}
+    ${infoCard('#eab308', 'rgba(234,179,8,0.06)', `
+      ${detail('User', '{{userName}}')}
+      ${detail('Expires', '{{expiresAt}}')}
+      ${detail('Days Remaining', '{{daysRemaining}}')}
+    `)}
+    ${p('Please contact the admin team to discuss renewal or next steps.')}
   `,
 };
 
@@ -397,34 +370,36 @@ function appendBrandedFooter(htmlContent: string, data: EmailTemplateData): stri
   const facebookUrl = String(data.facebookUrl || DEFAULT_SOCIAL_FACEBOOK);
   const instagramUrl = String(data.instagramUrl || DEFAULT_SOCIAL_INSTAGRAM);
 
-  const personalization = `
-    <div style="font-family: Arial, sans-serif; max-width: 500px; margin: 14px auto 0; padding: 0 20px;">
-      <div style="border-radius: 10px; border: 1px solid #d6dde8; background: #f7fafc; padding: 12px 14px; color: #2c3d51; font-size: 13px;">
-        Hi ${customerName}, here are your quick next steps.
+  // Personalization greeting
+  const greeting = `
+      <div style="margin:0 0 24px;padding:14px 18px;background:rgba(196,154,98,0.06);border:1px solid rgba(196,154,98,0.12);border-radius:8px;">
+        <p style="margin:0;font-size:13px;color:rgba(255,255,255,0.55);">Hi <strong style="color:rgba(255,255,255,0.80);">${customerName}</strong>, here are your quick next steps.</p>
       </div>
-    </div>
   `;
 
+  // CTA button
+  const cta = ctaButton(actionLabel, actionUrl);
+
+  // Footer with links
   const footer = `
-    <div style="font-family: Arial, sans-serif; max-width: 500px; margin: 14px auto 0; padding: 0 20px 20px;">
-      <div style="border-radius: 10px; border: 1px solid #d6dde8; background: #ffffff; padding: 18px;">
-        <p style="margin: 0 0 12px; font-size: 13px; color: #2c3d51;">
-          Stay updated on your project anytime.
-        </p>
-        <a href="${actionUrl}" style="display: inline-block; background: #1f4f7a; color: #ffffff; text-decoration: none; padding: 10px 14px; border-radius: 8px; font-size: 13px; font-weight: 700;">${actionLabel}</a>
-        <p style="margin: 14px 0 6px; font-size: 12px; color: #5d6f82;">
-          Need help? Visit our <a href="${helpUrl}" style="color: #1f4f7a;">Help Center</a> or email
-          <a href="${supportMailto}" style="color: #1f4f7a;">${supportEmail}</a>.
-        </p>
-        <p style="margin: 0; font-size: 12px; color: #5d6f82;">
-          Follow us: <a href="${facebookUrl}" style="color: #1f4f7a;">Facebook</a> ·
-          <a href="${instagramUrl}" style="color: #1f4f7a;">Instagram</a>
-        </p>
-      </div>
-    </div>
+    <!-- Footer -->
+    <tr><td style="padding:24px 40px 32px;border-top:1px solid rgba(255,255,255,0.06);text-align:center;">
+      <p style="margin:0 0 12px;font-size:12px;color:rgba(255,255,255,0.35);">
+        Need help? <a href="${helpUrl}" style="color:#c49a62;text-decoration:none;">Help Center</a> · 
+        <a href="${supportMailto}" style="color:#c49a62;text-decoration:none;">${supportEmail}</a>
+      </p>
+      <p style="margin:0 0 16px;font-size:12px;color:rgba(255,255,255,0.25);">
+        <a href="${facebookUrl}" style="color:rgba(255,255,255,0.35);text-decoration:none;">Facebook</a> · 
+        <a href="${instagramUrl}" style="color:rgba(255,255,255,0.35);text-decoration:none;">Instagram</a>
+      </p>
+      <p style="margin:0;font-size:11px;color:rgba(255,255,255,0.18);">
+        © ${new Date().getFullYear()} RMV Stainless & Steel Fabrication · Novaliches, QC
+      </p>
+    </td></tr>
   `;
 
-  return `${htmlContent}${personalization}${footer}`;
+  // Wrap template content inside the premium shell
+  return `${SHELL_OPEN}${greeting}${htmlContent}${cta}${SHELL_CLOSE.replace('</table>\n</td></tr>\n</table>', `${footer}</table>\n</td></tr>\n</table>`)}`;
 }
 
 async function sendWithProvider(
@@ -741,6 +716,16 @@ export async function sendRefundReconciledEmail(
   await sendEmail(to, 'Refund Completed - RMV Stainless Steel', 'refund_reconciled', {
     ...data,
     actionLabel: 'Open Refund Timeline',
+  });
+}
+
+export async function sendContractExpiringEmail(
+  to: string,
+  data: { userName: string; expiresAt: string; daysRemaining: number },
+): Promise<void> {
+  await sendEmail(to, `Contract Expiring in ${data.daysRemaining} Day${data.daysRemaining === 1 ? '' : 's'} - RMV Stainless Steel`, 'contract_expiring', {
+    ...data,
+    actionLabel: 'Contact Admin',
   });
 }
 
