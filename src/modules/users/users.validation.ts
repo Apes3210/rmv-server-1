@@ -21,6 +21,7 @@ export const updateUserSchema = z.object({
   lastName: z.string().min(1).max(50).trim().optional(),
   phone: z.string().regex(phoneRegex).optional(),
   roles: z.array(z.nativeEnum(Role)).min(1).optional(),
+  password: z.string().min(8).optional(),
   isActive: z.boolean().optional(),
   expiresAt: z.string().datetime().nullable().optional(),
 });

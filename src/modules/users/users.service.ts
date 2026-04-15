@@ -97,6 +97,12 @@ export async function updateUser(userId: string, input: UpdateUserInput, adminId
   if (input.lastName) user.lastName = input.lastName;
   if (input.phone) user.phone = input.phone;
   if (input.roles) user.roles = input.roles;
+  const passwordToSet = typeof input.password === 'string' ? input.password.trim() : '';
+  const isPasswordReset = passwordToSet.length > 0;
+  if (passwordToSet) {
+    user.password = await bcrypt.hash(passwordToSet, 12);
+    user.mustChangePassword = true;
+  }
   if (input.isActive !== undefined) user.isActive = input.isActive;
   if (input.expiresAt !== undefined) {
     user.expiresAt = input.expiresAt ? new Date(input.expiresAt) : undefined;
@@ -104,9 +110,18 @@ export async function updateUser(userId: string, input: UpdateUserInput, adminId
 
   await user.save();
 
+  if (input.isActive === false || isPasswordReset) {
+    await RefreshToken.deleteMany({ userId: user._id });
+  }
+
+  const auditDetails: Record<string, unknown> = {
+    ...input,
+    passwordChanged: isPasswordReset,
+  };
+  delete auditDetails.password;
+
   // If deactivated, invalidate sessions and freeze data
   if (input.isActive === false) {
-    await RefreshToken.deleteMany({ userId: user._id });
     await AuditLog.create({
       action: AuditAction.USER_DISABLED,
       actorId: adminId as unknown as Types.ObjectId,
@@ -121,7 +136,7 @@ export async function updateUser(userId: string, input: UpdateUserInput, adminId
       actorId: adminId as unknown as Types.ObjectId,
       targetType: 'user',
       targetId: user._id,
-      details: input,
+      details: auditDetails,
       ipAddress: ip,
       userAgent: ua,
     });

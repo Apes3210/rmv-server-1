@@ -71,11 +71,13 @@ const s = StyleSheet.create({
   td: { fontSize: 8, color: '#333' },
 
   /* signatures */
-  sigSection: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 14 },
-  sigBlock: { width: '45%' },
-  sigLine: { borderBottomWidth: 0.5, borderBottomColor: '#333', marginTop: 30, marginBottom: 4 },
-  sigName: { fontSize: 9, color: '#1a1a1a' },
-  sigRole: { fontSize: 8, color: '#888', marginTop: 2 },
+  sigSection: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginTop: 14 },
+  sigBlock: { width: '45%', alignItems: 'center' },
+  sigParty: { width: '100%', fontSize: 9, color: '#555', textAlign: 'center' },
+  sigImage: { width: 150, height: 30, marginTop: 8 },
+  sigLine: { width: '100%', borderBottomWidth: 0.5, borderBottomColor: '#333', marginBottom: 4 },
+  sigName: { fontSize: 9, color: '#1a1a1a', textAlign: 'center' },
+  sigRole: { fontSize: 8, color: '#888', marginTop: 2, textAlign: 'center' },
 
   /* footer */
   footer: {
@@ -389,14 +391,14 @@ export const ContractDocument: React.FC<ContractDocumentProps> = ({
         <View style={s.sigSection}>
           {/* Client */}
           <View style={s.sigBlock}>
-            <Text style={{ fontSize: 9, color: '#555' }}>Client:</Text>
+            <Text style={s.sigParty}>Client:</Text>
             {signatureDataUri ? (
               <Image
                 src={signatureDataUri}
-                style={{ width: 150, height: 30, marginTop: 8 }}
+                style={s.sigImage}
               />
             ) : null}
-            <View style={s.sigLine} />
+            <View style={[s.sigLine, { marginTop: signatureDataUri ? 8 : 30 }]} />
             <Text style={s.sigName}>{data.customerName}</Text>
             <Text style={s.sigRole}>
               Date:{' '}
@@ -413,14 +415,14 @@ export const ContractDocument: React.FC<ContractDocumentProps> = ({
 
           {/* Company */}
           <View style={s.sigBlock}>
-            <Text style={{ fontSize: 9, color: '#555' }}>Service Provider:</Text>
+            <Text style={s.sigParty}>Service Provider:</Text>
             {engineerSignatureDataUri ? (
               <Image
                 src={engineerSignatureDataUri}
-                style={{ width: 150, height: 30, marginTop: 8 }}
+                style={s.sigImage}
               />
             ) : null}
-            <View style={s.sigLine} />
+            <View style={[s.sigLine, { marginTop: engineerSignatureDataUri ? 8 : 30 }]} />
             <Text style={s.sigName}>{data.engineerNames[0] || 'Authorized Representative'}</Text>
             <Text style={s.sigRole}>RMV Stainless Steel Fabrication</Text>
             <Text style={s.sigRole}>
