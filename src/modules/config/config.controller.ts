@@ -61,6 +61,18 @@ export const toggleMaintenance = asyncHandler(async (req: Request, res: Response
   res.json({ success: true, data: result });
 });
 
+export const scheduleMaintenance = asyncHandler(async (req: Request, res: Response) => {
+  const result = await configService.scheduleMaintenance(
+    new Date(req.body.scheduledAt),
+    req.body.reason,
+    req.userId!,
+    req.ip,
+    req.get('user-agent')
+  );
+  res.json({ success: true, data: result });
+});
+
+
 export const listBlockedSlots = asyncHandler(async (req: Request, res: Response) => {
   const slots = await configService.listBlockedSlots(req.query.date as string);
   res.json({ success: true, data: slots });

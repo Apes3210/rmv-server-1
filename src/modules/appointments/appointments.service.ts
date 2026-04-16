@@ -1919,66 +1919,66 @@ export async function listAppointments(query: {
   };
 }
 
-// ── Refund Ocular Fee (Admin only) ──
 
-export async function refundOcularFee(
-  appointmentId: string,
-  reason: string,
-  actorId: string,
-  ip?: string,
-  ua?: string,
-) {
-  const appointment = await Appointment.findById(appointmentId);
-  if (!appointment) throw AppError.notFound('Appointment not found');
 
-  if (appointment.type !== AppointmentType.OCULAR) {
-    throw AppError.badRequest('Refunds only apply to ocular appointments');
-  }
 
-  if (!appointment.ocularFeePaid && appointment.ocularFeeStatus !== 'verified') {
-    throw AppError.badRequest('Ocular fee has not been paid / verified yet');
-  }
 
-  if (appointment.ocularFeeStatus === 'refunded') {
-    throw AppError.badRequest('Ocular fee has already been refunded');
-  }
 
-  // Block refund if sales staff is already on the way or visit is completed
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
   if (
     [AppointmentStatus.ON_THE_WAY, AppointmentStatus.COMPLETED].includes(appointment.status as AppointmentStatus)
   ) {
     throw AppError.badRequest(
-      'Cannot refund — sales staff is already on the way or the visit has been completed',
+
     );
-  }
 
-  appointment.ocularFeeStatus = 'refunded';
-  appointment.ocularFeePaid = false;
-  appointment.ocularFeeRefundReason = reason;
-  appointment.ocularFeeRefundedBy = actorId as unknown as Types.ObjectId;
-  appointment.ocularFeeRefundedAt = new Date();
-  await appointment.save();
 
-  await AuditLog.create({
-    action: AuditAction.OCULAR_FEE_REFUNDED,
-    actorId,
-    targetType: 'appointment',
-    targetId: appointment._id,
-    details: { reason, refundedAmount: appointment.ocularFee },
-    ipAddress: ip,
-    userAgent: ua,
-  });
 
-  // Notify customer
-  await createAndSendNotification(
-    appointment.customerId.toString(),
-    NotificationCategory.PAYMENT,
-    'Ocular Fee Refunded',
-    `Your ocular fee of ₱${appointment.ocularFee?.toLocaleString()} has been refunded. Reason: ${reason}`,
-  );
 
-  return appointment;
-}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 // ── Auto-assign sales staff (round-robin based on least appointments for that date) ──
 

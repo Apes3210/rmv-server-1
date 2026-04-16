@@ -268,17 +268,6 @@ export const listPendingOcularFees = asyncHandler(async (_req: Request, res: Res
   res.json({ success: true, data: appointments.map(formatAppointment) });
 });
 
-// ── Admin: Refund Ocular Fee ──
-export const refundOcularFee = asyncHandler(async (req: Request, res: Response) => {
-  const appointment = await appointmentsService.refundOcularFee(
-    req.params.id as string,
-    req.body.reason,
-    req.userId!,
-    req.ip,
-    req.get('user-agent'),
-  );
-  res.json({ success: true, data: formatAppointment(appointment) });
-});
 
 // ── Get By ID ──
 export const getAppointmentById = asyncHandler(async (req: Request, res: Response) => {

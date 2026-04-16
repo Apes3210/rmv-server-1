@@ -65,12 +65,8 @@ export interface IAppointment extends Document {
   ocularFeePaid?: boolean;
   ocularFeeProofKey?: string;
   ocularFeeReferenceNumber?: string;
-  ocularFeeStatus?: 'pending' | 'cash_pending' | 'proof_submitted' | 'verified' | 'declined' | 'refunded';
-  ocularFeeDeclineReason?: string;
   ocularFeeVerifiedBy?: Types.ObjectId;
-  ocularFeeRefundReason?: string;
-  ocularFeeRefundedBy?: Types.ObjectId;
-  ocularFeeRefundedAt?: Date;
+
   paymongoCheckoutSessionId?: string;
   paymongoCheckoutUrl?: string;
 
@@ -157,12 +153,9 @@ const appointmentSchema = new Schema<IAppointment>(
     ocularFeePaid: { type: Boolean, default: false },
     ocularFeeProofKey: { type: String },
     ocularFeeReferenceNumber: { type: String },
-    ocularFeeStatus: { type: String, enum: ['pending', 'cash_pending', 'proof_submitted', 'verified', 'declined', 'refunded'] },
+    ocularFeeStatus: { type: String, enum: ['pending', 'cash_pending', 'proof_submitted', 'verified', 'declined'] },
     ocularFeeDeclineReason: { type: String },
     ocularFeeVerifiedBy: { type: Schema.Types.ObjectId, ref: 'User' },
-    ocularFeeRefundReason: { type: String },
-    ocularFeeRefundedBy: { type: Schema.Types.ObjectId, ref: 'User' },
-    ocularFeeRefundedAt: { type: Date },
     paymongoCheckoutSessionId: { type: String },
     paymongoCheckoutUrl: { type: String },
 

@@ -100,13 +100,6 @@ export enum OcularFeePaymentChoice {
   CASH = 'cash',
 }
 
-// ── Refund Request Status ──
-export enum RefundRequestStatus {
-  PENDING = 'pending',
-  APPROVED = 'approved',
-  DENIED = 'denied',
-  CANCELLED = 'cancelled',
-}
 
 // ── OTP Purpose ──
 export enum OtpPurpose {
@@ -224,7 +217,6 @@ export enum AuditAction {
   PAYMENT_DECLINED = 'payment_declined',
   RECEIPT_GENERATED = 'receipt_generated',
   RECEIPT_RESENT = 'receipt_resent',
-  OCULAR_FEE_REFUNDED = 'ocular_fee_refunded',
   LIFECYCLE_MISMATCH_BLOCKED = 'lifecycle_mismatch_blocked',
   LIFECYCLE_HOTSPOT_ACKNOWLEDGED = 'lifecycle_hotspot_acknowledged',
 
@@ -232,15 +224,6 @@ export enum AuditAction {
   CASH_COLLECTED = 'cash_collected',
   CASH_RECEIVED = 'cash_received',
   CASH_DISCREPANCY = 'cash_discrepancy',
-
-  // Refund Request
-  REFUND_REQUESTED = 'refund_requested',
-  REFUND_APPROVED = 'refund_approved',
-  REFUND_DENIED = 'refund_denied',
-  REFUND_UPDATED = 'refund_updated',
-  REFUND_CANCELLED = 'refund_cancelled',
-  REFUND_DISPATCHED = 'refund_dispatched',
-  REFUND_RECONCILED = 'refund_reconciled',
 
   // Fabrication
   FABRICATION_ASSIGNED = 'fabrication_assigned',

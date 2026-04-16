@@ -47,6 +47,11 @@ export const bulkUnblockSlotsSchema = z.object({
   ids: z.array(z.string().min(1)).min(1).max(14),
 });
 
+export const scheduleMaintenanceSchema = z.object({
+  scheduledAt: z.string().datetime(),
+  reason: z.string().max(500).trim().optional(),
+});
+
 export type UpdateConfigInput = z.infer<typeof updateConfigSchema>;
 export type CreateHolidayInput = z.infer<typeof createHolidaySchema>;
 export type CreateBlockedSlotInput = z.infer<typeof createBlockedSlotSchema>;
@@ -54,3 +59,5 @@ export type BulkBlockSlotsInput = z.infer<typeof bulkBlockSlotsSchema>;
 export type BulkUnblockSlotsInput = z.infer<typeof bulkUnblockSlotsSchema>;
 export type PreviewConfigImpactInput = z.infer<typeof previewConfigImpactSchema>;
 export type RollbackConfigVersionInput = z.infer<typeof rollbackConfigVersionSchema>;
+export type ScheduleMaintenanceInput = z.infer<typeof scheduleMaintenanceSchema>;
+

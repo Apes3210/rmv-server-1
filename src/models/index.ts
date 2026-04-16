@@ -19,4 +19,4 @@ export { Config, type IConfig, Holiday, type IHoliday, SalesAvailability, type I
 export { RouteCache, type IRouteCache } from './RouteCache.js';
 export { VisitReport, type IVisitReport, VisitReportStatus } from './VisitReport.js';
 export { LoginHistory, type ILoginHistory } from './LoginHistory.js';
-export { RefundRequest, type IRefundRequest } from './RefundRequest.js';
+

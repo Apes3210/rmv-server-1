@@ -1,4 +1,6 @@
-import { Config, Holiday, AuditLog, BlockedSlot } from '../../models/index.js';
+import { Config, Holiday, AuditLog, BlockedSlot, User } from '../../models/index.js';
+import { notifyAllUsers } from '../notifications/socket.service.js';
+import { NotificationCategory } from '../../utils/constants.js';
 import { AppError, ErrorCode } from '../../utils/appError.js';
 import { AuditAction } from '../../utils/constants.js';
 import type {
@@ -325,9 +327,15 @@ export async function toggleMaintenance(
   ip?: string,
   ua?: string,
 ) {
+  const update: any = { value: enabled, updatedBy: adminId };
+  // If disabling, also clear any scheduled time
+  if (!enabled) {
+    await Config.findOneAndUpdate({ key: 'maintenance_scheduled_at' }, { value: null });
+  }
+
   const config = await Config.findOneAndUpdate(
     { key: 'maintenance_mode' },
-    { value: enabled, updatedBy: adminId },
+    update,
     { upsert: true, new: true },
   );
 
@@ -343,6 +351,66 @@ export async function toggleMaintenance(
 
   return { maintenanceMode: enabled };
 }
+
+/**
+ * Schedule maintenance and notify all users.
+ */
+export async function scheduleMaintenance(
+  scheduledAt: Date,
+  reason: string,
+  adminId: string,
+  ip?: string,
+  ua?: string,
+) {
+  // 1. Update Configs
+  await Promise.all([
+    Config.findOneAndUpdate(
+      { key: 'maintenance_scheduled_at' },
+      { value: scheduledAt, updatedBy: adminId },
+      { upsert: true }
+    ),
+    Config.findOneAndUpdate(
+      { key: 'maintenance_message' },
+      { value: reason, updatedBy: adminId },
+      { upsert: true }
+    ),
+    // Ensure maintenance_mode is false initially so it only triggers at the time
+    Config.findOneAndUpdate(
+      { key: 'maintenance_mode' },
+      { value: false, updatedBy: adminId },
+      { upsert: true }
+    )
+  ]);
+
+  // 2. Notify all users
+  const formattedDate = new Date(scheduledAt).toLocaleString('en-US', {
+    dateStyle: 'long',
+    timeStyle: 'short',
+  });
+
+  await notifyAllUsers(
+    NotificationCategory.SYSTEM,
+    'Upcoming System Maintenance',
+    `The system will be unavailable for maintenance starting ${formattedDate}.${reason ? ` Reason: ${reason}` : ''}`
+  );
+
+  // 3. Audit Log
+  await AuditLog.create({
+    action: AuditAction.CONFIG_UPDATED,
+    actorId: adminId,
+    targetType: 'config',
+    details: {
+      key: 'maintenance_scheduled_at',
+      value: scheduledAt,
+      reason,
+    },
+    ipAddress: ip,
+    userAgent: ua,
+  });
+
+  return { success: true, scheduledAt };
+}
+
 
 export async function isMaintenanceMode(): Promise<boolean> {
   const config = await Config.findOne({ key: 'maintenance_mode' });
@@ -491,6 +559,14 @@ export async function seedDefaultConfigs(): Promise<void> {
       value: false,
       description: 'Enable/disable maintenance mode',
     },
+    maintenance_scheduled_at: {
+      value: null,
+      description: 'Scheduled timestamp for when maintenance mode should take effect',
+    },
+    maintenance_message: {
+      value: '',
+      description: 'Reason or custom message for the scheduled maintenance',
+    },
     ocular_fee_config: {
       value: {
         baseFee: 350,
@@ -574,8 +650,8 @@ export async function seedDefaultConfigs(): Promise<void> {
             body: 'Use the Appointments page to create, reschedule, or monitor your visits.',
           },
           {
-            heading: 'Payments and refunds',
-            body: 'Use Payments for stage payments and the Refund Requests flow for your refund timeline.',
+            heading: 'Payments',
+            body: 'Use Payments to monitor and manage your project stage payments.',
           },
           {
             heading: 'Project tracking',
@@ -596,7 +672,7 @@ export async function seedDefaultConfigs(): Promise<void> {
           cashier: [
             {
               heading: 'Cashier operations',
-              body: 'Use Cashier Queue for payment verification and Refund Requests for customer refund processing.',
+              body: 'Use Cashier Queue for payment verification.',
             },
           ],
         },

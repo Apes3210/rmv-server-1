@@ -62,12 +62,12 @@ async function readLifecycleHotspotAcknowledgements(): Promise<LifecycleHotspotA
 function getLifecycleEscalationProfile(targetType?: string): LifecycleEscalationProfile {
   const normalized = String(targetType || '').toLowerCase();
 
-  if (normalized === 'payments' || normalized === 'cash' || normalized === 'refunds') {
+  if (normalized === 'payments' || normalized === 'cash') {
     return {
       ownerTeam: 'Cash Operations',
       ownerRole: 'Cashier Supervisor',
       slaHours: 2,
-      runbookPath: '/help/payments-refunds/payment-stage-status-reference#overview',
+      runbookPath: '/help/payments/payment-stage-status-reference#overview',
     };
   }
 
@@ -660,6 +660,7 @@ export async function getDashboardSummary(userId?: string, userRoles?: string[])
     const now = new Date();
     const todayStr = now.toISOString().split('T')[0];
     const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+    const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
 
     // Determine if the caller is a pure customer (no staff/admin roles)
     const isCustomerOnly = userRoles?.includes(Role.CUSTOMER)
@@ -689,6 +690,7 @@ export async function getDashboardSummary(userId?: string, userRoles?: string[])
       pendingCashPayments,
       totalUsers,
       pendingBlueprints,
+      completedToday,
     ] = await Promise.all([
       Project.countDocuments({ deletedAt: null, ...customerProjectFilter }).exec(),
       Project.countDocuments({
@@ -745,6 +747,13 @@ export async function getDashboardSummary(userId?: string, userRoles?: string[])
       User.countDocuments({ isActive: true }).exec(),
       // Admin-only: blueprints pending customer review
       Blueprint.countDocuments({ status: { $in: ['uploaded', 'revision_uploaded'] } }).exec(),
+      // Fab-staff: fabrication updates made today 
+      FabricationUpdate.countDocuments({
+        createdAt: { $gte: startOfToday },
+        ...(userId && userRoles?.includes(Role.FABRICATION_STAFF) && !userRoles?.includes(Role.ADMIN)
+          ? { updatedBy: userId }
+          : {}),
+      }).exec(),
     ]);
 
     const revenueThisMonth = revenueResult?.[0]?.total ?? 0;
@@ -788,6 +797,7 @@ export async function getDashboardSummary(userId?: string, userRoles?: string[])
       pendingCashPayments,
       totalUsers,
       pendingBlueprints,
+      completedToday,
       pendingInstallationConfirmations,
     };
   } catch (error) {
@@ -809,6 +819,7 @@ export async function getDashboardSummary(userId?: string, userRoles?: string[])
       pendingCashPayments: 0,
       totalUsers: 0,
       pendingBlueprints: 0,
+      completedToday: 0,
       pendingInstallationConfirmations: [],
     };
   }

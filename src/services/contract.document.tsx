@@ -356,8 +356,8 @@ export const ContractDocument: React.FC<ContractDocumentProps> = ({
 
         {/* ── 11  Cancellation ── */}
         <SectionTitle>11. CANCELLATION &amp; TERMINATION</SectionTitle>
-        <Bullet>If the Client cancels before fabrication begins, a partial refund may be issued less any costs already incurred for materials and planning.</Bullet>
-        <Bullet>If the Client cancels after fabrication has begun, no refund shall be issued for work already completed.</Bullet>
+        <Bullet>Strictly No Refunds: Once the initial payment is made and fabrication has been scheduled or started, no refunds shall be issued under any circumstances.</Bullet>
+        <Bullet>Rescheduling: Clients may request to reschedule installation dates subject to the Service Provider's availability and rescheduling policy.</Bullet>
         <Bullet>The Service Provider reserves the right to terminate the project if the Client fails to meet payment obligations, subject to written notice.</Bullet>
         <Divider />
 

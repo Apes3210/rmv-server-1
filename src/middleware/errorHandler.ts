@@ -7,7 +7,7 @@ import { AuditAction } from '../utils/constants.js';
 const OBJECT_ID_RE = /^[0-9a-fA-F]{24}$/;
 
 function pickTargetId(req: Request): string | undefined {
-  const candidateKeys = ['id', 'projectId', 'appointmentId', 'paymentId', 'blueprintId', 'reportId', 'refundId', 'userId'];
+  const candidateKeys = ['id', 'projectId', 'appointmentId', 'paymentId', 'blueprintId', 'reportId', 'userId'];
   for (const key of candidateKeys) {
     const value = req.params?.[key];
     if (typeof value === 'string' && OBJECT_ID_RE.test(value)) {

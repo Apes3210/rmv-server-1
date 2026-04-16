@@ -13,9 +13,11 @@ import {
 	bulkUnblockSlotsSchema,
 	previewConfigImpactSchema,
 	rollbackConfigVersionSchema,
+	scheduleMaintenanceSchema,
 } from './config.validation.js';
 
 const router = Router();
+
 
 // Read configs: any authenticated user; write: admin only
 router.get('/configs', authenticate, ctrl.listConfigs);
@@ -30,6 +32,8 @@ router.post('/holidays', authenticate, authorize(Role.ADMIN), validate(createHol
 router.delete('/holidays/:id', authenticate, authorize(Role.ADMIN), ctrl.deleteHoliday);
 
 router.post('/maintenance', authenticate, authorize(Role.ADMIN), validate(maintenanceToggleSchema), ctrl.toggleMaintenance);
+router.post('/maintenance/schedule', authenticate, authorize(Role.ADMIN), validate(scheduleMaintenanceSchema), ctrl.scheduleMaintenance);
+
 
 router.get('/blocked-slots', authenticate, authorize(Role.ADMIN, Role.APPOINTMENT_AGENT), ctrl.listBlockedSlots);
 router.post('/blocked-slots/bulk', authenticate, authorize(Role.ADMIN, Role.APPOINTMENT_AGENT), validate(bulkBlockSlotsSchema), ctrl.bulkCreateBlockedSlots);

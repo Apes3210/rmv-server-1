@@ -86,7 +86,7 @@ export async function createPaymentPlan(
     throw AppError.badRequest(
       'Payment plan can only be created for approved projects',
       ErrorCode.PAYMENT_PLAN_NOT_ALLOWED,
-      { helpPath: '/help/payments-refunds/payment-stage-status-reference#overview' },
+      { helpPath: '/help/payments/payment-stage-status-reference#overview' },
     );
   }
 
@@ -96,7 +96,7 @@ export async function createPaymentPlan(
     throw AppError.conflict(
       'Payment plan already exists for this project',
       ErrorCode.PAYMENT_PLAN_ALREADY_EXISTS,
-      { helpPath: '/help/payments-refunds/payment-stage-status-reference#overview' },
+      { helpPath: '/help/payments/payment-stage-status-reference#overview' },
     );
   }
 
@@ -702,7 +702,7 @@ export async function createStageCheckout(
     throw AppError.badRequest(
       'This stage is not accepting payments',
       ErrorCode.PAYMENT_STAGE_NOT_ACCEPTING,
-      { helpPath: '/help/payments-refunds/payment-stage-status-reference#overview' },
+      { helpPath: '/help/payments/payment-stage-status-reference#overview' },
     );
   }
 
@@ -761,7 +761,7 @@ export async function requestStageCashPayment(
     throw AppError.badRequest(
       'This stage already has a payment awaiting verification',
       ErrorCode.PAYMENT_ALREADY_AWAITING_VERIFICATION,
-      { helpPath: '/help/payments-refunds/payment-stage-status-reference#overview' },
+      { helpPath: '/help/payments/payment-stage-status-reference#overview' },
     );
   }
 
@@ -769,7 +769,7 @@ export async function requestStageCashPayment(
     throw AppError.badRequest(
       'This stage is not accepting payments',
       ErrorCode.PAYMENT_STAGE_NOT_ACCEPTING,
-      { helpPath: '/help/payments-refunds/payment-stage-status-reference#overview' },
+      { helpPath: '/help/payments/payment-stage-status-reference#overview' },
     );
   }
 
@@ -939,7 +939,7 @@ export async function simulateStagePayment(
     throw AppError.badRequest(
       'This stage is not accepting payments',
       ErrorCode.PAYMENT_STAGE_NOT_ACCEPTING,
-      { helpPath: '/help/payments-refunds/payment-stage-status-reference#overview' },
+      { helpPath: '/help/payments/payment-stage-status-reference#overview' },
     );
   }
 
@@ -1021,7 +1021,7 @@ export async function recordCashPayment(
     throw AppError.badRequest(
       'This stage is not accepting payments',
       ErrorCode.PAYMENT_STAGE_NOT_ACCEPTING,
-      { helpPath: '/help/payments-refunds/payment-stage-status-reference#overview' },
+      { helpPath: '/help/payments/payment-stage-status-reference#overview' },
     );
   }
 

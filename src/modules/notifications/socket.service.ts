@@ -154,3 +154,49 @@ export function emitRoleEvent(
   if (!io) return;
   io.to(`role:${role}`).emit(event, payload);
 }
+
+/**
+ * Notify all active users in the system.
+ * Used for high-priority broadcast like scheduled maintenance.
+ */
+export async function notifyAllUsers(
+  category: NotificationCategory,
+  title: string,
+  message: string,
+  link?: string,
+): Promise<void> {
+  try {
+    // 1. Get all active users
+    const users = await User.find({ isActive: true }).select('_id');
+    if (!users.length) return;
+
+    // 2. Bulk insert notifications (bypass pref check for broadcast SYSTEM messages usually)
+    const notifications = users.map((u) => ({
+      userId: u._id,
+      category,
+      title,
+      message,
+      link,
+    }));
+
+    const docs = await Notification.insertMany(notifications);
+    const firstDoc = docs[0]; // To get timestamp
+
+    // 3. Broadcast via Socket to all connected users
+    if (io) {
+      io.emit('notification:new', {
+        category,
+        title,
+        message,
+        link,
+        isRead: false,
+        createdAt: firstDoc?.createdAt || new Date(),
+      });
+    }
+
+    logger.info(`Broadcasted notification to ${users.length} users: ${title}`);
+  } catch (err) {
+    logger.error('Failed to notify all users:', err);
+  }
+}
+

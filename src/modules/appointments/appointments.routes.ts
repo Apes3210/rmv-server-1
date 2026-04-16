@@ -207,13 +207,13 @@ router.post(
   ctrl.declineOcularFee,
 );
 
-// ── Admin: Refund Ocular Fee ──
-router.post(
-  '/:id/refund-ocular-fee',
-  authenticate,
-  authorize(Role.ADMIN),
-  ctrl.refundOcularFee,
-);
+
+
+
+
+
+
+
 
 // ── Cashier: List Pending Ocular Fees ──
 router.get(

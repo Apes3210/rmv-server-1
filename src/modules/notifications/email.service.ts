@@ -18,10 +18,6 @@ type EmailTemplateData = Record<string, unknown> & {
   contextPath?: string;
   paymentStageId?: string;
   appointmentId?: string;
-  refundId?: string;
-  projectUrl?: string;
-  paymentUrl?: string;
-  refundUrl?: string;
   helpUrl?: string;
 };
 
@@ -43,10 +39,6 @@ const notificationEmailTemplates = new Set([
   'payment_heads_up',
   'payment_due',
   'payment_overdue',
-  'refund_approved',
-  'refund_denied',
-  'refund_dispatched',
-  'refund_reconciled',
   'contract_expiring',
 ]);
 
@@ -258,38 +250,6 @@ const templates: Record<string, string> = {
     ${p('<strong style="color:#fff;">Please submit your payment immediately.</strong> Continued delays may affect your fabrication timeline.')}
     ${p('Contact us if you need assistance with payment arrangements.')}
   `,
-  refund_approved: `
-    ${heading('Refund Approved')}
-    ${p('Your refund request has been approved.')}
-    ${infoCard('#22c55e', 'rgba(34,197,94,0.06)', `
-      ${detail('Amount', '{{amount}}')}
-      ${detail('Method', '{{refundMethod}}')}
-    `)}
-    ${p('Our finance team will dispatch this refund to your selected destination account.')}
-  `,
-  refund_denied: `
-    ${heading('Refund Request Denied')}
-    ${p('Your refund request was declined after review.')}
-    ${infoCard('#eab308', 'rgba(234,179,8,0.06)', `
-      ${detail('Reason', '{{reason}}')}
-    `)}
-    ${p('You may contact support if you need clarification.')}
-  `,
-  refund_dispatched: `
-    ${heading('Refund Dispatched')}
-    ${p('Your approved refund has been sent.')}
-    ${infoCard('#3b82f6', 'rgba(59,130,246,0.06)', `
-      ${detail('Reference', '{{referenceNumber}}')}
-      ${detail('Amount', '{{amount}}')}
-    `)}
-    ${p('Please keep the reference number for your records.')}
-  `,
-  refund_reconciled: `
-    ${heading('Refund Completed')}
-    ${p('Your refund has been reconciled and marked complete.')}
-    ${infoCard('#22c55e', 'rgba(34,197,94,0.06)', `
-      <p style="margin:0;font-size:15px;font-weight:600;color:#22c55e;">Refund Finalized</p>
-    `)}
     ${p('No further action is needed unless you have a support concern.')}
   `,
   contract_expiring: `
@@ -331,13 +291,8 @@ function buildContextActionUrl(data: EmailTemplateData): string {
     return `${APP_URL}/appointments/${encodeURIComponent(String(data.appointmentId))}`;
   }
 
-  if (data.refundId) {
-    return `${APP_URL}/payments?refund=${encodeURIComponent(String(data.refundId))}`;
-  }
-
   return (data.projectUrl as string)
     || (data.paymentUrl as string)
-    || (data.refundUrl as string)
     || APP_URL;
 }
 
@@ -679,45 +634,6 @@ export async function sendPaymentOverdueEmail(
   });
 }
 
-export async function sendRefundApprovedEmail(
-  to: string,
-  data: { amount: string; refundMethod: string; appointmentId?: string; refundId?: string },
-): Promise<void> {
-  await sendEmail(to, 'Refund Approved - RMV Stainless Steel', 'refund_approved', {
-    ...data,
-    actionLabel: 'Track Refund',
-  });
-}
-
-export async function sendRefundDeniedEmail(
-  to: string,
-  data: { reason: string; appointmentId?: string; refundId?: string },
-): Promise<void> {
-  await sendEmail(to, 'Refund Request Denied - RMV Stainless Steel', 'refund_denied', {
-    ...data,
-    actionLabel: 'View Refund Details',
-  });
-}
-
-export async function sendRefundDispatchedEmail(
-  to: string,
-  data: { amount: string; referenceNumber: string; appointmentId?: string; refundId?: string },
-): Promise<void> {
-  await sendEmail(to, 'Refund Dispatched - RMV Stainless Steel', 'refund_dispatched', {
-    ...data,
-    actionLabel: 'View Dispatch Details',
-  });
-}
-
-export async function sendRefundReconciledEmail(
-  to: string,
-  data: { appointmentId?: string; refundId?: string },
-): Promise<void> {
-  await sendEmail(to, 'Refund Completed - RMV Stainless Steel', 'refund_reconciled', {
-    ...data,
-    actionLabel: 'Open Refund Timeline',
-  });
-}
 
 export async function sendContractExpiringEmail(
   to: string,

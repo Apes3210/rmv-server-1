@@ -9,8 +9,15 @@ import { Role } from '../utils/constants.js';
  */
 export const maintenanceGuard = async (req: Request, _res: Response, next: NextFunction): Promise<void> => {
   try {
-    const config = await Config.findOne({ key: 'maintenance_mode' });
-    if (config?.value === true) {
+    const [mode, scheduledAt] = await Promise.all([
+      Config.findOne({ key: 'maintenance_mode' }),
+      Config.findOne({ key: 'maintenance_scheduled_at' }),
+    ]);
+
+    const isMaintenance = mode?.value === true;
+    const isScheduledReached = scheduledAt?.value && new Date() >= new Date(scheduledAt.value as string);
+
+    if (isMaintenance || isScheduledReached) {
       // Allow admin users through
       if (req.userRoles?.includes(Role.ADMIN)) {
         next();
@@ -28,7 +35,7 @@ export const maintenanceGuard = async (req: Request, _res: Response, next: NextF
     }
     next();
   } catch {
-    // If we can't check maintenance mode, let the request through
     next();
   }
 };
+
