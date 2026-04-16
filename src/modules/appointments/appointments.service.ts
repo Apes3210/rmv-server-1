@@ -1944,23 +1944,6 @@ export async function listAppointments(query: {
 
 
 
-  if (
-    [AppointmentStatus.ON_THE_WAY, AppointmentStatus.COMPLETED].includes(appointment.status as AppointmentStatus)
-  ) {
-    throw AppError.badRequest(
-
-    );
-
-
-
-
-
-
-
-
-
-
-
 
 
 

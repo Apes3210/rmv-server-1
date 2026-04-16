@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 const phoneRegex = /^(09|\+639)\d{9}$/;
+const nameRegex = /^[a-zA-Z\s'-]+$/;
 
 export const registerSchema = z.object({
   email: z.string().email('Invalid email address').toLowerCase().trim(),
@@ -11,8 +12,8 @@ export const registerSchema = z.object({
     .regex(/[a-z]/, 'Must contain at least one lowercase letter')
     .regex(/\d/, 'Must contain at least one digit')
     .regex(/[^A-Za-z0-9]/, 'Must contain at least one special character'),
-  firstName: z.string().min(1).max(50).trim(),
-  lastName: z.string().min(1).max(50).trim(),
+  firstName: z.string().min(1).max(50).regex(nameRegex, 'Name contains invalid characters').trim(),
+  lastName: z.string().min(1).max(50).regex(nameRegex, 'Name contains invalid characters').trim(),
   phone: z.string().regex(phoneRegex, 'Must be a valid PH mobile number (09XXXXXXXXX)').transform(v => v.startsWith('09') ? '+63' + v.slice(1) : v),
 });
 
@@ -78,8 +79,8 @@ export const googleAuthSchema = z.object({
 
 export const googleCompleteSchema = z.object({
   idToken: z.string().min(1, 'Firebase ID token is required'),
-  firstName: z.string().min(1).max(50).trim(),
-  lastName: z.string().min(1).max(50).trim(),
+  firstName: z.string().min(1).max(50).regex(nameRegex, 'Name contains invalid characters').trim(),
+  lastName: z.string().min(1).max(50).regex(nameRegex, 'Name contains invalid characters').trim(),
   phone: z.string().regex(phoneRegex, 'Must be a valid PH mobile number (09XXXXXXXXX)').transform(v => v.startsWith('09') ? '+63' + v.slice(1) : v),
 });
 

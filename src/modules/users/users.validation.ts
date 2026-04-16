@@ -2,11 +2,12 @@ import { z } from 'zod';
 import { Role } from '../../utils/constants.js';
 
 const phoneRegex = /^\+639\d{9}$/;
+const nameRegex = /^[a-zA-Z\s'-]+$/;
 
 export const createUserSchema = z.object({
   email: z.string().email().toLowerCase().trim(),
-  firstName: z.string().min(1).max(50).trim(),
-  lastName: z.string().min(1).max(50).trim(),
+  firstName: z.string().min(1).max(50).regex(nameRegex, 'Name contains invalid characters').trim(),
+  lastName: z.string().min(1).max(50).regex(nameRegex, 'Name contains invalid characters').trim(),
   phone: z.union([
     z.string().regex(phoneRegex, 'Must be a valid PH mobile (+63 9XX)'),
     z.literal(''),
@@ -17,8 +18,8 @@ export const createUserSchema = z.object({
 });
 
 export const updateUserSchema = z.object({
-  firstName: z.string().min(1).max(50).trim().optional(),
-  lastName: z.string().min(1).max(50).trim().optional(),
+  firstName: z.string().min(1).max(50).regex(nameRegex, 'Name contains invalid characters').trim().optional(),
+  lastName: z.string().min(1).max(50).regex(nameRegex, 'Name contains invalid characters').trim().optional(),
   phone: z.string().regex(phoneRegex).optional(),
   roles: z.array(z.nativeEnum(Role)).min(1).optional(),
   password: z.string().min(8).optional(),
@@ -27,8 +28,8 @@ export const updateUserSchema = z.object({
 });
 
 export const updateProfileSchema = z.object({
-  firstName: z.string().min(1).max(50).trim().optional(),
-  lastName: z.string().min(1).max(50).trim().optional(),
+  firstName: z.string().min(1).max(50).regex(nameRegex, 'Name contains invalid characters').trim().optional(),
+  lastName: z.string().min(1).max(50).regex(nameRegex, 'Name contains invalid characters').trim().optional(),
   phone: z.string().regex(phoneRegex).optional(),
   address: z.string().max(500).trim().optional(),
   addressData: z.object({

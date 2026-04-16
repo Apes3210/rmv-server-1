@@ -250,8 +250,7 @@ const templates: Record<string, string> = {
     ${p('<strong style="color:#fff;">Please submit your payment immediately.</strong> Continued delays may affect your fabrication timeline.')}
     ${p('Contact us if you need assistance with payment arrangements.')}
   `,
-    ${p('No further action is needed unless you have a support concern.')}
-  `,
+
   contract_expiring: `
     ${heading('Contract Expiration Notice')}
     ${p('This is a reminder that your contract with RMV is expiring soon.')}

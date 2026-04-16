@@ -66,6 +66,9 @@ export interface IAppointment extends Document {
   ocularFeeProofKey?: string;
   ocularFeeReferenceNumber?: string;
   ocularFeeVerifiedBy?: Types.ObjectId;
+  ocularFeeStatus?: 'pending' | 'cash_pending' | 'proof_submitted' | 'verified' | 'declined';
+  ocularFeeDeclineReason?: string;
+
 
   paymongoCheckoutSessionId?: string;
   paymongoCheckoutUrl?: string;

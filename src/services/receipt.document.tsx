@@ -77,12 +77,12 @@ const s = StyleSheet.create({
   totalValue: { fontSize: 11, fontFamily: 'Helvetica-Bold', color: '#1a1a1a', width: '40%', textAlign: 'right' },
 
   /* signature */
-  sigWrap: { alignItems: 'flex-end', marginTop: 20 },
-  sigBox: { width: 200, alignItems: 'center' },
-  sigLabel: { fontSize: 10, color: '#333', marginBottom: 24 },
-  sigLine: { borderBottomWidth: 0.5, borderBottomColor: '#333', width: '100%', marginBottom: 4 },
+  sigWrap: { alignItems: 'center', marginTop: 35 },
+  sigBox: { alignItems: 'center' },
+  sigLabel: { fontSize: 10, color: '#333', marginBottom: 12 },
+  sigLine: { borderBottomWidth: 0.5, borderBottomColor: '#333', width: 180, marginBottom: 3 },
   sigName: { fontSize: 9, fontFamily: 'Helvetica-Bold', color: '#1a1a1a' },
-  sigSub: { fontSize: 8, color: '#666', marginTop: 2 },
+  sigSub: { fontSize: 8, color: '#666', marginTop: 1 },
 
   /* footer */
   footer: { marginTop: 20, borderTopWidth: 0.8, borderTopColor: '#ccc', paddingTop: 8, alignItems: 'center' },
@@ -233,7 +233,7 @@ export const ReceiptDocument: React.FC<ReceiptDocumentProps> = ({ data }) => {
           <View style={s.sigBox}>
             <Text style={s.sigLabel}>Authorized Signature:</Text>
             {data.cashierSignatureUrl ? (
-              <Image source={{ uri: data.cashierSignatureUrl }} style={{ width: 120, height: 48, objectFit: 'contain', marginBottom: 4 }} />
+              <Image source={{ uri: data.cashierSignatureUrl }} style={{ width: 110, height: 44, objectFit: 'contain', marginBottom: 2 }} />
             ) : null}
             <View style={s.sigLine} />
             <Text style={s.sigName}>{data.verifiedByName}</Text>
