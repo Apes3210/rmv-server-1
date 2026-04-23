@@ -17,6 +17,18 @@ export const assignEngineers = asyncHandler(async (req: Request, res: Response) 
   res.json({ success: true, data: project });
 });
 
+export const reassignProjectSalesStaff = asyncHandler(async (req: Request, res: Response) => {
+  const project = await projectsService.reassignProjectSalesStaff(
+    req.params.id as string,
+    req.body,
+    req.userId!,
+    req.userRoles!,
+    req.ip,
+    req.get('user-agent'),
+  );
+  res.json({ success: true, data: project });
+});
+
 export const assignFabricationStaff = asyncHandler(async (req: Request, res: Response) => {
   const project = await projectsService.assignFabricationStaff((req.params.id as string), req.body, req.userId!, req.ip, req.get('user-agent'));
   res.json({ success: true, data: project });

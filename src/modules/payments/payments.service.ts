@@ -17,6 +17,7 @@ import { r2Client } from '../../config/r2.js';
 import { generateDownloadUrl } from '../uploads/upload.service.js';
 import { env } from '../../config/env.js';
 import { logger } from '../../utils/logger.js';
+import { seedFabricationItems } from '../fabrication/fabrication.service.js';
 import type {
   CreatePaymentPlanInput,
   UpdatePaymentPlanInput,
@@ -370,6 +371,13 @@ export async function verifyPayment(
     projectStateMachine.assertTransition(project.status, ProjectStatus.FABRICATION);
     project.status = ProjectStatus.FABRICATION;
     await project.save();
+
+    // Epic 8: Seed fabrication items from latest VisitReport (or fallback to generic)
+    try {
+      await seedFabricationItems(project._id.toString());
+    } catch (err) {
+      logger.error(`Failed to seed fabrication items for project ${project._id}`, err);
+    }
 
     const allVerified = plan.stages.every(s => s.status === PaymentStageStatus.VERIFIED);
     await createAndSendNotification(

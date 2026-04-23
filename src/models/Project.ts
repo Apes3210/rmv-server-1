@@ -4,6 +4,7 @@ import { ProjectStatus } from '../utils/constants.js';
 export interface IProject extends Document {
   _id: Types.ObjectId;
   appointmentId: Types.ObjectId;
+  projectNumber: string; // RMV-YYYY-#####
   visitReportId?: Types.ObjectId; // link back to the specific visit report
   customerId: Types.ObjectId;
   salesStaffId: Types.ObjectId;
@@ -12,9 +13,18 @@ export interface IProject extends Document {
   fabricationAssistantIds: Types.ObjectId[];
 
   title: string;
+  totalCost?: number;
   serviceType: string; // e.g., gate, railing, kitchen
   description: string;
   siteAddress: string;
+  siteAddressStructured?: {
+    street: string;
+    barangay: string;
+    city: string;
+    province: string;
+    zip: string;
+    addressType?: 'personal' | 'business';
+  };
   measurements?: {
     length?: number;
     width?: number;
@@ -72,6 +82,7 @@ export interface IProject extends Document {
 const projectSchema = new Schema<IProject>(
   {
     appointmentId: { type: Schema.Types.ObjectId, ref: 'Appointment', required: true },
+    projectNumber: { type: String, required: true, unique: true },
     visitReportId: { type: Schema.Types.ObjectId, ref: 'VisitReport' },
     customerId: { type: Schema.Types.ObjectId, ref: 'User', required: true },
     salesStaffId: { type: Schema.Types.ObjectId, ref: 'User', required: true },
@@ -80,9 +91,19 @@ const projectSchema = new Schema<IProject>(
     fabricationAssistantIds: [{ type: Schema.Types.ObjectId, ref: 'User' }],
 
     title: { type: String, required: true, trim: true },
+    totalCost: { type: Number },
     serviceType: { type: String, required: true, trim: true },
     description: { type: String, required: true },
     siteAddress: { type: String, required: true },
+    siteAddressStructured: {
+      street: { type: String, trim: true },
+      barangay: { type: String, trim: true },
+      city: { type: String, trim: true },
+      province: { type: String, trim: true },
+      zip: { type: String, trim: true },
+      addressType: { type: String, enum: ['personal', 'business'] },
+      _id: false,
+    },
     measurements: {
       length: Number,
       width: Number,

@@ -8,6 +8,7 @@ import {
   requestAppointmentSchema,
   agentCreateAppointmentSchema,
   confirmAppointmentSchema,
+  reassignAppointmentSalesSchema,
   rescheduleRequestSchema,
   rescheduleCompleteSchema,
   cancelAppointmentSchema,
@@ -16,6 +17,7 @@ import {
   submitOcularFeeProofSchema,
   declineOcularFeeSchema,
   availableSlotsQuerySchema,
+  appointmentQueueQuerySchema,
   submitSiteDetailsSchema,
   agentCreateOcularSchema,
   submitOcularLocationSchema,
@@ -108,6 +110,14 @@ router.post(
   authorize(Role.APPOINTMENT_AGENT, Role.ADMIN),
   validate(confirmAppointmentSchema),
   ctrl.confirmAppointment,
+);
+
+router.post(
+  '/:id/reassign-sales',
+  authenticate,
+  authorize(Role.APPOINTMENT_AGENT, Role.ADMIN, Role.SALES_STAFF),
+  validate(reassignAppointmentSalesSchema),
+  ctrl.reassignAppointmentSales,
 );
 
 router.post(
@@ -238,6 +248,14 @@ router.get(
   authenticate,
   authorize(Role.CUSTOMER, Role.APPOINTMENT_AGENT, Role.SALES_STAFF, Role.CASHIER, Role.ADMIN),
   ctrl.listAppointments,
+);
+
+router.get(
+  '/queue',
+  authenticate,
+  authorize(Role.APPOINTMENT_AGENT, Role.SALES_STAFF, Role.ADMIN),
+  validate(appointmentQueueQuerySchema, 'query'),
+  ctrl.listAppointmentQueue,
 );
 
 router.get(

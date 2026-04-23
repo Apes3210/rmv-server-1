@@ -21,7 +21,7 @@ const appointmentRequestBaseSchema = z.object({
   date: z.string().regex(dateRegex, 'Date must be YYYY-MM-DD'),
   slotCode: z.enum(SLOT_CODES as unknown as [string, ...string[]]),
   purpose: z.string().max(500).trim().optional(),
-  serviceType: z.nativeEnum(ServiceType).optional(),
+  serviceTypes: z.array(z.nativeEnum(ServiceType)).optional(),
   serviceTypeCustom: z.string().max(200).trim().optional(),
   formattedAddress: z.string().max(500).trim().optional(),
   customerLocation: locationSchema.optional(),
@@ -39,6 +39,11 @@ export const agentCreateAppointmentSchema = appointmentRequestBaseSchema.extend(
 export const confirmAppointmentSchema = z.object({
   salesStaffId: z.string().min(1),
   internalNotes: z.string().max(1000).trim().optional(),
+});
+
+export const reassignAppointmentSalesSchema = z.object({
+  salesStaffId: z.string().min(1),
+  reason: z.string().max(500).trim().optional(),
 });
 
 export const rescheduleRequestSchema = z.object({
@@ -79,9 +84,16 @@ export const availableSlotsQuerySchema = z.object({
   type: z.nativeEnum(AppointmentType),
 });
 
+export const appointmentQueueQuerySchema = z.object({
+  status: z.string().max(120).trim().optional(),
+  search: z.string().max(120).trim().optional(),
+  limit: z.coerce.number().int().min(1).max(200).default(120),
+});
+
 export type RequestAppointmentInput = z.infer<typeof requestAppointmentSchema>;
 export type AgentCreateAppointmentInput = z.infer<typeof agentCreateAppointmentSchema>;
 export type ConfirmAppointmentInput = z.infer<typeof confirmAppointmentSchema>;
+export type ReassignAppointmentSalesInput = z.infer<typeof reassignAppointmentSalesSchema>;
 export type RescheduleRequestInput = z.infer<typeof rescheduleRequestSchema>;
 export type RescheduleCompleteInput = z.infer<typeof rescheduleCompleteSchema>;
 export type CancelAppointmentInput = z.infer<typeof cancelAppointmentSchema>;
@@ -89,6 +101,7 @@ export type RecordOcularFeeInput = z.infer<typeof recordOcularFeeSchema>;
 export type SubmitOcularFeeProofInput = z.infer<typeof submitOcularFeeProofSchema>;
 export type DeclineOcularFeeInput = z.infer<typeof declineOcularFeeSchema>;
 export type AvailableSlotsQuery = z.infer<typeof availableSlotsQuerySchema>;
+export type AppointmentQueueQuery = z.infer<typeof appointmentQueueQuerySchema>;
 
 // ── Customer Site Details (pre-visit info) ──
 const siteDetailsLineItemSchema = z.object({
@@ -113,7 +126,7 @@ const siteDetailsSiteConditionsSchema = z.object({
 });
 
 export const submitSiteDetailsSchema = z.object({
-  serviceType: z.nativeEnum(ServiceType).optional(),
+  serviceTypes: z.array(z.nativeEnum(ServiceType)).optional(),
   serviceTypeCustom: z.string().max(200).trim().optional(),
   measurementUnit: z.nativeEnum(MeasurementUnit).optional(),
   lineItems: z.array(siteDetailsLineItemSchema).max(50).optional(),

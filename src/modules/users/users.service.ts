@@ -1,9 +1,68 @@
 import bcrypt from 'bcryptjs';
-import { User, AuditLog, RefreshToken, SalesAvailability, Notification, OtpToken } from '../../models/index.js';
+import {
+  User,
+  AuditLog,
+  RefreshToken,
+  SalesAvailability,
+  Notification,
+  OtpToken,
+  AvailabilitySession,
+} from '../../models/index.js';
 import { AppError, ErrorCode } from '../../utils/appError.js';
-import { AuditAction, Role } from '../../utils/constants.js';
-import type { CreateUserInput, UpdateUserInput, UpdateProfileInput, DeleteAccountInput } from './users.validation.js';
+import { AuditAction, Role, StaffAvailabilityStatus, type SlotCode } from '../../utils/constants.js';
+import type {
+  CreateUserInput,
+  UpdateUserInput,
+  UpdateProfileInput,
+  DeleteAccountInput,
+  SalesStaffLookupQueryInput,
+  UpdateOwnAvailabilityInput,
+} from './users.validation.js';
 import type { Types } from 'mongoose';
+import {
+  buildAvailabilityStateSummary,
+  evaluateSalesAssignmentEligibility,
+  getOpenAvailabilitySession,
+  getOpenAvailabilitySessionsByUserIds,
+  hasInternalAvailabilityRole,
+} from './availability-session.service.js';
+
+async function attachAvailabilitySummaries<T extends {
+  _id: Types.ObjectId;
+  roles?: Array<Role | string>;
+  availabilityStatus?: StaffAvailabilityStatus;
+  availabilityNote?: string;
+  availabilityUpdatedAt?: Date;
+  toObject: () => Record<string, unknown>;
+}>(
+  users: T[],
+): Promise<Array<Record<string, unknown> & {
+  _id: string | Types.ObjectId;
+  availabilityStatus?: StaffAvailabilityStatus;
+}>> {
+  const sessionsByUserId = await getOpenAvailabilitySessionsByUserIds(users.map((user) => user._id));
+
+  return users.map((user) => {
+    const summary = buildAvailabilityStateSummary(
+      {
+        roles: user.roles,
+        availabilityStatus: user.availabilityStatus,
+        availabilityNote: user.availabilityNote,
+        availabilityUpdatedAt: user.availabilityUpdatedAt,
+      },
+      sessionsByUserId.get(user._id.toString()),
+    );
+    const base = user.toObject() as Record<string, unknown> & {
+      _id: string | Types.ObjectId;
+      availabilityStatus?: StaffAvailabilityStatus;
+    };
+
+    return {
+      ...base,
+      ...summary,
+    };
+  });
+}
 
 // Admin: Create user
 export async function createUser(input: CreateUserInput, adminId: string, ip?: string, ua?: string) {
@@ -71,16 +130,13 @@ export async function listUsers(query: {
   const sortField = query.sortBy || 'createdAt';
   const sortOrder = query.sortOrder === 'asc' ? 1 : -1;
 
-  const [users, total] = await Promise.all([
-    User.find(filter)
-      .select('-password')
-      .sort({ [sortField]: sortOrder })
-      .skip((page - 1) * limit)
-      .limit(limit),
-    User.countDocuments(filter),
-  ]);
+  const users = await User.find(filter)
+    .select('-password')
+    .sort({ [sortField]: sortOrder })
+    .skip((page - 1) * limit)
+    .limit(limit);
 
-  return users;
+  return attachAvailabilitySummaries(users);
 }
 
 // Admin: Update user
@@ -97,6 +153,8 @@ export async function updateUser(userId: string, input: UpdateUserInput, adminId
   if (input.lastName) user.lastName = input.lastName;
   if (input.phone) user.phone = input.phone;
   if (input.roles) user.roles = input.roles;
+  const nextRoles = input.roles ?? user.roles;
+  const targetsInternalRole = hasInternalAvailabilityRole(nextRoles);
   const passwordToSet = typeof input.password === 'string' ? input.password.trim() : '';
   const isPasswordReset = passwordToSet.length > 0;
   if (passwordToSet) {
@@ -106,6 +164,30 @@ export async function updateUser(userId: string, input: UpdateUserInput, adminId
   if (input.isActive !== undefined) user.isActive = input.isActive;
   if (input.expiresAt !== undefined) {
     user.expiresAt = input.expiresAt ? new Date(input.expiresAt) : undefined;
+  }
+
+  if (input.availabilityStatus !== undefined || input.availabilityNote !== undefined) {
+    if (!targetsInternalRole) {
+      throw AppError.badRequest('Availability status can only be set for internal staff accounts');
+    }
+
+    if (input.availabilityStatus !== undefined) {
+      user.availabilityStatus = input.availabilityStatus;
+    }
+    if (input.availabilityNote !== undefined) {
+      user.availabilityNote = input.availabilityNote || undefined;
+    }
+    user.availabilityUpdatedAt = new Date();
+  }
+
+  if (input.roles && !targetsInternalRole) {
+    await AvailabilitySession.updateMany(
+      { userId: user._id, closedAt: { $exists: false } },
+      { $set: { closedAt: new Date(), updatedBy: adminId as unknown as Types.ObjectId } },
+    );
+    user.availabilityStatus = undefined;
+    user.availabilityNote = undefined;
+    user.availabilityUpdatedAt = undefined;
   }
 
   await user.save();
@@ -142,7 +224,14 @@ export async function updateUser(userId: string, input: UpdateUserInput, adminId
     });
   }
 
-  return user;
+  const [session] = await Promise.all([
+    getOpenAvailabilitySession(user._id),
+  ]);
+
+  return {
+    ...user.toObject(),
+    ...buildAvailabilityStateSummary(user, session),
+  };
 }
 
 // Admin: Disable user
@@ -220,10 +309,23 @@ export async function updateSalesAvailability(
   salesStaffId: string,
   unavailableDates: string[],
   adminId: string,
+  availabilityStatus?: StaffAvailabilityStatus,
+  availabilityNote?: string | null,
 ) {
   const salesUser = await User.findById(salesStaffId);
   if (!salesUser || !salesUser.roles.includes(Role.SALES_STAFF)) {
     throw AppError.notFound('Sales staff not found');
+  }
+
+  if (availabilityStatus !== undefined) {
+    salesUser.availabilityStatus = availabilityStatus;
+  }
+  if (availabilityNote !== undefined) {
+    salesUser.availabilityNote = availabilityNote || undefined;
+  }
+  if (availabilityStatus !== undefined || availabilityNote !== undefined) {
+    salesUser.availabilityUpdatedAt = new Date();
+    await salesUser.save();
   }
 
   await SalesAvailability.findOneAndUpdate(
@@ -235,13 +337,114 @@ export async function updateSalesAvailability(
   return { message: 'Availability updated' };
 }
 
+// Self/Admin: Update own availability status
+export async function updateOwnAvailability(userId: string, input: UpdateOwnAvailabilityInput) {
+  const user = await User.findById(userId);
+  if (!user) throw AppError.notFound('User not found');
+  if (!hasInternalAvailabilityRole(user.roles)) {
+    throw AppError.badRequest('Only internal staff can manage availability');
+  }
+
+  const now = new Date();
+  const openSession = await getOpenAvailabilitySession(user._id);
+  if (openSession) {
+    openSession.closedAt = now;
+    openSession.updatedBy = user._id;
+    await openSession.save();
+  }
+
+  const shiftStartAt =
+    input.availabilityStatus === StaffAvailabilityStatus.AVAILABLE && input.shiftStartAt
+      ? new Date(input.shiftStartAt)
+      : undefined;
+  const shiftEndAt =
+    input.availabilityStatus === StaffAvailabilityStatus.AVAILABLE && input.shiftEndAt
+      ? new Date(input.shiftEndAt)
+      : undefined;
+
+  user.availabilityStatus = input.availabilityStatus;
+  user.availabilityNote = input.availabilityNote || undefined;
+  user.availabilityUpdatedAt = now;
+  await user.save();
+
+  await AvailabilitySession.create({
+    userId: user._id,
+    availabilityStatus: input.availabilityStatus,
+    availabilityNote: input.availabilityNote || undefined,
+    shiftStartAt,
+    shiftEndAt,
+    createdBy: user._id,
+    updatedBy: user._id,
+  });
+
+  await AuditLog.create({
+    action: AuditAction.USER_UPDATED,
+    actorId: user._id,
+    targetType: 'user',
+    targetId: user._id,
+    details: {
+      availabilityStatus: input.availabilityStatus,
+      availabilityNote: input.availabilityNote || null,
+      shiftStartAt: shiftStartAt?.toISOString() || null,
+      shiftEndAt: shiftEndAt?.toISOString() || null,
+      selfUpdate: true,
+    },
+  });
+
+  const nextSession = await getOpenAvailabilitySession(user._id);
+  return {
+    ...user.toObject(),
+    ...buildAvailabilityStateSummary(user, nextSession),
+  };
+}
+
+export async function closeOwnAvailability(userId: string) {
+  const user = await User.findById(userId);
+  if (!user) throw AppError.notFound('User not found');
+  if (!hasInternalAvailabilityRole(user.roles)) {
+    throw AppError.badRequest('Only internal staff can close availability');
+  }
+
+  const session = await getOpenAvailabilitySession(user._id);
+  if (!session) {
+    throw AppError.badRequest('There is no open availability to close');
+  }
+
+  const now = new Date();
+  session.closedAt = now;
+  session.updatedBy = user._id;
+  await session.save();
+
+  user.availabilityStatus = undefined;
+  user.availabilityNote = undefined;
+  user.availabilityUpdatedAt = now;
+  await user.save();
+
+  await AuditLog.create({
+    action: AuditAction.USER_UPDATED,
+    actorId: user._id,
+    targetType: 'user',
+    targetId: user._id,
+    details: { selfUpdate: true, closedAvailability: true, closedSessionId: session._id.toString() },
+  });
+
+  return {
+    ...user.toObject(),
+    ...buildAvailabilityStateSummary(user, null),
+  };
+}
+
 export async function getSalesAvailability(salesStaffId: string) {
   const availability = await SalesAvailability.findOne({ salesStaffId });
   return availability?.unavailableDates || [];
 }
 
 // List users by role (for agent lookups)
-export async function listByRole(role: string, search?: string) {
+export async function listByRole(
+  role: string,
+  search?: string,
+  assignmentContext?: SalesStaffLookupQueryInput,
+) {
   const filter: Record<string, unknown> = { roles: role, isActive: true };
   if (search) {
     filter.$or = [
@@ -251,10 +454,47 @@ export async function listByRole(role: string, search?: string) {
       { phone: { $regex: search, $options: 'i' } },
     ];
   }
-  return User.find(filter)
-    .select('firstName lastName email phone')
+
+  const users = await User.find(filter)
+    .select('firstName lastName email phone roles isActive availabilityStatus availabilityNote availabilityUpdatedAt')
     .sort({ firstName: 1 })
     .limit(50);
+
+  const withSummaries = await attachAvailabilitySummaries(users);
+
+  if (
+    role !== Role.SALES_STAFF
+    || !assignmentContext?.date
+    || !assignmentContext.slotCode
+  ) {
+    return withSummaries;
+  }
+
+  const dateStr = assignmentContext.date;
+  const slotCode = assignmentContext.slotCode as SlotCode;
+  const salesUsers = withSummaries as Array<{
+    _id: string | Types.ObjectId;
+    availabilityStatus?: StaffAvailabilityStatus;
+    [key: string]: unknown;
+  }>;
+
+  return Promise.all(
+    salesUsers.map(async (user) => {
+      const eligibility = await evaluateSalesAssignmentEligibility({
+        salesStaffId: String(user._id),
+        userAvailabilityStatus: user.availabilityStatus,
+        session: await getOpenAvailabilitySession(String(user._id)),
+        dateStr,
+        slotCode,
+        appointmentId: assignmentContext.appointmentId,
+      });
+
+      return {
+        ...user,
+        ...eligibility,
+      };
+    }),
+  );
 }
 
 export async function getCustomerById(userId: string) {

@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import { asyncHandler } from '../../utils/asyncHandler.js';
 import * as usersService from './users.service.js';
+import type { SalesStaffLookupQueryInput } from './users.validation.js';
 
 export const createUser = asyncHandler(async (req: Request, res: Response) => {
   const result = await usersService.createUser(req.body, req.userId!, req.ip, req.headers['user-agent']);
@@ -33,7 +34,26 @@ export const updateProfile = asyncHandler(async (req: Request, res: Response) =>
 });
 
 export const updateSalesAvailability = asyncHandler(async (req: Request, res: Response) => {
-  const result = await usersService.updateSalesAvailability(req.body.salesStaffId, req.body.unavailableDates, req.userId!);
+  const result = await usersService.updateSalesAvailability(
+    req.body.salesStaffId,
+    req.body.unavailableDates,
+    req.userId!,
+    req.body.availabilityStatus,
+    req.body.availabilityNote,
+  );
+  res.json({ success: true, data: result });
+});
+
+export const updateOwnAvailability = asyncHandler(async (req: Request, res: Response) => {
+  const result = await usersService.updateOwnAvailability(
+    req.userId!,
+    req.body,
+  );
+  res.json({ success: true, data: result });
+});
+
+export const closeOwnAvailability = asyncHandler(async (req: Request, res: Response) => {
+  const result = await usersService.closeOwnAvailability(req.userId!);
   res.json({ success: true, data: result });
 });
 
@@ -43,7 +63,11 @@ export const getSalesAvailability = asyncHandler(async (req: Request, res: Respo
 });
 
 export const listSalesStaff = asyncHandler(async (req: Request, res: Response) => {
-  const result = await usersService.listByRole('sales_staff');
+  const result = await usersService.listByRole(
+    'sales_staff',
+    req.query.search as string | undefined,
+    req.query as unknown as SalesStaffLookupQueryInput,
+  );
   res.json({ success: true, data: result });
 });
 

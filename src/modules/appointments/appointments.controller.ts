@@ -91,6 +91,18 @@ export const confirmAppointment = asyncHandler(async (req: Request, res: Respons
   res.json({ success: true, data: appointment });
 });
 
+export const reassignAppointmentSales = asyncHandler(async (req: Request, res: Response) => {
+  const appointment = await appointmentsService.reassignAppointmentSales(
+    req.params.id as string,
+    req.body,
+    req.userId!,
+    req.userRoles!,
+    req.ip,
+    req.get('user-agent'),
+  );
+  res.json({ success: true, data: appointment });
+});
+
 // ── Complete ──
 export const completeAppointment = asyncHandler(async (req: Request, res: Response) => {
   const appointment = await appointmentsService.completeAppointment(
@@ -310,6 +322,26 @@ export const listAppointments = asyncHandler(async (req: Request, res: Response)
     data: {
       ...result,
       items: result.items.map(formatAppointment),
+    },
+  });
+});
+
+// ── Appointment Queue ──
+export const listAppointmentQueue = asyncHandler(async (req: Request, res: Response) => {
+  const result = await appointmentsService.listAppointmentQueue(
+    req.query as any,
+    req.userId!,
+    req.userRoles!,
+  );
+
+  res.json({
+    success: true,
+    data: {
+      ...result,
+      items: result.items.map((item) => ({
+        ...item,
+        appointment: formatAppointment(item.appointment),
+      })),
     },
   });
 });

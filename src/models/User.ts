@@ -1,5 +1,5 @@
 import mongoose, { Schema, Document, Types } from 'mongoose';
-import { Role } from '../utils/constants.js';
+import { Role, StaffAvailabilityStatus } from '../utils/constants.js';
 
 export interface IUserAddress {
   street?: string;
@@ -8,6 +8,7 @@ export interface IUserAddress {
   province?: string;
   zip?: string;
   country?: string;
+  addressType?: 'personal' | 'business';
   lat?: number;
   lng?: number;
   formattedAddress?: string;
@@ -31,6 +32,9 @@ export interface IUser extends Document {
   twoFactorMethod: 'email';
   expiresAt?: Date; // For temporary outsourced accounts
   contractWarnings?: { '7d'?: boolean; '1d'?: boolean };
+  availabilityStatus?: StaffAvailabilityStatus;
+  availabilityNote?: string;
+  availabilityUpdatedAt?: Date;
   notificationPreferences: {
     appointment: boolean;
     payment: boolean;
@@ -72,6 +76,7 @@ const userSchema = new Schema<IUser>(
           province: { type: String, trim: true },
           zip: { type: String, trim: true },
           country: { type: String, trim: true, default: 'Philippines' },
+          addressType: { type: String, enum: ['personal', 'business'], default: 'personal' },
           lat: { type: Number },
           lng: { type: Number },
           formattedAddress: { type: String, trim: true },
@@ -92,6 +97,12 @@ const userSchema = new Schema<IUser>(
     twoFactorEnabled: { type: Boolean, default: false },
     twoFactorMethod: { type: String, enum: ['email'], default: 'email' },
     expiresAt: { type: Date },
+    availabilityStatus: {
+      type: String,
+      enum: Object.values(StaffAvailabilityStatus),
+    },
+    availabilityNote: { type: String, trim: true, maxlength: 240 },
+    availabilityUpdatedAt: { type: Date },
     contractWarnings: {
       '7d': { type: Boolean },
       '1d': { type: Boolean },

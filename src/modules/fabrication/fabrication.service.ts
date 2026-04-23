@@ -1,5 +1,5 @@
 import {
-  FabricationUpdate, Project, User, AuditLog,
+  FabricationUpdate, FabricationItem, Project, User, AuditLog, VisitReport,
 } from '../../models/index.js';
 import { PaymentPlan } from '../../models/Payment.js';
 import { AppError, ErrorCode } from '../../utils/appError.js';
@@ -7,6 +7,7 @@ import {
   FabricationStatus, PaymentStageStatus, ProjectStatus, AuditAction, NotificationCategory, Role,
 } from '../../utils/constants.js';
 import { fabricationStateMachine, projectStateMachine } from '../../utils/stateMachine.js';
+import { VisitReportStatus } from '../../models/VisitReport.js';
 import { createAndSendNotification, getIO } from '../notifications/socket.service.js';
 import { sendFabricationUpdateEmail, sendPaymentHeadsUpEmail, sendPaymentDueEmail, sendReadyForDeliveryEmail, sendProjectCompletedEmail } from '../notifications/email.service.js';
 import { getPaymentActivationConfig } from '../config/config.service.js';
@@ -427,6 +428,55 @@ async function assertFabricationProjectAccess(
   ) return;
 
   throw AppError.forbidden('Access denied');
+}
+
+/**
+ * Seeds fabrication items for a project based on its latest approved VisitReport.
+ * If no report is found, it creates a single generic "Main Fabrication Task".
+ */
+export async function seedFabricationItems(projectId: string) {
+  const project = await Project.findById(projectId);
+  if (!project) {
+    logger.error(`Cannot seed fabrication items: Project ${projectId} not found`);
+    return;
+  }
+
+  // Check if items already exist to avoid double seeding
+  const existingCount = await FabricationItem.countDocuments({ projectId });
+  if (existingCount > 0) {
+    logger.info(`Fabrication items already exist for project ${projectId}. Skipping seeding.`);
+    return;
+  }
+
+  // Find the latest submitted/completed visit report for the appointment
+  const latestReport = await VisitReport.findOne({
+    appointmentId: project.appointmentId,
+    status: { $in: [VisitReportStatus.SUBMITTED, VisitReportStatus.COMPLETED] },
+  }).sort({ createdAt: -1 });
+
+  if (latestReport && latestReport.lineItems && latestReport.lineItems.length > 0) {
+    // Generate items from line items
+    const items = latestReport.lineItems.map(li => ({
+      projectId: project._id,
+      title: li.label,
+      description: li.notes || '',
+      quantity: li.quantity || 1,
+      isCompleted: false,
+    }));
+
+    await FabricationItem.insertMany(items);
+    logger.info(`Seeded ${items.length} fabrication items for project ${projectId} from VisitReport ${latestReport._id}`);
+  } else {
+    // Fallback: create generic item
+    await FabricationItem.create({
+      projectId: project._id,
+      title: 'Main Fabrication Task',
+      description: project.description || 'General fabrication and assembly',
+      quantity: project.quantity || 1,
+      isCompleted: false,
+    });
+    logger.warn(`No VisitReport line items found for project ${projectId}. Seeded generic fabrication task.`);
+  }
 }
 
 export async function listFabricationUpdates(

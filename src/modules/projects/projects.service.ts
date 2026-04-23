@@ -5,7 +5,7 @@ import { PaymentPlan } from '../../models/Payment.js';
 import { Blueprint } from '../../models/Blueprint.js';
 import { AppError, ErrorCode } from '../../utils/appError.js';
 import {
-  ProjectStatus, AppointmentStatus, Role, AuditAction, NotificationCategory,
+  ProjectStatus, AppointmentStatus, Role, AuditAction, NotificationCategory, StaffAvailabilityStatus,
 } from '../../utils/constants.js';
 import { VisitReportStatus } from '../../models/VisitReport.js';
 import { projectStateMachine } from '../../utils/stateMachine.js';
@@ -17,6 +17,7 @@ import type {
   CreateProjectInput,
   UpdateProjectInput,
   AssignEngineersInput,
+  ReassignProjectSalesInput,
   AssignFabricationInput,
   TransitionProjectInput,
   SignContractInput,
@@ -32,6 +33,7 @@ import type { Types } from 'mongoose';
 import { v4 as uuidv4 } from 'uuid';
 import { PaymentStageStatus } from '../../utils/constants.js';
 import { getInstallmentConfig } from '../config/config.service.js';
+import { generateProjectNumber } from '../../utils/projectNumber.js';
 
 // ── Create Project (from completed appointment) ──
 
@@ -58,8 +60,11 @@ export async function createProject(
     status: { $in: [VisitReportStatus.SUBMITTED, VisitReportStatus.COMPLETED] },
   }).sort({ createdAt: -1 }).select('_id');
 
+  const projectNumber = await generateProjectNumber();
+
   const project = await Project.create({
     appointmentId: input.appointmentId,
+    projectNumber,
     customerId: appointment.customerId,
     salesStaffId: appointment.salesStaffId || actorId,
     title: input.title,
@@ -190,6 +195,105 @@ export async function assignEngineers(
       `/projects/${project._id}`,
     );
   }
+
+  return project;
+}
+
+export async function reassignProjectSalesStaff(
+  projectId: string,
+  input: ReassignProjectSalesInput,
+  actorId: string,
+  actorRoles: Role[],
+  ip?: string,
+  ua?: string,
+) {
+  const project = await Project.findById(projectId);
+  if (!project) throw AppError.notFound('Project not found');
+
+  if ([ProjectStatus.CANCELLED, ProjectStatus.COMPLETED].includes(project.status)) {
+    throw AppError.badRequest('Sales reassignment is not allowed for completed or cancelled projects');
+  }
+
+  const previousSalesStaffId = project.salesStaffId.toString();
+  if (previousSalesStaffId === input.salesStaffId) {
+    return project;
+  }
+
+  const isAdmin = actorRoles.includes(Role.ADMIN);
+  const isAssignedSales = actorRoles.includes(Role.SALES_STAFF) && previousSalesStaffId === actorId;
+  if (!isAdmin && !isAssignedSales) {
+    throw AppError.forbidden('Only admins or the assigned sales staff can reassign this project');
+  }
+
+  const nextSalesStaff = await User.findOne({
+    _id: input.salesStaffId,
+    roles: Role.SALES_STAFF,
+    isActive: true,
+  }).select('availabilityStatus');
+  if (!nextSalesStaff) throw AppError.badRequest('Invalid sales staff ID');
+
+  if (
+    nextSalesStaff.availabilityStatus === StaffAvailabilityStatus.UNAVAILABLE
+    || nextSalesStaff.availabilityStatus === StaffAvailabilityStatus.ON_LEAVE
+  ) {
+    throw AppError.badRequest('Selected sales staff is currently unavailable');
+  }
+
+  project.salesStaffId = input.salesStaffId as unknown as Types.ObjectId;
+  await project.save();
+
+  const [appointmentUpdate, visitReportUpdate] = await Promise.all([
+    Appointment.updateOne(
+      { _id: project.appointmentId, status: { $nin: [AppointmentStatus.CANCELLED, AppointmentStatus.NO_SHOW] } },
+      { $set: { salesStaffId: nextSalesStaff._id } },
+    ),
+    VisitReport.updateMany(
+      { appointmentId: project.appointmentId, status: VisitReportStatus.DRAFT },
+      { $set: { salesStaffId: nextSalesStaff._id } },
+    ),
+  ]);
+
+  await AuditLog.create({
+    action: AuditAction.PROJECT_REASSIGNED,
+    actorId,
+    targetType: 'project',
+    targetId: project._id,
+    details: {
+      reassigned: true,
+      scope: 'sales_staff',
+      previousSalesStaffId,
+      salesStaffId: input.salesStaffId,
+      reason: input.reason || null,
+      appointmentUpdated: appointmentUpdate.modifiedCount,
+      draftVisitReportsUpdated: visitReportUpdate.modifiedCount,
+    },
+    ipAddress: ip,
+    userAgent: ua,
+  });
+
+  await createAndSendNotification(
+    input.salesStaffId,
+    NotificationCategory.PROJECT,
+    'Project Reassigned',
+    `You were assigned to project "${project.title}".`,
+    `/projects/${project._id}`,
+  );
+
+  await createAndSendNotification(
+    previousSalesStaffId,
+    NotificationCategory.PROJECT,
+    'Project Reassignment',
+    `Project "${project.title}" was reassigned to another sales staff member.`,
+    `/projects/${project._id}`,
+  );
+
+  await createAndSendNotification(
+    project.customerId,
+    NotificationCategory.PROJECT,
+    'Project Team Update',
+    `Your project "${project.title}" now has an updated assigned sales staff.`,
+    `/projects/${project._id}`,
+  );
 
   return project;
 }
@@ -755,6 +859,18 @@ export async function getProjectById(
     if (project.customerId._id?.toString() !== actorId) {
       throw AppError.forbidden('Access denied');
     }
+  }
+
+  // Epic 9: Engineer/Fabrication staff masking (AND Admin as requested)
+  const isPrivileged = actorRoles.some((r) =>
+    [Role.SALES_STAFF, Role.CASHIER].includes(r as Role)
+  );
+
+  if (!isPrivileged) {
+    // Mask financial data for engineers/fabricators
+    const maskedProject = project.toObject();
+    maskedProject.totalCost = undefined;
+    return maskedProject;
   }
 
   return project;

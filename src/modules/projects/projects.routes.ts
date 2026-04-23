@@ -8,6 +8,7 @@ import {
   createProjectSchema,
   updateProjectSchema,
   assignEngineersSchema,
+  reassignProjectSalesSchema,
   assignFabricationSchema,
   transitionProjectSchema,
   signContractSchema,
@@ -46,6 +47,14 @@ router.post(
   authorize(Role.SALES_STAFF, Role.ENGINEER, Role.ADMIN),
   validate(assignEngineersSchema),
   ctrl.assignEngineers,
+);
+
+router.post(
+  '/:id/reassign-sales',
+  authenticate,
+  authorize(Role.SALES_STAFF, Role.ADMIN),
+  validate(reassignProjectSalesSchema),
+  ctrl.reassignProjectSalesStaff,
 );
 
 router.post(

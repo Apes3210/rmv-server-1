@@ -202,7 +202,7 @@ export async function autoCreateDraft(
       customerSiteDetails
     ) {
       existing.linkedProjectId = linkedProjectId as Types.ObjectId;
-      if (customerSiteDetails.serviceType) existing.serviceType = customerSiteDetails.serviceType;
+      if (customerSiteDetails.serviceTypes?.[0]) existing.serviceType = customerSiteDetails.serviceTypes[0];
       if (customerSiteDetails.serviceTypeCustom) existing.serviceTypeCustom = customerSiteDetails.serviceTypeCustom;
       if (customerSiteDetails.materials) existing.materials = customerSiteDetails.materials;
       if (customerSiteDetails.finishes) existing.finishes = customerSiteDetails.finishes;
@@ -222,7 +222,7 @@ export async function autoCreateDraft(
     status: VisitReportStatus.DRAFT,
     visitType,
     ...(linkedProjectId && { linkedProjectId }),
-    serviceType: customerSiteDetails?.serviceType || serviceTypeOverride || ServiceType.CUSTOM,
+    serviceType: customerSiteDetails?.serviceTypes?.[0] || serviceTypeOverride || ServiceType.CUSTOM,
     serviceTypeCustom: customerSiteDetails?.serviceTypeCustom || serviceTypeCustomOverride,
     measurementUnit: customerSiteDetails?.measurementUnit,
     lineItems: customerSiteDetails?.lineItems || [],
@@ -305,8 +305,28 @@ export async function getVisitReport(reportId: string) {
     .populate('customerId', 'firstName lastName email phone')
     .populate('salesStaffId', 'firstName lastName email')
     .populate('appointmentId', 'date slotCode type customerAddress');
+
   if (!report) throw AppError.notFound('Visit report not found');
-  return report;
+
+  // Fetch sample projects for the customer
+  const customerId = report.customerId instanceof Object ? (report.customerId as any)._id : report.customerId;
+  const customerProjects = await Project.find({ customerId })
+    .select('title serviceType status')
+    .sort({ createdAt: -1 })
+    .limit(2);
+
+  const sampleProjects = customerProjects.map((p) => ({
+    projectId: String(p._id),
+    title: p.title || p.serviceType || 'Project',
+    serviceType: p.serviceType,
+    status: p.status,
+    path: `/projects/${p._id}`,
+  }));
+
+  return {
+    ...report.toObject(),
+    sampleProjects,
+  };
 }
 
 // ── Get by Appointment (returns ARRAY — multiple reports per appointment) ──
@@ -586,8 +606,16 @@ export async function submitReport(
         `/projects/${project._id}`,
       );
 
-      // Mark the appointment so the agent list can display "Ready for Ocular"
-      await Appointment.findByIdAndUpdate(report.appointmentId, { consultationReportSubmitted: true });
+      // Mark consultation as ready_for_ocular once the consultation report is submitted.
+      appt.consultationReportSubmitted = true;
+      if (appt.status === AppointmentStatus.COMPLETED) {
+        appointmentStateMachine.assertTransition(
+          appt.status,
+          AppointmentStatus.READY_FOR_OCULAR,
+        );
+        appt.status = AppointmentStatus.READY_FOR_OCULAR;
+      }
+      await appt.save();
 
       // If consultation included a recommended ocular schedule, auto-create ocular request
       // so the customer can immediately submit site pin/address from their account.
@@ -622,6 +650,15 @@ export async function submitReport(
             bookedBy: report.salesStaffId,
             customerNotes: `Ocular follow-up scheduled from consultation report ${report._id}`,
           });
+
+          if (appt.status === AppointmentStatus.READY_FOR_OCULAR) {
+            appointmentStateMachine.assertTransition(
+              appt.status,
+              AppointmentStatus.COMPLETED,
+            );
+            appt.status = AppointmentStatus.COMPLETED;
+            await appt.save();
+          }
 
           await AuditLog.create({
             action: AuditAction.APPOINTMENT_CREATED,

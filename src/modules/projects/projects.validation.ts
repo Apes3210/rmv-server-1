@@ -45,6 +45,11 @@ export const assignEngineersSchema = z.object({
   engineerIds: z.array(z.string().min(1)).min(1),
 });
 
+export const reassignProjectSalesSchema = z.object({
+  salesStaffId: z.string().min(1),
+  reason: z.string().max(500).trim().optional(),
+});
+
 export const assignFabricationSchema = z.object({
   fabricationLeadId: z.string().min(1),
   fabricationAssistantIds: z.array(z.string().min(1)).default([]),
@@ -107,6 +112,7 @@ export const skipProjectReviewSchema = z.object({
 export type CreateProjectInput = z.infer<typeof createProjectSchema>;
 export type UpdateProjectInput = z.infer<typeof updateProjectSchema>;
 export type AssignEngineersInput = z.infer<typeof assignEngineersSchema>;
+export type ReassignProjectSalesInput = z.infer<typeof reassignProjectSalesSchema>;
 export type AssignFabricationInput = z.infer<typeof assignFabricationSchema>;
 export type TransitionProjectInput = z.infer<typeof transitionProjectSchema>;
 export type SignContractInput = z.infer<typeof signContractSchema>;

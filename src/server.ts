@@ -6,6 +6,7 @@ import { initializeSocket } from './modules/notifications/socket.service.js';
 import { processEmailRetries } from './modules/notifications/email.service.js';
 import { processPaymentReminders } from './jobs/paymentReminders.js';
 import { processContractExpiries } from './jobs/contractExpiry.js';
+import { processAvailabilityShiftReminders } from './jobs/availabilityShiftReminders.js';
 import { seedDefaultConfigs } from './modules/config/config.service.js';
 import { logger } from './utils/logger.js';
 
@@ -20,6 +21,8 @@ let emailRetryInterval: NodeJS.Timeout;
 let paymentReminderInterval: NodeJS.Timeout;
 // ── Contract Expiry Processor (every 12 hours) ──
 let contractExpiryInterval: NodeJS.Timeout;
+// ── Availability Shift Reminder Processor (every 15 minutes) ──
+let availabilityReminderInterval: NodeJS.Timeout;
 
 async function startServer(): Promise<void> {
   try {
@@ -57,9 +60,20 @@ async function startServer(): Promise<void> {
       }
     }, 12 * 60 * 60 * 1000); // every 12 hours
 
+    availabilityReminderInterval = setInterval(async () => {
+      try {
+        await processAvailabilityShiftReminders();
+      } catch (error) {
+        logger.error('Availability reminder processor error:', error);
+      }
+    }, 15 * 60 * 1000); // every 15 minutes
+
     // Run contract check once on startup
     processContractExpiries().catch(err =>
       logger.error('Initial contract expiry check failed:', err)
+    );
+    processAvailabilityShiftReminders().catch(err =>
+      logger.error('Initial availability reminder check failed:', err)
     );
 
     // Start HTTP server
@@ -90,6 +104,9 @@ function gracefulShutdown(signal: string): void {
     }
     if (contractExpiryInterval) {
       clearInterval(contractExpiryInterval);
+    }
+    if (availabilityReminderInterval) {
+      clearInterval(availabilityReminderInterval);
     }
 
     // Close MongoDB connection

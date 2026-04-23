@@ -4,7 +4,15 @@ import { authenticate } from '../../middleware/auth.js';
 import { authorize } from '../../middleware/rbac.js';
 import { validate } from '../../middleware/validate.js';
 import { Role } from '../../utils/constants.js';
-import { createUserSchema, updateUserSchema, updateProfileSchema, salesAvailabilitySchema, deleteAccountSchema } from './users.validation.js';
+import {
+  createUserSchema,
+  updateUserSchema,
+  updateProfileSchema,
+  updateOwnAvailabilitySchema,
+  salesAvailabilitySchema,
+  deleteAccountSchema,
+  salesStaffLookupQuerySchema,
+} from './users.validation.js';
 
 const router = Router();
 
@@ -66,6 +74,7 @@ router.get(
   '/sales-staff',
   authenticate,
   authorize(Role.APPOINTMENT_AGENT, Role.ADMIN),
+  validate(salesStaffLookupQuerySchema, 'query'),
   usersController.listSalesStaff,
 );
 
@@ -90,6 +99,35 @@ router.patch(
   authenticate,
   validate(updateProfileSchema),
   usersController.updateProfile,
+);
+
+router.patch(
+  '/profile/availability',
+  authenticate,
+  authorize(
+    Role.SALES_STAFF,
+    Role.APPOINTMENT_AGENT,
+    Role.ENGINEER,
+    Role.CASHIER,
+    Role.ADMIN,
+    Role.FABRICATION_STAFF,
+  ),
+  validate(updateOwnAvailabilitySchema),
+  usersController.updateOwnAvailability,
+);
+
+router.post(
+  '/profile/availability/close',
+  authenticate,
+  authorize(
+    Role.SALES_STAFF,
+    Role.APPOINTMENT_AGENT,
+    Role.ENGINEER,
+    Role.CASHIER,
+    Role.ADMIN,
+    Role.FABRICATION_STAFF,
+  ),
+  usersController.closeOwnAvailability,
 );
 
 // ── E-Signature ──

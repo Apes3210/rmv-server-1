@@ -7,7 +7,7 @@ export type SiteDetailsStatus = 'pending' | 'submitted' | 'skipped';
 export type InitialDesignStatus = 'pending' | 'submitted' | 'skipped';
 
 export interface ICustomerSiteDetails {
-  serviceType?: string;
+  serviceTypes?: string[];
   serviceTypeCustom?: string;
   measurementUnit?: string;
   lineItems?: ILineItem[];
@@ -43,6 +43,7 @@ export interface IAppointment extends Document {
     city: string;
     province: string;
     zip: string;
+    addressType?: 'personal' | 'business';
   };
   customerLocation?: {
     lat: number;
@@ -77,8 +78,8 @@ export interface IAppointment extends Document {
   customerNotes?: string;
   internalNotes?: string;
 
-  // Service type (set at booking time)
-  serviceType?: string;
+  // Service types (set at booking time)
+  serviceTypes?: string[];
   serviceTypeCustom?: string;
 
   // Cancellation
@@ -133,6 +134,7 @@ const appointmentSchema = new Schema<IAppointment>(
       city: { type: String, trim: true },
       province: { type: String, trim: true },
       zip: { type: String, trim: true },
+      addressType: { type: String, enum: ['personal', 'business'] },
       _id: false,
     },
     customerLocation: {
@@ -165,7 +167,7 @@ const appointmentSchema = new Schema<IAppointment>(
     customerNotes: { type: String },
     internalNotes: { type: String },
 
-    serviceType: { type: String, enum: [...Object.values(ServiceType)] },
+    serviceTypes: [{ type: String, enum: [...Object.values(ServiceType)] }],
     serviceTypeCustom: { type: String, trim: true },
 
     cancellationReason: { type: String },
@@ -177,7 +179,7 @@ const appointmentSchema = new Schema<IAppointment>(
 
     // Customer-provided site details
     customerSiteDetails: {
-      serviceType: { type: String, enum: [...Object.values(ServiceType)] },
+      serviceTypes: [{ type: String, enum: [...Object.values(ServiceType)] }],
       serviceTypeCustom: { type: String, trim: true },
       measurementUnit: { type: String, enum: Object.values(MeasurementUnit) },
       lineItems: [{

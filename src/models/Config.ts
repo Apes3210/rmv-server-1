@@ -94,6 +94,20 @@ const receiptCounterSchema = new Schema<IReceiptCounter>({
 
 export const ReceiptCounter = mongoose.model<IReceiptCounter>('ReceiptCounter', receiptCounterSchema);
 
+// ── Project Counter (for RMV-YYYY-#####) ──
+export interface IProjectCounter extends Document {
+  _id: Types.ObjectId;
+  year: number;
+  lastSeq: number;
+}
+
+const projectCounterSchema = new Schema<IProjectCounter>({
+  year: { type: Number, required: true, unique: true },
+  lastSeq: { type: Number, default: 0 },
+});
+
+export const ProjectCounter = mongoose.model<IProjectCounter>('ProjectCounter', projectCounterSchema);
+
 // ── Blocked Slot Model ──
 export interface IBlockedSlot extends Document {
   _id: Types.ObjectId;

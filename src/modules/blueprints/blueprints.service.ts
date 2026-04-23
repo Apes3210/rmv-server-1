@@ -176,8 +176,6 @@ export async function uploadBlueprint(
   const project = await Project.findById(input.projectId);
   if (!project) throw AppError.notFound('Project not found');
 
-
-
   if ((project.initialDesignKeys?.length || project.initialDesignNotes?.trim()) && !['approved', 'not_required'].includes(project.designReviewStatus || 'not_required')) {
     throw AppError.badRequest('The sales initial design must be approved by engineering before the first blueprint upload');
   }
@@ -268,8 +266,6 @@ export async function uploadRevision(
   const project = await Project.findById(currentBlueprint.projectId);
   if (!project) throw AppError.notFound('Project not found');
 
-
-
   // Mark current as superseded by updating status
   currentBlueprint.status = BlueprintStatus.REVISION_UPLOADED;
   await currentBlueprint.save();
@@ -350,12 +346,17 @@ export async function approveComponent(
   if (blueprint.blueprintApproved && blueprint.costingApproved) {
     blueprint.status = BlueprintStatus.APPROVED;
 
+    // Synchronize totalCost to project from the approved quotation
+    if (blueprint.quotation && typeof blueprint.quotation.total === 'number') {
+      project.totalCost = blueprint.quotation.total;
+    }
+
     // Transition project to approved
     if (project.status === ProjectStatus.BLUEPRINT) {
       projectStateMachine.assertTransition(project.status, ProjectStatus.APPROVED);
       project.status = ProjectStatus.APPROVED;
-      await project.save();
     }
+    await project.save();
   }
 
   await blueprint.save();
@@ -726,12 +727,17 @@ export async function acceptBlueprint(
   blueprint.status = BlueprintStatus.APPROVED;
   await blueprint.save();
 
+  // Synchronize totalCost to project from the approved quotation
+  if (blueprint.quotation && typeof blueprint.quotation.total === 'number') {
+    project.totalCost = blueprint.quotation.total;
+  }
+
   // Transition project: BLUEPRINT → APPROVED → PAYMENT_PENDING
   if (project.status === ProjectStatus.BLUEPRINT) {
     projectStateMachine.assertTransition(project.status, ProjectStatus.APPROVED);
     project.status = ProjectStatus.APPROVED;
-    await project.save();
   }
+  await project.save();
 
   await AuditLog.create({
     action: AuditAction.BLUEPRINT_APPROVED,

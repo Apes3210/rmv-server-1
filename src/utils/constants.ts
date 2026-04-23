@@ -9,12 +9,19 @@ export enum Role {
   FABRICATION_STAFF = 'fabrication_staff',
 }
 
+export enum StaffAvailabilityStatus {
+  AVAILABLE = 'available',
+  UNAVAILABLE = 'unavailable',
+  ON_LEAVE = 'on_leave',
+}
+
 // ── Appointment Status ──
 export enum AppointmentStatus {
   REQUESTED = 'requested',
   CONFIRMED = 'confirmed',
   PREPARING = 'preparing',
   ON_THE_WAY = 'on_the_way',
+  READY_FOR_OCULAR = 'ready_for_ocular',
   COMPLETED = 'completed',
   NO_SHOW = 'no_show',
   CANCELLED = 'cancelled',
@@ -38,6 +45,7 @@ export enum ProjectStatus {
   BLUEPRINT = 'blueprint',
   APPROVED = 'approved',
   PAYMENT_PENDING = 'payment_pending',
+  READY_FOR_OCULAR = 'ready_for_ocular',
   FABRICATION = 'fabrication',
   COMPLETED = 'completed',
   CANCELLED = 'cancelled',

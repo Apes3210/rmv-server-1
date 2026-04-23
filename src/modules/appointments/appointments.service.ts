@@ -7,7 +7,7 @@ import {
 import { AppError, ErrorCode } from '../../utils/appError.js';
 import {
   AppointmentStatus, AppointmentType, Role, AuditAction,
-  NotificationCategory, PaymentMethod, OcularFeePaymentChoice, ProjectStatus, SLOT_CODES, type SlotCode,
+  NotificationCategory, PaymentMethod, OcularFeePaymentChoice, ProjectStatus, SLOT_CODES, StaffAvailabilityStatus, type SlotCode,
 } from '../../utils/constants.js';
 import { appointmentStateMachine } from '../../utils/stateMachine.js';
 import { createAndSendNotification, notifyRole } from '../notifications/socket.service.js';
@@ -17,10 +17,17 @@ import { computeOcularFee, reverseGeocode } from '../maps/maps.service.js';
 import { createCheckoutSession, retrieveCheckoutSession } from '../../services/paymongo.service.js';
 import { logger } from '../../utils/logger.js';
 import { formatCurrency } from '../../utils/helpers.js';
+import { matchesAppointmentSearch, normalizeAppointmentSearchTerm } from './appointments.search.js';
+import {
+  evaluateSalesAssignmentEligibility,
+  getOpenAvailabilitySession,
+} from '../users/availability-session.service.js';
 import type {
   RequestAppointmentInput,
   AgentCreateAppointmentInput,
   ConfirmAppointmentInput,
+  ReassignAppointmentSalesInput,
+  AppointmentQueueQuery,
   RescheduleRequestInput,
   RescheduleCompleteInput,
   RecordOcularFeeInput,
@@ -33,6 +40,109 @@ import type {
 import type { Types } from 'mongoose';
 
 const TZ = 'Asia/Manila';
+
+const APPOINTMENT_QUEUE_RECENT_DAYS = 14;
+const APPOINTMENT_QUEUE_ACTIONABLE_STATUSES: AppointmentStatus[] = [
+  AppointmentStatus.REQUESTED,
+  AppointmentStatus.CONFIRMED,
+  AppointmentStatus.PREPARING,
+  AppointmentStatus.ON_THE_WAY,
+  AppointmentStatus.RESCHEDULE_REQUESTED,
+  AppointmentStatus.READY_FOR_OCULAR,
+];
+const APPOINTMENT_QUEUE_RECENT_STATUSES: AppointmentStatus[] = [
+  AppointmentStatus.COMPLETED,
+  AppointmentStatus.NO_SHOW,
+  AppointmentStatus.CANCELLED,
+];
+const APPOINTMENT_REASSIGNABLE_STATUSES: AppointmentStatus[] = [
+  AppointmentStatus.REQUESTED,
+  AppointmentStatus.CONFIRMED,
+  AppointmentStatus.PREPARING,
+  AppointmentStatus.ON_THE_WAY,
+  AppointmentStatus.RESCHEDULE_REQUESTED,
+];
+
+const DERIVED_READY_FOR_OCULAR_FILTER = {
+  type: AppointmentType.OFFICE,
+  status: AppointmentStatus.COMPLETED,
+  consultationReportSubmitted: true,
+} as const;
+
+function isReadyForOcularQueueItem(appointment: {
+  type?: AppointmentType | string;
+  status?: AppointmentStatus | string;
+  consultationReportSubmitted?: boolean;
+}) {
+  return appointment.status === AppointmentStatus.READY_FOR_OCULAR
+    || (
+      appointment.type === AppointmentType.OFFICE
+      && appointment.status === AppointmentStatus.COMPLETED
+      && appointment.consultationReportSubmitted
+    );
+}
+
+function appendAndFilter(
+  filter: Record<string, unknown>,
+  condition: Record<string, unknown>,
+) {
+  const existingAnd = Array.isArray(filter.$and)
+    ? [...(filter.$and as Record<string, unknown>[])]
+    : [];
+
+  if (filter.$or) {
+    existingAnd.push({ $or: filter.$or as Record<string, unknown>[] });
+    delete filter.$or;
+  }
+
+  existingAnd.push(condition);
+  filter.$and = existingAnd;
+}
+
+export interface AppointmentQueueSampleProject {
+  projectId: string;
+  title: string;
+  serviceType?: string;
+  status: string;
+  path: string;
+}
+
+export interface AppointmentQueueActions {
+  reviewReportPath?: string;
+  projectPath?: string;
+  createProjectPath?: string;
+  scheduleOcularPath?: string;
+  reassignPath?: string;
+}
+
+export interface AppointmentQueueItem {
+  appointment: any;
+  segment: 'upcoming' | 'recent';
+  reportStatus?: string;
+  actions: AppointmentQueueActions;
+  sampleProjects: AppointmentQueueSampleProject[];
+}
+
+export interface AppointmentQueueResult {
+  items: AppointmentQueueItem[];
+  upcomingCount: number;
+  recentCount: number;
+  recentWindowDays: number;
+  generatedAt: string;
+}
+
+function fullName(value: { firstName?: string; lastName?: string } | null | undefined): string | undefined {
+  const first = value?.firstName?.trim() || '';
+  const last = value?.lastName?.trim() || '';
+  const joined = [first, last].filter(Boolean).join(' ');
+  return joined || undefined;
+}
+
+function getSearchScope(actorRoles: Role[]): 'customer' | 'staff' {
+  const isCustomerOnly = actorRoles.includes(Role.CUSTOMER)
+    && !actorRoles.some((role) => [Role.ADMIN, Role.APPOINTMENT_AGENT, Role.SALES_STAFF].includes(role));
+  return isCustomerOnly ? 'customer' : 'staff';
+}
 
 // ── Helpers ──
 
@@ -60,6 +170,42 @@ async function getLatestEligibleConsultationForOcular(customerId: string) {
   if (!consultationReport) return null;
 
   return { consultation, consultationReport };
+}
+
+async function clearReadyForOcularStatus(
+  customerId: string,
+  actorId: string,
+  ip?: string,
+  ua?: string,
+) {
+  const readyConsultation = await Appointment.findOne({
+    customerId,
+    type: AppointmentType.OFFICE,
+    status: AppointmentStatus.READY_FOR_OCULAR,
+  }).sort({ updatedAt: -1, createdAt: -1 });
+
+  if (!readyConsultation) return;
+
+  appointmentStateMachine.assertTransition(
+    readyConsultation.status,
+    AppointmentStatus.COMPLETED,
+  );
+  readyConsultation.status = AppointmentStatus.COMPLETED;
+  await readyConsultation.save();
+
+  await AuditLog.create({
+    action: AuditAction.APPOINTMENT_UPDATED,
+    actorId,
+    targetType: 'appointment',
+    targetId: readyConsultation._id,
+    details: {
+      statusFrom: AppointmentStatus.READY_FOR_OCULAR,
+      statusTo: AppointmentStatus.COMPLETED,
+      reason: 'ocular_created',
+    },
+    ipAddress: ip,
+    userAgent: ua,
+  });
 }
 
 function formatSlotTime(slotCode: string): string {
@@ -133,11 +279,65 @@ async function assertSlotAvailable(dateStr: string, slotCode: string, type: stri
   }
 }
 
-async function assertSalesAvailable(salesId: string, dateStr: string): Promise<void> {
-  const availability = await SalesAvailability.findOne({ salesStaffId: salesId });
-  if (availability?.unavailableDates.includes(dateStr)) {
-    throw AppError.badRequest('Selected sales staff is unavailable on this date');
+async function assertSalesAvailable(
+  salesId: string,
+  dateStr: string,
+  slotCode: SlotCode | string,
+  appointmentId?: string,
+): Promise<void> {
+  const salesUser = await User.findOne({
+    _id: salesId,
+    roles: Role.SALES_STAFF,
+    isActive: true,
+  }).select('availabilityStatus');
+
+  if (!salesUser) {
+    throw AppError.notFound('Sales staff not found');
   }
+
+  const eligibility = await evaluateSalesAssignmentEligibility({
+    salesStaffId: salesId,
+    userAvailabilityStatus: salesUser.availabilityStatus,
+    session: await getOpenAvailabilitySession(salesId),
+    dateStr,
+    slotCode,
+    appointmentId,
+  });
+
+  if (!eligibility.assignmentEligible) {
+    throw AppError.badRequest(
+      eligibility.assignmentBlockedReason
+        ? `Selected sales staff cannot be assigned: ${eligibility.assignmentBlockedReason}`
+        : 'Selected sales staff is currently unavailable',
+    );
+  }
+}
+
+async function syncDraftOwnershipForReassignment(
+  appointmentId: Types.ObjectId,
+  salesStaffId: Types.ObjectId,
+) {
+  const [visitReportResult, projectResult] = await Promise.all([
+    VisitReport.updateMany(
+      {
+        appointmentId,
+        status: VisitReportStatus.DRAFT,
+      },
+      { $set: { salesStaffId } },
+    ),
+    Project.updateMany(
+      {
+        appointmentId,
+        status: { $nin: [ProjectStatus.CANCELLED, ProjectStatus.COMPLETED] },
+      },
+      { $set: { salesStaffId } },
+    ),
+  ]);
+
+  return {
+    draftVisitReportsUpdated: visitReportResult.modifiedCount,
+    projectsUpdated: projectResult.modifiedCount,
+  };
 }
 
 interface OcularVisitComputation {
@@ -301,7 +501,7 @@ export async function requestAppointment(
     slotCode: input.slotCode,
     status: AppointmentStatus.REQUESTED,
     customerNotes: input.purpose,
-    serviceType: input.serviceType,
+    serviceTypes: input.serviceTypes,
     serviceTypeCustom: input.serviceTypeCustom,
     bookedBy: customerId,
   });
@@ -430,7 +630,12 @@ export async function confirmAppointment(
     isActive: true,
   });
   if (!salesStaff) throw AppError.notFound('Sales staff not found');
-  await assertSalesAvailable(input.salesStaffId, appointment.date);
+  await assertSalesAvailable(
+    input.salesStaffId,
+    appointment.date,
+    appointment.slotCode as SlotCode,
+    appointment._id.toString(),
+  );
 
   // If ocular and sales changed, update slot lock
   if (appointment.type === AppointmentType.OCULAR) {
@@ -491,8 +696,112 @@ export async function confirmAppointment(
     salesStaff._id,
     appointment.type === AppointmentType.OCULAR ? 'ocular' : 'consultation',
     appointment.customerSiteDetails || undefined,
-    appointment.serviceType,
+    appointment.serviceTypes?.[0],
     appointment.serviceTypeCustom,
+  );
+
+  return appointment;
+}
+
+export async function reassignAppointmentSales(
+  appointmentId: string,
+  input: ReassignAppointmentSalesInput,
+  actorId: string,
+  actorRoles: Role[],
+  ip?: string,
+  ua?: string,
+) {
+  const appointment = await Appointment.findById(appointmentId);
+  if (!appointment) throw AppError.notFound('Appointment not found');
+
+  if (!APPOINTMENT_REASSIGNABLE_STATUSES.includes(appointment.status)) {
+    throw AppError.badRequest('Sales reassignment is only allowed for active appointments');
+  }
+
+  const isAdminOrAgent = actorRoles.some((role) => role === Role.ADMIN || role === Role.APPOINTMENT_AGENT);
+  const isAssignedSales = actorRoles.includes(Role.SALES_STAFF)
+    && appointment.salesStaffId?.toString() === actorId;
+
+  if (!isAdminOrAgent && !isAssignedSales) {
+    throw AppError.forbidden('Only appointment agents, admins, or the assigned sales staff can reassign this appointment');
+  }
+
+  if (appointment.status === AppointmentStatus.REQUESTED && !appointment.salesStaffId) {
+    throw AppError.badRequest('Use the confirm endpoint to assign sales staff for unconfirmed appointments');
+  }
+
+  const nextSalesStaff = await User.findOne({
+    _id: input.salesStaffId,
+    roles: Role.SALES_STAFF,
+    isActive: true,
+  });
+  if (!nextSalesStaff) throw AppError.notFound('Sales staff not found');
+
+  const previousSalesStaffId = appointment.salesStaffId?.toString();
+  if (previousSalesStaffId === input.salesStaffId) {
+    return appointment;
+  }
+
+  await assertSalesAvailable(
+    input.salesStaffId,
+    appointment.date,
+    appointment.slotCode as SlotCode,
+    appointment._id.toString(),
+  );
+
+  if (appointment.type === AppointmentType.OCULAR) {
+    if (previousSalesStaffId) {
+      await releaseSlotLock(appointment.date, appointment.slotCode as SlotCode, previousSalesStaffId);
+    }
+    await lockSlot(appointment.date, appointment.slotCode as SlotCode, input.salesStaffId, actorId);
+    await confirmSlotLock(appointment.date, appointment.slotCode as SlotCode, input.salesStaffId, appointment._id);
+  }
+
+  appointment.salesStaffId = nextSalesStaff._id;
+  await appointment.save();
+
+  const ownershipSync = await syncDraftOwnershipForReassignment(appointment._id, nextSalesStaff._id);
+
+  await AuditLog.create({
+    action: AuditAction.SALES_ASSIGNED,
+    actorId,
+    targetType: 'appointment',
+    targetId: appointment._id,
+    details: {
+      reassigned: true,
+      previousSalesStaffId: previousSalesStaffId || null,
+      salesStaffId: input.salesStaffId,
+      reason: input.reason || null,
+      ...ownershipSync,
+    },
+    ipAddress: ip,
+    userAgent: ua,
+  });
+
+  await createAndSendNotification(
+    input.salesStaffId,
+    NotificationCategory.APPOINTMENT,
+    'Appointment Reassigned',
+    `You were assigned to an appointment on ${appointment.date} at ${formatSlotTime(appointment.slotCode)}.`,
+    `/appointments/${appointment._id}`,
+  );
+
+  if (previousSalesStaffId) {
+    await createAndSendNotification(
+      previousSalesStaffId,
+      NotificationCategory.APPOINTMENT,
+      'Appointment Reassignment',
+      `An appointment on ${appointment.date} at ${formatSlotTime(appointment.slotCode)} was reassigned to another sales staff member.`,
+      `/appointments/${appointment._id}`,
+    );
+  }
+
+  await createAndSendNotification(
+    appointment.customerId,
+    NotificationCategory.APPOINTMENT,
+    'Appointment Team Update',
+    `Your appointment on ${appointment.date} at ${formatSlotTime(appointment.slotCode)} has an updated assigned sales staff.`,
+    `/appointments/${appointment._id}`,
   );
 
   return appointment;
@@ -658,6 +967,10 @@ export async function agentCreateOcular(
     ipAddress: ip,
     userAgent: ua,
   });
+
+  // Once an ocular follow-up is created, clear any ready-for-ocular marker
+  // on the latest completed office consultation for this customer.
+  await clearReadyForOcularStatus(input.customerId, actorId, ip, ua);
 
   // Notify customer to provide their location
   await createAndSendNotification(
@@ -833,7 +1146,12 @@ export async function agentFinalizeOcular(
   });
   if (!salesStaff) throw AppError.notFound('Sales staff not found');
 
-  await assertSalesAvailable(resolvedSalesStaffId, appointment.date);
+  await assertSalesAvailable(
+    resolvedSalesStaffId,
+    appointment.date,
+    appointment.slotCode as SlotCode,
+    appointment._id.toString(),
+  );
 
   // Lock slot for ocular
   await lockSlot(appointment.date, appointment.slotCode as SlotCode, resolvedSalesStaffId, actorId);
@@ -898,7 +1216,7 @@ export async function agentFinalizeOcular(
     }).sort({ createdAt: -1 }).lean();
     if (consultationReport) {
       consultationSiteDetails = {
-        serviceType: consultationReport.serviceType,
+        serviceTypes: consultationReport.serviceType ? [consultationReport.serviceType] : undefined,
         serviceTypeCustom: consultationReport.serviceTypeCustom,
         materials: consultationReport.materials,
         finishes: consultationReport.finishes,
@@ -937,7 +1255,16 @@ export async function completeAppointment(
 
   appointmentStateMachine.assertTransition(appointment.status, AppointmentStatus.COMPLETED);
 
-  appointment.status = AppointmentStatus.COMPLETED;
+  // If it's a consultation and the report is already submitted, move directly to READY_FOR_OCULAR.
+  // Otherwise, move to COMPLETED.
+  if (appointment.type === AppointmentType.OFFICE && appointment.consultationReportSubmitted) {
+    appointment.status = AppointmentStatus.COMPLETED;
+    appointmentStateMachine.assertTransition(appointment.status, AppointmentStatus.READY_FOR_OCULAR);
+    appointment.status = AppointmentStatus.READY_FOR_OCULAR;
+  } else {
+    appointment.status = AppointmentStatus.COMPLETED;
+  }
+
   await appointment.save();
 
   // Release slot lock for ocular appointments
@@ -1131,11 +1458,12 @@ export async function completeReschedule(
 
   const salesId = input.salesStaffId || appointment.salesStaffId?.toString();
 
+  if (salesId) {
+    await assertSalesAvailable(salesId, input.date, input.slotCode as SlotCode, appointment._id.toString());
+  }
+
   if (appointment.type === AppointmentType.OCULAR) {
     if (!salesId) throw AppError.badRequest('Sales staff required for ocular appointments');
-
-    await assertSalesAvailable(salesId, input.date);
-
     // Release old slot
     if (appointment.salesStaffId) {
       await releaseSlotLock(appointment.date, appointment.slotCode as SlotCode, appointment.salesStaffId.toString());
@@ -1716,7 +2044,7 @@ export async function listPendingOcularFees() {
     status: { $ne: AppointmentStatus.CANCELLED },
   })
     .populate('customerId', 'firstName lastName email phone')
-    .sort({ updatedAt: -1 });
+    .sort({ date: 1, slotCode: 1 });
 
   return appointments;
 }
@@ -1810,6 +2138,293 @@ export async function getAppointmentById(appointmentId: string, actorId: string,
   return appointment;
 }
 
+// ── Appointment Queue (Appointment Agent/Admin) ──
+
+export async function listAppointmentQueue(
+  query: AppointmentQueueQuery,
+  actorId: string,
+  actorRoles: Role[],
+): Promise<AppointmentQueueResult> {
+  const normalizedSearch = normalizeAppointmentSearchTerm(query.search);
+  const searchScope = getSearchScope(actorRoles);
+  if (
+    actorRoles.includes(Role.CUSTOMER)
+    && !actorRoles.some((role) => [Role.ADMIN, Role.APPOINTMENT_AGENT, Role.SALES_STAFF].includes(role))
+  ) {
+    throw AppError.forbidden('Queue view is only available to staff roles.');
+  }
+
+  const limit = query.limit ?? 120;
+  const nowInManila = toZonedTime(new Date(), TZ);
+  const todayStr = format(nowInManila, 'yyyy-MM-dd');
+  const recentStartStr = format(addDays(nowInManila, -(APPOINTMENT_QUEUE_RECENT_DAYS - 1)), 'yyyy-MM-dd');
+
+  const andFilters: Record<string, unknown>[] = [];
+
+  if (
+    actorRoles.includes(Role.SALES_STAFF)
+    && !actorRoles.some((role) => [Role.ADMIN, Role.APPOINTMENT_AGENT].includes(role))
+  ) {
+    andFilters.push({ salesStaffId: actorId });
+  }
+
+  if (actorRoles.some((role) => [Role.ADMIN, Role.APPOINTMENT_AGENT].includes(role))) {
+    andFilters.push({
+      $or: [
+        { type: { $ne: AppointmentType.OCULAR } },
+        { type: AppointmentType.OCULAR, ocularFeeStatus: { $ne: 'pending' } },
+      ],
+    });
+  }
+
+  // If status/search is provided, don't restrict by the "Queue" window.
+  // If not, we keep the default queue filter for a clean view.
+  if (query.status === undefined && !normalizedSearch) {
+    andFilters.push({
+      $or: [
+        { status: { $in: APPOINTMENT_QUEUE_ACTIONABLE_STATUSES } },
+        {
+          status: { $in: APPOINTMENT_QUEUE_RECENT_STATUSES },
+          date: { $gte: recentStartStr, $lte: todayStr },
+        },
+      ],
+    });
+  }
+
+  if (query.status) {
+    const statuses = query.status.split(',').map((status) => status.trim()).filter(Boolean);
+    const includesReadyForOcular = statuses.includes(AppointmentStatus.READY_FOR_OCULAR);
+    const directStatuses = includesReadyForOcular
+      ? statuses.filter((status) => status !== AppointmentStatus.READY_FOR_OCULAR)
+      : statuses;
+
+    if (includesReadyForOcular) {
+      const statusFilters: Record<string, unknown>[] = [
+        { status: AppointmentStatus.READY_FOR_OCULAR },
+        DERIVED_READY_FOR_OCULAR_FILTER,
+      ];
+
+      if (directStatuses.length > 0) {
+        statusFilters.push({ status: { $in: directStatuses } });
+      }
+
+      andFilters.push({ $or: statusFilters });
+    } else if (directStatuses.length > 1) {
+      andFilters.push({ status: { $in: directStatuses } });
+    } else if (directStatuses.length === 1) {
+      andFilters.push({ status: directStatuses[0] });
+    } else {
+      andFilters.push({ status: query.status });
+    }
+  }
+
+  const queueFilter = andFilters.length === 1 ? andFilters[0] : { $and: andFilters };
+  const fetchLimit = normalizedSearch ? 1000 : Math.min(Math.max(limit * 3, 180), 600);
+
+  const appointments = await Appointment.find(queueFilter)
+    .populate('customerId', 'firstName lastName email phone')
+    .populate('salesStaffId', 'firstName lastName availabilityStatus availabilityNote')
+    .sort({ updatedAt: -1, date: 1, slotCode: 1 })
+    .limit(fetchLimit);
+
+  const appointmentIds = appointments.map((appointment) => appointment._id);
+  const customerIds = Array.from(
+    new Set(
+      appointments
+        .map((appointment: any) => (appointment.customerId?._id ?? appointment.customerId)?.toString?.())
+        .filter((value): value is string => Boolean(value)),
+    ),
+  );
+
+  const [linkedReports, customerProjects] = await Promise.all([
+    appointmentIds.length
+      ? VisitReport.find({
+        appointmentId: { $in: appointmentIds },
+        status: { $in: [VisitReportStatus.SUBMITTED, VisitReportStatus.COMPLETED] },
+      })
+        .select('_id appointmentId createdAt')
+        .sort({ createdAt: -1 })
+        .lean()
+      : Promise.resolve([]),
+    customerIds.length
+      ? Project.find({
+        customerId: { $in: customerIds },
+        status: { $ne: ProjectStatus.CANCELLED },
+      })
+        .select('_id appointmentId customerId projectNumber title serviceType status createdAt')
+        .sort({ createdAt: -1 })
+        .lean()
+      : Promise.resolve([]),
+  ]);
+
+  const reportByAppointmentId = new Map<string, string>();
+  for (const report of linkedReports as Array<{ _id: unknown; appointmentId: unknown }>) {
+    const appointmentId = String(report.appointmentId);
+    if (!reportByAppointmentId.has(appointmentId)) {
+      reportByAppointmentId.set(appointmentId, String(report._id));
+    }
+  }
+
+  const projectsByCustomer = new Map<string, any[]>();
+  const projectByAppointmentId = new Map<string, any>();
+  for (const project of customerProjects as any[]) {
+    const customerId = String(project.customerId);
+    const appointmentId = project.appointmentId ? String(project.appointmentId) : undefined;
+
+    const projectList = projectsByCustomer.get(customerId) || [];
+    projectList.push(project);
+    projectsByCustomer.set(customerId, projectList);
+
+    if (appointmentId && !projectByAppointmentId.has(appointmentId)) {
+      projectByAppointmentId.set(appointmentId, project);
+    }
+  }
+
+  let queueItems: AppointmentQueueItem[] = appointments.map((appointment: any) => {
+    const appointmentId = String(appointment._id);
+    const customerId = String(appointment.customerId?._id ?? appointment.customerId ?? '');
+    const linkedProject = projectByAppointmentId.get(appointmentId)
+      || projectsByCustomer.get(customerId)?.[0];
+    const customerSampleProjects = (projectsByCustomer.get(customerId) || []).slice(0, 2);
+
+    const reportId = reportByAppointmentId.get(appointmentId);
+    const hasPendingReport = linkedReports.some((r: any) => 
+      String(r.appointmentId) === appointmentId && 
+      [VisitReportStatus.DRAFT, VisitReportStatus.RETURNED].includes(r.status)
+    );
+    const currentReport = linkedReports.find((r: any) => String(r.appointmentId) === appointmentId);
+
+    const isReadyForOcular = isReadyForOcularQueueItem(appointment);
+    const isActionable = APPOINTMENT_QUEUE_ACTIONABLE_STATUSES.includes(appointment.status)
+      || isReadyForOcular
+      || hasPendingReport;
+
+    // Segment: Upcoming (Actionable) vs Recent/History (Everything else)
+    const segment = isActionable ? 'upcoming' : 'recent';
+
+    const actions: AppointmentQueueActions = {
+      reviewReportPath: reportId ? `/visit-reports/${reportId}` : undefined,
+      projectPath: linkedProject ? `/projects/${linkedProject._id}` : undefined,
+      createProjectPath:
+        appointment.type === AppointmentType.OFFICE
+        && isReadyForOcular
+        && customerId
+          ? `/appointments/book?customerId=${customerId}&mode=ocular-followup&consultationId=${appointmentId}`
+          : undefined,
+      reassignPath: APPOINTMENT_REASSIGNABLE_STATUSES.includes(appointment.status)
+        ? `/appointments/${appointmentId}/reassign`
+        : undefined,
+    };
+
+    return {
+      appointment,
+      segment,
+      reportStatus: currentReport?.status,
+      actions,
+      sampleProjects: customerSampleProjects.map((project: any) => ({
+        projectId: String(project._id),
+        title: project.title || project.serviceType || 'Project',
+        serviceType: project.serviceType,
+        status: project.status,
+        path: `/projects/${project._id}`,
+      })),
+    };
+  });
+
+  if (normalizedSearch) {
+    queueItems = queueItems.filter((item) => {
+      const appointment = item.appointment as any;
+      const customerId = String(appointment.customerId?._id ?? appointment.customerId ?? '');
+      const linkedProjects = [
+        ...(projectByAppointmentId.get(String(appointment._id)) ? [projectByAppointmentId.get(String(appointment._id))] : []),
+        ...(projectsByCustomer.get(customerId) || []).slice(0, 3),
+      ];
+
+      return matchesAppointmentSearch(
+        {
+          type: appointment.type,
+          status: appointment.status,
+          consultationReportSubmitted: appointment.consultationReportSubmitted,
+          date: appointment.date,
+          slotCode: appointment.slotCode,
+          customerNotes: appointment.customerNotes,
+          internalNotes: appointment.internalNotes,
+          formattedAddress: appointment.formattedAddress,
+          customerAddress: appointment.customerAddress,
+          serviceTypes: appointment.serviceTypes,
+          serviceTypeCustom: appointment.serviceTypeCustom,
+          customerSiteDetails: appointment.customerSiteDetails,
+          customerName: fullName(appointment.customerId),
+          salesStaffName: fullName(appointment.salesStaffId),
+          linkedProjects: linkedProjects.map((project: any) => ({
+            projectNumber: project.projectNumber,
+            title: project.title,
+            serviceType: project.serviceType,
+          })),
+        },
+        normalizedSearch,
+        searchScope,
+      );
+    });
+  }
+
+  const normalizeUpcomingDate = (item: AppointmentQueueItem) => {
+    const itemDate = item.appointment?.date || '';
+    if (
+      isReadyForOcularQueueItem(item.appointment)
+      && itemDate < todayStr
+    ) {
+      return todayStr;
+    }
+    return itemDate;
+  };
+
+  const sortUpcoming = (a: AppointmentQueueItem, b: AppointmentQueueItem) => {
+    const aUpdate = a.appointment?.updatedAt ? new Date(a.appointment.updatedAt).getTime() : 0;
+    const bUpdate = b.appointment?.updatedAt ? new Date(b.appointment.updatedAt).getTime() : 0;
+    if (aUpdate !== bUpdate) return bUpdate - aUpdate; // Descending (most recent first)
+
+    const aDate = normalizeUpcomingDate(a);
+    const bDate = normalizeUpcomingDate(b);
+    if (aDate !== bDate) return aDate < bDate ? -1 : 1;
+
+    const aSlot = a.appointment?.slotCode || '';
+    const bSlot = b.appointment?.slotCode || '';
+    if (aSlot !== bSlot) return aSlot < bSlot ? -1 : 1;
+
+    return String(a.appointment?._id).localeCompare(String(b.appointment?._id));
+  };
+
+  const sortDescendingByDateSlot = (a: AppointmentQueueItem, b: AppointmentQueueItem) => {
+    const aDate = a.appointment?.date || '';
+    const bDate = b.appointment?.date || '';
+    if (aDate !== bDate) return aDate < bDate ? 1 : -1;
+
+    const aSlot = a.appointment?.slotCode || '';
+    const bSlot = b.appointment?.slotCode || '';
+    if (aSlot !== bSlot) return aSlot < bSlot ? 1 : -1;
+
+    return String(b.appointment?._id).localeCompare(String(a.appointment?._id));
+  };
+
+  const upcomingItems = queueItems
+    .filter((item) => item.segment === 'upcoming')
+    .sort(sortUpcoming);
+  const recentItems = queueItems
+    .filter((item) => item.segment === 'recent')
+    .sort(sortDescendingByDateSlot);
+
+  const orderedItems = [...upcomingItems, ...recentItems].slice(0, limit);
+
+  return {
+    items: orderedItems,
+    upcomingCount: upcomingItems.length,
+    recentCount: recentItems.length,
+    recentWindowDays: APPOINTMENT_QUEUE_RECENT_DAYS,
+    generatedAt: new Date().toISOString(),
+  };
+}
+
 // ── List Appointments ──
 
 export async function listAppointments(query: {
@@ -1830,6 +2445,8 @@ export async function listAppointments(query: {
   const page = parseInt(query.page || '1');
   const limit = Math.min(parseInt(query.limit || '20'), 100);
   const filter: Record<string, unknown> = {};
+  const normalizedSearch = normalizeAppointmentSearchTerm(query.search);
+  const searchScope = getSearchScope(actorRoles);
 
   // Role-based filtering
   if (
@@ -1853,8 +2470,27 @@ export async function listAppointments(query: {
   }
 
   if (query.status) {
-    if (query.status.includes(',')) {
-      filter.status = { $in: query.status.split(',') };
+    const statuses = query.status.split(',').map((status) => status.trim()).filter(Boolean);
+    const includesReadyForOcular = statuses.includes(AppointmentStatus.READY_FOR_OCULAR);
+    const directStatuses = includesReadyForOcular
+      ? statuses.filter((status) => status !== AppointmentStatus.READY_FOR_OCULAR)
+      : statuses;
+
+    if (includesReadyForOcular) {
+      const statusFilters: Record<string, unknown>[] = [
+        { status: AppointmentStatus.READY_FOR_OCULAR },
+        DERIVED_READY_FOR_OCULAR_FILTER,
+      ];
+
+      if (directStatuses.length > 0) {
+        statusFilters.push({ status: { $in: directStatuses } });
+      }
+
+      appendAndFilter(filter, { $or: statusFilters });
+    } else if (directStatuses.length > 1) {
+      filter.status = { $in: directStatuses };
+    } else if (directStatuses.length === 1) {
+      filter.status = directStatuses[0];
     } else {
       filter.status = query.status;
     }
@@ -1871,49 +2507,115 @@ export async function listAppointments(query: {
     if (query.dateTo) (filter.date as Record<string, string>).$lte = query.dateTo;
   }
 
-  if (query.search) {
-    const searchRegex = { $regex: query.search, $options: 'i' };
+  const sortField = query.sortBy || 'updatedAt';
+  const sortOrder = query.sortOrder === 'desc' ? -1 : (query.sortBy ? 1 : -1);
 
-    // Pre-lookup customer IDs matching the search term by name
-    const matchingUsers = await User.find({
-      $or: [{ firstName: searchRegex }, { lastName: searchRegex }],
-    }).select('_id').lean();
-    const matchingIds = matchingUsers.map((u) => u._id);
+  if (!normalizedSearch) {
+    const [appointments, total] = await Promise.all([
+      Appointment.find(filter)
+        .populate('customerId', 'firstName lastName email phone')
+        .populate('salesStaffId', 'firstName lastName')
+        .sort({ [sortField]: sortOrder })
+        .skip((page - 1) * limit)
+        .limit(limit),
+      Appointment.countDocuments(filter),
+    ]);
 
-    const searchOr: Record<string, unknown>[] = [
-      { customerNotes: searchRegex },
-      { formattedAddress: searchRegex },
-      { customerAddress: searchRegex },
-    ];
-    if (matchingIds.length > 0) searchOr.push({ customerId: { $in: matchingIds } });
-
-    if (filter.$or) {
-      // Role-based $or already set — move it into $and so both conditions hold
-      const existingOr = filter.$or as Record<string, unknown>[];
-      delete filter.$or;
-      filter.$and = [{ $or: existingOr }, { $or: searchOr }];
-    } else if (Object.keys(filter).length > 0) {
-      filter.$and = [{ $or: searchOr }];
-    } else {
-      filter.$or = searchOr;
-    }
+    return {
+      items: appointments,
+      total,
+      hasMore: page * limit < total,
+    };
   }
 
-  const sortField = query.sortBy || 'date';
-  const sortOrder = query.sortOrder === 'asc' ? 1 : -1;
+  const appointments = await Appointment.find(filter)
+    .populate('customerId', 'firstName lastName email phone')
+    .populate('salesStaffId', 'firstName lastName')
+    .sort({ [sortField]: sortOrder });
 
-  const [appointments, total] = await Promise.all([
-    Appointment.find(filter)
-      .populate('customerId', 'firstName lastName email phone')
-      .populate('salesStaffId', 'firstName lastName')
-      .sort({ [sortField]: sortOrder })
-      .skip((page - 1) * limit)
-      .limit(limit),
-    Appointment.countDocuments(filter),
-  ]);
+  const appointmentIds = appointments.map((appointment) => appointment._id);
+  const customerIds = Array.from(
+    new Set(
+      appointments
+        .map((appointment: any) => (appointment.customerId?._id ?? appointment.customerId)?.toString?.())
+        .filter((value): value is string => Boolean(value)),
+    ),
+  );
+
+  const relatedProjects = appointmentIds.length || customerIds.length
+    ? await Project.find({
+      $and: [
+        { status: { $ne: ProjectStatus.CANCELLED } },
+        {
+          $or: [
+            ...(appointmentIds.length ? [{ appointmentId: { $in: appointmentIds } }] : []),
+            ...(customerIds.length ? [{ customerId: { $in: customerIds } }] : []),
+          ],
+        },
+      ],
+    })
+      .select('_id appointmentId customerId projectNumber title serviceType createdAt')
+      .sort({ createdAt: -1 })
+      .lean()
+    : [];
+
+  const projectsByAppointmentId = new Map<string, any[]>();
+  const projectsByCustomerId = new Map<string, any[]>();
+  for (const project of relatedProjects as any[]) {
+    const appointmentId = project.appointmentId ? String(project.appointmentId) : undefined;
+    const customerId = String(project.customerId);
+
+    if (appointmentId) {
+      const appointmentProjects = projectsByAppointmentId.get(appointmentId) || [];
+      appointmentProjects.push(project);
+      projectsByAppointmentId.set(appointmentId, appointmentProjects);
+    }
+
+    const customerProjects = projectsByCustomerId.get(customerId) || [];
+    customerProjects.push(project);
+    projectsByCustomerId.set(customerId, customerProjects);
+  }
+
+  const filteredAppointments = appointments.filter((appointment: any) => {
+    const appointmentId = String(appointment._id);
+    const customerId = String(appointment.customerId?._id ?? appointment.customerId ?? '');
+    const linkedProjects = [
+      ...(projectsByAppointmentId.get(appointmentId) || []),
+      ...(projectsByCustomerId.get(customerId) || []).slice(0, 3),
+    ];
+
+    return matchesAppointmentSearch(
+      {
+        type: appointment.type,
+        status: appointment.status,
+        consultationReportSubmitted: appointment.consultationReportSubmitted,
+        date: appointment.date,
+        slotCode: appointment.slotCode,
+        customerNotes: appointment.customerNotes,
+        internalNotes: appointment.internalNotes,
+        formattedAddress: appointment.formattedAddress,
+        customerAddress: appointment.customerAddress,
+        serviceTypes: appointment.serviceTypes,
+        serviceTypeCustom: appointment.serviceTypeCustom,
+        customerSiteDetails: appointment.customerSiteDetails,
+        customerName: fullName(appointment.customerId),
+        salesStaffName: fullName(appointment.salesStaffId),
+        linkedProjects: linkedProjects.map((project: any) => ({
+          projectNumber: project.projectNumber,
+          title: project.title,
+          serviceType: project.serviceType,
+        })),
+      },
+      normalizedSearch,
+      searchScope,
+    );
+  });
+
+  const total = filteredAppointments.length;
+  const items = filteredAppointments.slice((page - 1) * limit, page * limit);
 
   return {
-    items: appointments,
+    items,
     total,
     hasMore: page * limit < total,
   };

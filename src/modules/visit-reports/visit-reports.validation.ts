@@ -70,6 +70,7 @@ export const updateVisitReportSchema = z.object({
   referenceImageKeys: z.array(z.string()).max(10).optional(),
 
   // Consultation-specific fields
+  discussionNotes: z.string().max(5000).trim().optional(),
   productsDiscussed: z.string().max(2000).trim().optional(),
   designPreferences: z.string().max(2000).trim().optional(),
   materialOptions: z.string().max(2000).trim().optional(),

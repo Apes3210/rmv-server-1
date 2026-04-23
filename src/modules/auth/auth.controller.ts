@@ -5,6 +5,10 @@ import { generateCsrfToken } from '../../middleware/csrf.js';
 import { extractClientHints } from '../../utils/deviceInfo.js';
 import * as authService from './auth.service.js';
 import { getRefreshTokenFromRequest } from './auth.tokens.js';
+import {
+  buildAvailabilityStateSummary,
+  getOpenAvailabilitySession,
+} from '../users/availability-session.service.js';
 
 const cookieDomainOptions = env.COOKIE_DOMAIN ? { domain: env.COOKIE_DOMAIN } : {};
 
@@ -166,6 +170,8 @@ export const changePassword = asyncHandler(async (req: Request, res: Response) =
 
 export const me = asyncHandler(async (req: Request, res: Response) => {
   const user = req.user!;
+  const session = await getOpenAvailabilitySession(user._id);
+  const availabilitySummary = buildAvailabilityStateSummary(user, session);
   res.json({
     success: true,
     data: {
@@ -185,6 +191,12 @@ export const me = asyncHandler(async (req: Request, res: Response) => {
       provider: user.provider || 'local',
       firebaseUid: user.firebaseUid,
       photoURL: user.photoURL,
+      availabilityStatus: availabilitySummary.availabilityStatus,
+      availabilityNote: availabilitySummary.availabilityNote,
+      availabilityUpdatedAt: availabilitySummary.availabilityUpdatedAt,
+      activeShift: availabilitySummary.activeShift,
+      expiredShift: availabilitySummary.expiredShift,
+      availabilitySetupRequired: availabilitySummary.availabilitySetupRequired,
       createdAt: user.createdAt,
     },
   });

@@ -1,5 +1,6 @@
 // ── Barrel Export for all models ──
 export { User, type IUser } from './User.js';
+export { AvailabilitySession, type IAvailabilitySession } from './AvailabilitySession.js';
 export { OtpToken, type IOtpToken } from './OtpToken.js';
 export { RefreshToken, type IRefreshToken } from './RefreshToken.js';
 export { Appointment, type IAppointment } from './Appointment.js';
@@ -11,12 +12,12 @@ export { PaymentPlan, type IPaymentPlan, Payment, type IPayment, type IPaymentSt
 export { CashCollection, type ICashCollection } from './CashCollection.js';
 export { CashDiscrepancy, type ICashDiscrepancy } from './CashDiscrepancy.js';
 export { FabricationUpdate, type IFabricationUpdate } from './FabricationUpdate.js';
+export { FabricationItem, type IFabricationItem } from './FabricationItem.js';
 export { AuditLog, type IAuditLog } from './AuditLog.js';
 export { Notification, type INotification } from './Notification.js';
 export { EmailLog, type IEmailLog } from './EmailLog.js';
 export { IdempotencyKey, type IIdempotencyKey } from './IdempotencyKey.js';
-export { Config, type IConfig, Holiday, type IHoliday, SalesAvailability, type ISalesAvailability, ReceiptCounter, type IReceiptCounter, BlockedSlot, type IBlockedSlot } from './Config.js';
+export { Config, type IConfig, Holiday, type IHoliday, SalesAvailability, type ISalesAvailability, ReceiptCounter, type IReceiptCounter, ProjectCounter, type IProjectCounter, BlockedSlot, type IBlockedSlot } from './Config.js';
 export { RouteCache, type IRouteCache } from './RouteCache.js';
 export { VisitReport, type IVisitReport, VisitReportStatus } from './VisitReport.js';
 export { LoginHistory, type ILoginHistory } from './LoginHistory.js';
-

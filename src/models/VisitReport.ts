@@ -71,10 +71,7 @@ export interface IVisitReport extends Document {
   notes?: string;
 
   // ── Consultation-specific fields ──
-  productsDiscussed?: string;
-  designPreferences?: string;
-  materialOptions?: string;
-  projectScope?: string;
+  discussionNotes?: string;
   initialDesignKeys?: string[];
   initialDesignNotes?: string;
   recommendedOcularDate?: Date;
@@ -180,10 +177,7 @@ const visitReportSchema = new Schema<IVisitReport>(
     referenceImageKeys: [{ type: String }],
 
     // Consultation-specific fields
-    productsDiscussed: { type: String, maxlength: 2000 },
-    designPreferences: { type: String, maxlength: 2000 },
-    materialOptions: { type: String, maxlength: 2000 },
-    projectScope: { type: String, maxlength: 2000 },
+    discussionNotes: { type: String, maxlength: 4000 },
     initialDesignKeys: [{ type: String }],
     initialDesignNotes: { type: String, maxlength: 2000 },
     recommendedOcularDate: { type: Date },

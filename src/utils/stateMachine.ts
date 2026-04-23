@@ -67,7 +67,8 @@ export const appointmentStateMachine = createStateMachine<AppointmentStatus>({
     AppointmentStatus.CONFIRMED,
     AppointmentStatus.CANCELLED,
   ],
-  [AppointmentStatus.COMPLETED]: [],
+  [AppointmentStatus.COMPLETED]: [AppointmentStatus.READY_FOR_OCULAR],
+  [AppointmentStatus.READY_FOR_OCULAR]: [AppointmentStatus.COMPLETED],
   [AppointmentStatus.NO_SHOW]: [],
   [AppointmentStatus.CANCELLED]: [],
 });
@@ -79,6 +80,7 @@ export const projectStateMachine = createStateMachine<ProjectStatus>({
   [ProjectStatus.BLUEPRINT]: [ProjectStatus.APPROVED, ProjectStatus.CANCELLED],
   [ProjectStatus.APPROVED]: [ProjectStatus.PAYMENT_PENDING, ProjectStatus.BLUEPRINT, ProjectStatus.CANCELLED],
   [ProjectStatus.PAYMENT_PENDING]: [ProjectStatus.FABRICATION, ProjectStatus.CANCELLED],
+  [ProjectStatus.READY_FOR_OCULAR]: [ProjectStatus.FABRICATION, ProjectStatus.CANCELLED],
   [ProjectStatus.FABRICATION]: [ProjectStatus.COMPLETED, ProjectStatus.CANCELLED],
   [ProjectStatus.COMPLETED]: [],
   [ProjectStatus.CANCELLED]: [],

@@ -11,6 +11,20 @@ describe('appointmentStateMachine', () => {
         AppointmentStatus.CONFIRMED,
       ),
     ).toBe(true);
+
+    expect(
+      appointmentStateMachine.canTransition(
+        AppointmentStatus.COMPLETED,
+        AppointmentStatus.READY_FOR_OCULAR,
+      ),
+    ).toBe(true);
+
+    expect(
+      appointmentStateMachine.canTransition(
+        AppointmentStatus.READY_FOR_OCULAR,
+        AppointmentStatus.COMPLETED,
+      ),
+    ).toBe(true);
   });
 
   it('rejects invalid transitions', () => {
