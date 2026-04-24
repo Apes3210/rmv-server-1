@@ -13,6 +13,7 @@ export const listFabricationUpdates = asyncHandler(async (req: Request, res: Res
     (req.params.projectId as string),
     req.userId!,
     req.userRoles!,
+    req.query.projectItemId as string | undefined,
   );
   res.json({ success: true, data: updates });
 });
@@ -22,6 +23,7 @@ export const getLatestFabricationStatus = asyncHandler(async (req: Request, res:
     (req.params.projectId as string),
     req.userId!,
     req.userRoles!,
+    req.query.projectItemId as string | undefined,
   );
   res.json({ success: true, data: result });
 });

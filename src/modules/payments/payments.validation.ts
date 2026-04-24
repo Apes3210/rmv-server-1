@@ -3,6 +3,7 @@ import { PaymentMethod } from '../../utils/constants.js';
 
 export const createPaymentPlanSchema = z.object({
   projectId: z.string().min(1),
+  projectItemId: z.string().min(1).optional(),
   totalAmount: z.number().positive(),
   stages: z.array(z.object({
     percentage: z.number().positive().max(100),

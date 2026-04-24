@@ -1,5 +1,5 @@
 import {
-  Blueprint, BlueprintDraft, Project, User, AuditLog, PaymentPlan,
+  Blueprint, BlueprintDraft, Project, ProjectItem, User, AuditLog, PaymentPlan,
 } from '../../models/index.js';
 import { AppError, ErrorCode } from '../../utils/appError.js';
 import {
@@ -165,6 +165,27 @@ function assertEngineerContractSigned(project: { engineerContractSignedAt?: Date
   }
 }
 
+function itemScopedQuery(projectId: string, projectItemId?: string) {
+  return projectItemId
+    ? { projectId, projectItemId }
+    : { projectId, projectItemId: { $exists: false } };
+}
+
+async function resolveProjectItemForBlueprint(project: any, projectItemId?: string) {
+  const itemCount = await ProjectItem.countDocuments({ projectId: project._id });
+
+  if (itemCount > 1 && !projectItemId) {
+    throw AppError.badRequest('Select a project item before managing its blueprint');
+  }
+
+  if (!projectItemId) return null;
+
+  const projectItem = await ProjectItem.findOne({ _id: projectItemId, projectId: project._id });
+  if (!projectItem) throw AppError.notFound('Project item not found');
+
+  return projectItem;
+}
+
 // ── Engineer: Upload Initial Blueprint ──
 
 export async function uploadBlueprint(
@@ -176,7 +197,15 @@ export async function uploadBlueprint(
   const project = await Project.findById(input.projectId);
   if (!project) throw AppError.notFound('Project not found');
 
-  if ((project.initialDesignKeys?.length || project.initialDesignNotes?.trim()) && !['approved', 'not_required'].includes(project.designReviewStatus || 'not_required')) {
+  const projectItem = await resolveProjectItemForBlueprint(project, input.projectItemId);
+  const designReviewStatus = projectItem?.designReviewStatus || project.designReviewStatus || 'not_required';
+  const hasInitialDesign = Boolean(
+    projectItem
+      ? projectItem.initialDesignKeys?.length || projectItem.initialDesignNotes?.trim()
+      : project.initialDesignKeys?.length || project.initialDesignNotes?.trim(),
+  );
+
+  if (hasInitialDesign && !['approved', 'not_required'].includes(designReviewStatus)) {
     throw AppError.badRequest('The sales initial design must be approved by engineering before the first blueprint upload');
   }
 
@@ -186,13 +215,14 @@ export async function uploadBlueprint(
   }
 
   // Check if initial version already exists
-  const existing = await Blueprint.findOne({ projectId: input.projectId, version: 1 });
+  const existing = await Blueprint.findOne({ ...itemScopedQuery(input.projectId, input.projectItemId), version: 1 });
   if (existing) {
     throw AppError.conflict('Initial blueprint already uploaded. Use revision upload.', ErrorCode.DUPLICATE_ENTRY);
   }
 
   const blueprint = await Blueprint.create({
     projectId: input.projectId,
+    projectItemId: input.projectItemId,
     version: 1,
     status: BlueprintStatus.UPLOADED,
     blueprintKey: input.blueprintKey,
@@ -208,13 +238,16 @@ export async function uploadBlueprint(
     project.status = ProjectStatus.BLUEPRINT;
     await project.save();
   }
+  if (input.projectItemId) {
+    await ProjectItem.findByIdAndUpdate(input.projectItemId, { $set: { status: ProjectStatus.BLUEPRINT } });
+  }
 
   await AuditLog.create({
     action: AuditAction.BLUEPRINT_UPLOADED,
     actorId: uploadedBy,
     targetType: 'blueprint',
     targetId: blueprint._id,
-    details: { projectId: input.projectId, version: 1 },
+    details: { projectId: input.projectId, projectItemId: input.projectItemId || null, version: 1 },
     ipAddress: ip,
     userAgent: ua,
   });
@@ -273,6 +306,7 @@ export async function uploadRevision(
   // Create new version (carry over quotation if provided, otherwise keep previous)
   const blueprint = await Blueprint.create({
     projectId: currentBlueprint.projectId,
+    projectItemId: currentBlueprint.projectItemId,
     version: newVersion,
     status: BlueprintStatus.UPLOADED,
     blueprintKey: input.blueprintKey,
@@ -455,10 +489,10 @@ export async function requestRevision(
 
 // ── Engineer: Draft Autosave ──
 
-export async function getBlueprintDraft(projectId: string, actorId: string) {
+export async function getBlueprintDraft(projectId: string, actorId: string, projectItemId?: string) {
   await assertAssignedEngineerForProject(projectId, actorId);
 
-  return BlueprintDraft.findOne({ projectId })
+  return BlueprintDraft.findOne(itemScopedQuery(projectId, projectItemId))
     .populate('createdBy', 'firstName lastName phone')
     .populate('lastEditedBy', 'firstName lastName phone');
 }
@@ -469,7 +503,9 @@ export async function upsertBlueprintDraft(
   actorId: string,
 ) {
   const project = await assertAssignedEngineerForProject(projectId, actorId);
-  const latestBlueprint = await Blueprint.findOne({ projectId })
+  const projectItemId = input.projectItemId;
+  await resolveProjectItemForBlueprint(project, projectItemId);
+  const latestBlueprint = await Blueprint.findOne(itemScopedQuery(projectId, projectItemId))
     .sort({ version: -1 })
     .select('_id status');
 
@@ -493,7 +529,7 @@ export async function upsertBlueprintDraft(
     }
   }
 
-  let draft = await BlueprintDraft.findOne({ projectId });
+  let draft = await BlueprintDraft.findOne(itemScopedQuery(projectId, projectItemId));
   const previousFiles = {
     blueprint: draft?.files?.blueprint ?? null,
     design: draft?.files?.design ?? null,
@@ -503,6 +539,7 @@ export async function upsertBlueprintDraft(
   if (!draft) {
     draft = new BlueprintDraft({
       projectId,
+      projectItemId,
       createdBy: actorId,
     });
   }
@@ -559,10 +596,11 @@ export async function finalizeBlueprintDraft(
   actorId: string,
   ip?: string,
   ua?: string,
+  projectItemId?: string,
 ) {
   await assertAssignedEngineerForProject(projectId, actorId);
 
-  const draft = await BlueprintDraft.findOne({ projectId });
+  const draft = await BlueprintDraft.findOne(itemScopedQuery(projectId, projectItemId));
   if (!draft) throw AppError.notFound('Blueprint draft not found');
 
   const blueprintKey = draft.files?.blueprint?.key;
@@ -595,6 +633,7 @@ export async function finalizeBlueprintDraft(
     : await uploadBlueprint(
         {
           projectId,
+          projectItemId: draft.projectItemId?.toString() || projectItemId,
           blueprintKey,
           designKey,
           costingKey,
@@ -609,10 +648,10 @@ export async function finalizeBlueprintDraft(
   return finalizedBlueprint;
 }
 
-export async function deleteBlueprintDraft(projectId: string, actorId: string) {
+export async function deleteBlueprintDraft(projectId: string, actorId: string, projectItemId?: string) {
   await assertAssignedEngineerForProject(projectId, actorId);
 
-  const draft = await BlueprintDraft.findOne({ projectId });
+  const draft = await BlueprintDraft.findOne(itemScopedQuery(projectId, projectItemId));
   if (!draft) return;
 
   const keys = getDraftFileKeys(draft.files);
@@ -673,9 +712,10 @@ export async function listBlueprintsByProject(
   projectId: string,
   actorId: string,
   actorRoles: Role[],
+  projectItemId?: string,
 ) {
   await assertBlueprintProjectAccess(projectId, actorId, actorRoles);
-  const blueprints = await Blueprint.find({ projectId })
+  const blueprints = await Blueprint.find(itemScopedQuery(projectId, projectItemId))
     .populate('uploadedBy', 'firstName lastName phone')
     .sort({ version: -1 });
   return blueprints;
@@ -687,9 +727,10 @@ export async function getLatestBlueprint(
   projectId: string,
   actorId: string,
   actorRoles: Role[],
+  projectItemId?: string,
 ) {
   await assertBlueprintProjectAccess(projectId, actorId, actorRoles);
-  const blueprint = await Blueprint.findOne({ projectId })
+  const blueprint = await Blueprint.findOne(itemScopedQuery(projectId, projectItemId))
     .sort({ version: -1 })
     .populate('uploadedBy', 'firstName lastName phone');
   return blueprint;
@@ -738,6 +779,9 @@ export async function acceptBlueprint(
     project.status = ProjectStatus.APPROVED;
   }
   await project.save();
+  if (blueprint.projectItemId) {
+    await ProjectItem.findByIdAndUpdate(blueprint.projectItemId, { $set: { status: ProjectStatus.APPROVED } });
+  }
 
   await AuditLog.create({
     action: AuditAction.BLUEPRINT_APPROVED,

@@ -1,5 +1,5 @@
 import {
-  VisitReport, Appointment, Project, User, AuditLog,
+  VisitReport, Appointment, Project, ProjectItem, User, AuditLog, SlotLock,
 } from '../../models/index.js';
 import { VisitReportStatus } from '../../models/VisitReport.js';
 import { AppError, ErrorCode } from '../../utils/appError.js';
@@ -8,6 +8,7 @@ import {
   ServiceType, OcularFeePaymentChoice,
 } from '../../utils/constants.js';
 import { visitReportStateMachine, appointmentStateMachine } from '../../utils/stateMachine.js';
+import { generateProjectNumber } from '../../utils/projectNumber.js';
 import { createAndSendNotification, notifyRole } from '../notifications/socket.service.js';
 import type { CreateVisitReportInput, UpdateVisitReportInput, ReturnVisitReportInput, ReopenVisitReportInput } from './visit-reports.validation.js';
 import type { Types } from 'mongoose';
@@ -16,6 +17,230 @@ import type { ICustomerSiteDetails } from '../../models/Appointment.js';
 
 function isNonEmptyString(value?: string | null) {
   return Boolean(value?.trim());
+}
+
+function readableServiceTitle(serviceType?: string, custom?: string) {
+  if (serviceType === ServiceType.CUSTOM && custom?.trim()) return custom.trim();
+  return (serviceType || ServiceType.CUSTOM)
+    .split(/[_\s-]+/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ');
+}
+
+async function upsertProjectItemFromVisitReport(project: any, report: any) {
+  const mediaKeys = [
+    ...(report.photoKeys || []),
+    ...(report.sketchKeys || []),
+    ...(report.referenceImageKeys || []),
+  ];
+
+  const item = await ProjectItem.findOneAndUpdate(
+    { projectId: project._id, serviceType: report.serviceType },
+    {
+      $set: {
+        projectId: project._id,
+        appointmentId: project.appointmentId,
+        title: readableServiceTitle(report.serviceType, report.serviceTypeCustom),
+        serviceType: report.serviceType,
+        serviceTypeCustom: report.serviceTypeCustom,
+        measurements: report.measurements,
+        measurementUnit: report.measurementUnit,
+        lineItems: report.lineItems || [],
+        materials: report.materials,
+        finishes: report.finishes,
+        preferredDesign: report.preferredDesign,
+        customerRequirements: report.customerRequirements,
+        notes: report.notes,
+        initialDesignKeys: report.initialDesignKeys || [],
+        initialDesignNotes: report.initialDesignNotes,
+        mediaKeys,
+        ...(report.visitType === 'ocular'
+          ? { ocularVisitReportId: report._id }
+          : { consultationVisitReportId: report._id }),
+      },
+      $setOnInsert: {
+        status: project.status || ProjectStatus.DRAFT,
+      },
+    },
+    { upsert: true, new: true },
+  );
+
+  if (!report.projectItemId || report.projectItemId.toString() !== item._id.toString()) {
+    report.projectItemId = item._id;
+    report.linkedProjectId = project._id;
+    await report.save();
+  }
+
+  return item;
+}
+
+function getInitialReportServiceTypes(
+  customerSiteDetails?: ICustomerSiteDetails,
+  serviceTypesOverride?: string[],
+  serviceTypeOverride?: string,
+) {
+  const rawServiceTypes = customerSiteDetails?.serviceTypes?.length
+    ? customerSiteDetails.serviceTypes
+    : serviceTypesOverride?.length
+      ? serviceTypesOverride
+    : serviceTypeOverride
+      ? [serviceTypeOverride]
+      : [ServiceType.CUSTOM];
+
+  return [...new Set(rawServiceTypes.filter((value): value is string => isNonEmptyString(value)))];
+}
+
+async function getAppointmentVisitReportServiceTypes(appointmentId: Types.ObjectId | string) {
+  const reports = await VisitReport.find({ appointmentId, visitType: 'consultation' })
+    .select('serviceType')
+    .lean();
+  return [...new Set(
+    reports
+      .map((report) => report.serviceType)
+      .filter((value): value is string => isNonEmptyString(value)),
+  )];
+}
+
+async function ensureAppointmentServiceTypeReports(
+  appointmentId: Types.ObjectId | string,
+  customerId: Types.ObjectId | string,
+  salesStaffId: Types.ObjectId | string,
+  visitType: string,
+  customerSiteDetails?: ICustomerSiteDetails,
+  serviceTypesOverride?: string[],
+  serviceTypeOverride?: string,
+  serviceTypeCustomOverride?: string,
+  linkedProjectId?: Types.ObjectId | string,
+) {
+  const requestedServiceTypes = getInitialReportServiceTypes(
+    customerSiteDetails,
+    serviceTypesOverride,
+    serviceTypeOverride,
+  );
+  const customServiceTypeLabel = customerSiteDetails?.serviceTypeCustom || serviceTypeCustomOverride;
+
+  const existingReports = await VisitReport.find({ appointmentId }).sort({ createdAt: 1 });
+  if (requestedServiceTypes.length > 0 && !requestedServiceTypes.includes(ServiceType.CUSTOM)) {
+    const placeholderReport = existingReports.find((report) => report.serviceType === ServiceType.CUSTOM);
+    if (placeholderReport && !existingReports.some((report) => report.serviceType === requestedServiceTypes[0])) {
+      placeholderReport.serviceType = requestedServiceTypes[0];
+      placeholderReport.serviceTypeCustom = undefined;
+      await placeholderReport.save();
+    }
+  }
+  const existingServiceTypes = new Set(existingReports.map((report) => report.serviceType));
+  const missingServiceTypes = requestedServiceTypes.filter((serviceType) => !existingServiceTypes.has(serviceType));
+
+  for (const report of existingReports) {
+    if (report.status !== VisitReportStatus.DRAFT) {
+      continue;
+    }
+
+    let changed = false;
+
+    if (linkedProjectId && !report.linkedProjectId) {
+      report.linkedProjectId = linkedProjectId as Types.ObjectId;
+      changed = true;
+    }
+
+    if (report.serviceType === ServiceType.CUSTOM && customServiceTypeLabel && report.serviceTypeCustom !== customServiceTypeLabel) {
+      report.serviceTypeCustom = customServiceTypeLabel;
+      changed = true;
+    }
+
+    if (customerSiteDetails) {
+      if (customerSiteDetails.materials && report.materials !== customerSiteDetails.materials) {
+        report.materials = customerSiteDetails.materials;
+        changed = true;
+      }
+      if (customerSiteDetails.finishes && report.finishes !== customerSiteDetails.finishes) {
+        report.finishes = customerSiteDetails.finishes;
+        changed = true;
+      }
+      if (customerSiteDetails.preferredDesign && report.preferredDesign !== customerSiteDetails.preferredDesign) {
+        report.preferredDesign = customerSiteDetails.preferredDesign;
+        changed = true;
+      }
+      if (customerSiteDetails.customerRequirements && report.customerRequirements !== customerSiteDetails.customerRequirements) {
+        report.customerRequirements = customerSiteDetails.customerRequirements;
+        changed = true;
+      }
+      if (customerSiteDetails.notes && report.notes !== customerSiteDetails.notes) {
+        report.notes = customerSiteDetails.notes;
+        changed = true;
+      }
+      if (customerSiteDetails.measurementUnit && report.measurementUnit !== customerSiteDetails.measurementUnit) {
+        report.measurementUnit = customerSiteDetails.measurementUnit;
+        changed = true;
+      }
+      if ((report.lineItems?.length || 0) === 0 && (customerSiteDetails.lineItems?.length || 0) > 0) {
+        report.lineItems = customerSiteDetails.lineItems || [];
+        changed = true;
+      }
+      if (!report.siteConditions && customerSiteDetails.siteConditions) {
+        report.siteConditions = customerSiteDetails.siteConditions;
+        changed = true;
+      }
+      if ((report.photoKeys?.length || 0) === 0 && (customerSiteDetails.photoKeys?.length || 0) > 0) {
+        report.photoKeys = customerSiteDetails.photoKeys || [];
+        changed = true;
+      }
+      if ((report.videoKeys?.length || 0) === 0 && (customerSiteDetails.videoKeys?.length || 0) > 0) {
+        report.videoKeys = customerSiteDetails.videoKeys || [];
+        changed = true;
+      }
+      if ((report.sketchKeys?.length || 0) === 0 && (customerSiteDetails.sketchKeys?.length || 0) > 0) {
+        report.sketchKeys = customerSiteDetails.sketchKeys || [];
+        changed = true;
+      }
+      if ((report.referenceImageKeys?.length || 0) === 0 && (customerSiteDetails.referenceImageKeys?.length || 0) > 0) {
+        report.referenceImageKeys = customerSiteDetails.referenceImageKeys || [];
+        changed = true;
+      }
+    }
+
+    if (changed) {
+      await report.save();
+    }
+  }
+
+  for (const serviceType of missingServiceTypes) {
+    const report = await VisitReport.create({
+      appointmentId,
+      customerId,
+      salesStaffId,
+      status: VisitReportStatus.DRAFT,
+      visitType,
+      ...(linkedProjectId && { linkedProjectId }),
+      serviceType,
+      serviceTypeCustom: serviceType === ServiceType.CUSTOM ? customServiceTypeLabel : undefined,
+      measurementUnit: customerSiteDetails?.measurementUnit,
+      lineItems: customerSiteDetails?.lineItems || [],
+      siteConditions: customerSiteDetails?.siteConditions,
+      materials: customerSiteDetails?.materials,
+      finishes: customerSiteDetails?.finishes,
+      preferredDesign: customerSiteDetails?.preferredDesign,
+      customerRequirements: customerSiteDetails?.customerRequirements,
+      notes: customerSiteDetails?.notes,
+      photoKeys: customerSiteDetails?.photoKeys || [],
+      videoKeys: customerSiteDetails?.videoKeys || [],
+      sketchKeys: customerSiteDetails?.sketchKeys || [],
+      referenceImageKeys: customerSiteDetails?.referenceImageKeys || [],
+    });
+
+    await AuditLog.create({
+      action: AuditAction.VISIT_REPORT_CREATED,
+      actorId: salesStaffId.toString(),
+      targetType: 'visit_report',
+      targetId: report._id,
+      details: {
+        appointmentId: appointmentId.toString(),
+        autoCreated: true,
+        serviceType,
+      },
+    });
+  }
 }
 
 function hasAnyMeasuredDimensions(report: {
@@ -139,8 +364,6 @@ function getIncompleteOcularFields(report: {
   if (!isNonEmptyString(report.siteConditions?.environment)) missing.push('site environment');
   if (!isNonEmptyString(report.siteConditions?.floorType)) missing.push('floor type');
   if (!isNonEmptyString(report.siteConditions?.wallMaterial)) missing.push('wall material');
-  if (report.siteConditions?.hasElectrical === undefined) missing.push('electrical nearby status');
-  if (report.siteConditions?.hasPlumbing === undefined) missing.push('plumbing nearby status');
   if (!isNonEmptyString(report.siteConditions?.accessNotes)) missing.push('access notes');
   if (!isNonEmptyString(report.siteConditions?.obstaclesOrConstraints)) missing.push('obstacles or constraints');
 
@@ -149,9 +372,173 @@ function getIncompleteOcularFields(report: {
   if (!isNonEmptyString(report.preferredDesign)) missing.push('preferred design');
   if ((report.photoKeys?.length || 0) === 0) missing.push('site photos');
   if ((report.initialDesignKeys?.length || 0) === 0) missing.push('initial design files');
-  if (!isNonEmptyString(report.initialDesignNotes)) missing.push('initial design notes');
-
   return [...new Set(missing)];
+}
+
+async function ensureConsultationDraftProject(
+  report: any,
+  appt: any,
+  salesStaffId: string,
+  reason: string,
+  ip?: string,
+  ua?: string,
+) {
+  const serviceTypes = await getAppointmentVisitReportServiceTypes(report.appointmentId);
+  const serviceLabel = serviceTypes.length > 0
+    ? serviceTypes.join(', ')
+    : report.serviceTypeCustom || report.serviceType || 'General Fabrication';
+  const customerNotes = (appt.customerNotes || '').trim();
+  const notesNormalized = customerNotes.toLowerCase();
+  const serviceLabelNormalized = serviceLabel.toLowerCase();
+  const titleBase = customerNotes && notesNormalized !== serviceLabelNormalized
+    ? customerNotes
+    : serviceLabel;
+
+  const existingProject = await Project.findOne({
+    $or: [
+      { appointmentId: report.appointmentId },
+      { visitReportId: report._id },
+    ],
+  });
+  if (existingProject) {
+    const nextServiceTypes = [...new Set([...(existingProject.serviceTypes || []), ...serviceTypes])];
+    existingProject.serviceTypes = nextServiceTypes;
+    existingProject.serviceType = nextServiceTypes.length > 0 ? nextServiceTypes.join(', ') : serviceLabel;
+    existingProject.title = existingProject.title || titleBase;
+    existingProject.mediaKeys = [...new Set([
+      ...(existingProject.mediaKeys || []),
+      ...report.photoKeys,
+      ...report.sketchKeys,
+      ...report.referenceImageKeys,
+    ])];
+    await existingProject.save();
+
+    if (!report.linkedProjectId || report.linkedProjectId.toString() !== existingProject._id.toString()) {
+      report.linkedProjectId = existingProject._id;
+      await report.save();
+    }
+
+    const relatedReports = await VisitReport.find({ appointmentId: report.appointmentId });
+    for (const relatedReport of relatedReports) {
+      await upsertProjectItemFromVisitReport(existingProject, relatedReport);
+    }
+
+    return existingProject;
+  }
+
+  const project = await Project.create({
+    projectNumber: await generateProjectNumber(),
+    appointmentId: report.appointmentId,
+    visitReportId: report._id,
+    customerId: report.customerId,
+    salesStaffId: report.salesStaffId,
+    title: titleBase,
+    serviceType: serviceLabel,
+    serviceTypes,
+    description: report.customerRequirements || report.notes || 'Created from consultation',
+    siteAddress: appt.customerAddress || 'TBD',
+    measurements: report.measurements,
+    materialType: report.materials,
+    finishColor: report.finishes,
+    quantity: 1,
+    notes: report.notes,
+    designReviewStatus: 'not_required',
+    status: ProjectStatus.DRAFT,
+    mediaKeys: [...report.photoKeys, ...report.sketchKeys, ...report.referenceImageKeys],
+  });
+
+  if (!report.linkedProjectId || report.linkedProjectId.toString() !== project._id.toString()) {
+    report.linkedProjectId = project._id;
+    await report.save();
+  }
+
+  const relatedReports = await VisitReport.find({ appointmentId: report.appointmentId });
+  for (const relatedReport of relatedReports) {
+    await upsertProjectItemFromVisitReport(project, relatedReport);
+  }
+
+  await AuditLog.create({
+    action: AuditAction.PROJECT_CREATED,
+    actorId: salesStaffId,
+    targetType: 'project',
+    targetId: project._id,
+    details: { triggeredBy: 'system', reason, visitReportId: report._id },
+    ipAddress: ip,
+    userAgent: ua,
+  });
+
+  return project;
+}
+
+async function submitSiblingConsultationReports(
+  sourceReport: any,
+  _appt: any,
+  salesStaffId: string,
+  ip?: string,
+  ua?: string,
+) {
+  const siblingReports = await VisitReport.find({
+    appointmentId: sourceReport.appointmentId,
+    visitType: 'consultation',
+    salesStaffId,
+    _id: { $ne: sourceReport._id },
+    status: { $in: [VisitReportStatus.DRAFT, VisitReportStatus.RETURNED] },
+  });
+
+  for (const sibling of siblingReports) {
+    if (!sibling.recommendedOcularDate && sourceReport.recommendedOcularDate) {
+      sibling.recommendedOcularDate = sourceReport.recommendedOcularDate;
+    }
+    if (!sibling.recommendedOcularSlot && sourceReport.recommendedOcularSlot) {
+      sibling.recommendedOcularSlot = sourceReport.recommendedOcularSlot;
+    }
+    if (!sibling.actualVisitDateTime && sourceReport.actualVisitDateTime) {
+      sibling.actualVisitDateTime = sourceReport.actualVisitDateTime;
+    }
+
+    visitReportStateMachine.assertTransition(sibling.status, VisitReportStatus.SUBMITTED);
+    sibling.status = VisitReportStatus.SUBMITTED;
+    await sibling.save();
+
+    await AuditLog.create({
+      action: AuditAction.VISIT_REPORT_SUBMITTED,
+      actorId: salesStaffId,
+      targetType: 'visit_report',
+      targetId: sibling._id,
+      details: {
+        appointmentId: sourceReport.appointmentId.toString(),
+        submittedWith: sourceReport._id.toString(),
+      },
+      ipAddress: ip,
+      userAgent: ua,
+    });
+  }
+}
+
+async function completeOcularAppointmentForReport(appt: any, salesStaffId: string, ip?: string, ua?: string) {
+  if (appt.status === AppointmentStatus.COMPLETED) return;
+
+  appointmentStateMachine.assertTransition(appt.status, AppointmentStatus.COMPLETED);
+  appt.status = AppointmentStatus.COMPLETED;
+  await appt.save();
+
+  if (appt.salesStaffId) {
+    await SlotLock.deleteOne({
+      date: appt.date,
+      slotCode: appt.slotCode,
+      salesId: appt.salesStaffId,
+    });
+  }
+
+  await AuditLog.create({
+    action: AuditAction.APPOINTMENT_COMPLETED,
+    actorId: salesStaffId,
+    targetType: 'appointment',
+    targetId: appt._id,
+    details: { reason: 'ocular_report_project_created' },
+    ipAddress: ip,
+    userAgent: ua,
+  });
 }
 
 /**
@@ -178,7 +565,7 @@ async function excludeCancelledDrafts(): Promise<Record<string, unknown>> {
 }
 
 // ── Auto-create Draft (called when Agent confirms appointment) ──
-// Creates a single initial report. Sales staff can add more via createReport().
+// Creates one initial draft per booked service type. Sales staff can add more via createReport().
 // If customerSiteDetails is provided (customer filled in pre-visit info), pre-populate the report.
 
 export async function autoCreateDraft(
@@ -187,66 +574,22 @@ export async function autoCreateDraft(
   salesStaffId: Types.ObjectId | string,
   visitType: string,
   customerSiteDetails?: ICustomerSiteDetails,
+  serviceTypesOverride?: string[],
   serviceTypeOverride?: string,
   serviceTypeCustomOverride?: string,
   linkedProjectId?: Types.ObjectId | string,
 ): Promise<void> {
-  // Check if any report already exists for this appointment
-  const existing = await VisitReport.findOne({ appointmentId });
-  if (existing) {
-    // Backfill existing draft with consultation data if it was created before pre-population
-    if (
-      existing.status === VisitReportStatus.DRAFT &&
-      linkedProjectId &&
-      !existing.linkedProjectId &&
-      customerSiteDetails
-    ) {
-      existing.linkedProjectId = linkedProjectId as Types.ObjectId;
-      if (customerSiteDetails.serviceTypes?.[0]) existing.serviceType = customerSiteDetails.serviceTypes[0];
-      if (customerSiteDetails.serviceTypeCustom) existing.serviceTypeCustom = customerSiteDetails.serviceTypeCustom;
-      if (customerSiteDetails.materials) existing.materials = customerSiteDetails.materials;
-      if (customerSiteDetails.finishes) existing.finishes = customerSiteDetails.finishes;
-      if (customerSiteDetails.preferredDesign) existing.preferredDesign = customerSiteDetails.preferredDesign;
-      if (customerSiteDetails.customerRequirements) existing.customerRequirements = customerSiteDetails.customerRequirements;
-      if (customerSiteDetails.notes) existing.notes = customerSiteDetails.notes;
-      await existing.save();
-    }
-    return;
-  }
-
-  // Build report data, pre-populating from customer site details if available
-  const reportData: Record<string, any> = {
+  await ensureAppointmentServiceTypeReports(
     appointmentId,
     customerId,
     salesStaffId,
-    status: VisitReportStatus.DRAFT,
     visitType,
-    ...(linkedProjectId && { linkedProjectId }),
-    serviceType: customerSiteDetails?.serviceTypes?.[0] || serviceTypeOverride || ServiceType.CUSTOM,
-    serviceTypeCustom: customerSiteDetails?.serviceTypeCustom || serviceTypeCustomOverride,
-    measurementUnit: customerSiteDetails?.measurementUnit,
-    lineItems: customerSiteDetails?.lineItems || [],
-    siteConditions: customerSiteDetails?.siteConditions,
-    materials: customerSiteDetails?.materials,
-    finishes: customerSiteDetails?.finishes,
-    preferredDesign: customerSiteDetails?.preferredDesign,
-    customerRequirements: customerSiteDetails?.customerRequirements,
-    notes: customerSiteDetails?.notes,
-    photoKeys: customerSiteDetails?.photoKeys || [],
-    videoKeys: customerSiteDetails?.videoKeys || [],
-    sketchKeys: customerSiteDetails?.sketchKeys || [],
-    referenceImageKeys: customerSiteDetails?.referenceImageKeys || [],
-  };
-
-  const report = await VisitReport.create(reportData);
-
-  await AuditLog.create({
-    action: AuditAction.VISIT_REPORT_CREATED,
-    actorId: salesStaffId.toString(),
-    targetType: 'visit_report',
-    targetId: report._id,
-    details: { appointmentId: appointmentId.toString(), autoCreated: true },
-  });
+    customerSiteDetails,
+    serviceTypesOverride,
+    serviceTypeOverride,
+    serviceTypeCustomOverride,
+    linkedProjectId,
+  );
 }
 
 // ── Create Report (Sales Staff adds another project/report to an appointment) ──
@@ -265,17 +608,16 @@ export async function createReport(
     throw AppError.forbidden('You are not assigned to this appointment');
   }
 
-  // Appointment must be completed to add reports
-  if (appointment.status !== AppointmentStatus.COMPLETED) {
-    throw AppError.badRequest('Appointment must be marked as complete before adding visit reports');
-  }
+  const inferredVisitType =
+    input.visitType
+    || (appointment.type === 'ocular' ? 'ocular' : 'consultation');
 
   const report = await VisitReport.create({
     appointmentId: input.appointmentId,
     customerId: appointment.customerId,
     salesStaffId,
     status: VisitReportStatus.DRAFT,
-    visitType: input.visitType || 'ocular',
+    visitType: inferredVisitType,
     serviceType: input.serviceType,
     serviceTypeCustom: input.serviceTypeCustom,
     lineItems: [],
@@ -304,9 +646,24 @@ export async function getVisitReport(reportId: string) {
   const report = await VisitReport.findById(reportId)
     .populate('customerId', 'firstName lastName email phone')
     .populate('salesStaffId', 'firstName lastName email')
-    .populate('appointmentId', 'date slotCode type customerAddress');
+    .populate('appointmentId', 'date slotCode type customerAddress serviceTypes serviceTypeCustom customerSiteDetails salesStaffId');
 
   if (!report) throw AppError.notFound('Visit report not found');
+
+  const appointment = report.appointmentId as any;
+  if (appointment?._id && appointment?.salesStaffId) {
+    await ensureAppointmentServiceTypeReports(
+      appointment._id,
+      report.customerId instanceof Object ? (report.customerId as any)._id : report.customerId,
+      appointment.salesStaffId,
+      appointment.type === AppointmentType.OCULAR ? 'ocular' : 'consultation',
+      appointment.customerSiteDetails,
+      appointment.serviceTypes,
+      appointment.serviceTypes?.[0],
+      appointment.serviceTypeCustom,
+      report.linkedProjectId,
+    );
+  }
 
   // Fetch sample projects for the customer
   const customerId = report.customerId instanceof Object ? (report.customerId as any)._id : report.customerId;
@@ -332,6 +689,23 @@ export async function getVisitReport(reportId: string) {
 // ── Get by Appointment (returns ARRAY — multiple reports per appointment) ──
 
 export async function getByAppointment(appointmentId: string) {
+  const appointment = await Appointment.findById(appointmentId)
+    .select('customerId salesStaffId type serviceTypes serviceTypeCustom customerSiteDetails')
+    .lean();
+
+  if (appointment?.salesStaffId) {
+    await ensureAppointmentServiceTypeReports(
+      appointmentId,
+      appointment.customerId,
+      appointment.salesStaffId,
+      appointment.type === AppointmentType.OCULAR ? 'ocular' : 'consultation',
+      appointment.customerSiteDetails,
+      appointment.serviceTypes,
+      appointment.serviceTypes?.[0],
+      appointment.serviceTypeCustom,
+    );
+  }
+
   const reports = await VisitReport.find({ appointmentId })
     .populate('customerId', 'firstName lastName email phone')
     .populate('salesStaffId', 'firstName lastName email')
@@ -439,6 +813,21 @@ export async function updateReport(
     throw AppError.badRequest('Visit report can only be edited in draft or returned status');
   }
 
+  if (report.visitType === 'consultation') {
+    const siblingSchedule = await VisitReport.findOne({
+      appointmentId: report.appointmentId,
+      visitType: 'consultation',
+      _id: { $ne: report._id },
+      recommendedOcularDate: { $exists: true, $ne: null },
+      recommendedOcularSlot: { $exists: true, $ne: null },
+    }).select('recommendedOcularDate recommendedOcularSlot');
+
+    if (siblingSchedule) {
+      input.recommendedOcularDate = siblingSchedule.recommendedOcularDate as any;
+      input.recommendedOcularSlot = siblingSchedule.recommendedOcularSlot;
+    }
+  }
+
   const changes: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(input)) {
     if (value !== undefined) {
@@ -488,9 +877,23 @@ export async function submitReport(
   const appt = await Appointment.findById(report.appointmentId);
   if (!appt) throw AppError.notFound('Linked appointment not found');
 
-  if (appt.status !== AppointmentStatus.COMPLETED) {
+  const isConsultationReport = report.visitType === 'consultation';
+  const hasRecommendedOcularSchedule = Boolean(report.recommendedOcularDate && report.recommendedOcularSlot);
+
+  if (report.visitType === 'ocular' && appt.status !== AppointmentStatus.COMPLETED) {
+    await completeOcularAppointmentForReport(appt, salesStaffId, ip, ua);
+  }
+
+  if (!isConsultationReport && appt.status !== AppointmentStatus.COMPLETED) {
     throw AppError.badRequest(
       'The appointment must be marked as complete before submitting reports',
+      ErrorCode.VALIDATION_ERROR,
+    );
+  }
+
+  if (isConsultationReport && appt.status !== AppointmentStatus.COMPLETED && !hasRecommendedOcularSchedule) {
+    throw AppError.badRequest(
+      'Select an ocular visit date and time before scheduling the ocular visit.',
       ErrorCode.VALIDATION_ERROR,
     );
   }
@@ -518,6 +921,19 @@ export async function submitReport(
     }
   }
 
+  if (isConsultationReport && report.status === VisitReportStatus.SUBMITTED) {
+    await ensureConsultationDraftProject(
+      report,
+      appt,
+      salesStaffId,
+      'consultation_resubmitted_repair',
+      ip,
+      ua,
+    );
+    await submitSiblingConsultationReports(report, appt, salesStaffId, ip, ua);
+    return report;
+  }
+
   visitReportStateMachine.assertTransition(report.status, VisitReportStatus.SUBMITTED);
 
   report.status = VisitReportStatus.SUBMITTED;
@@ -532,45 +948,17 @@ export async function submitReport(
     userAgent: ua,
   });
 
-  if (report.visitType === 'consultation') {
+  if (isConsultationReport) {
     // ── Consultation: auto-create DRAFT project, notify agent about recommended ocular ──
-    const existingProject = await Project.findOne({ visitReportId: report._id });
-    if (!existingProject) {
-      const serviceLabel = report.serviceTypeCustom || report.serviceType || 'General Fabrication';
-      const customerNotes = (appt.customerNotes || '').trim();
-      const notesNormalized = customerNotes.toLowerCase();
-      const serviceLabelNormalized = serviceLabel.toLowerCase();
-      const titleBase = customerNotes && notesNormalized !== serviceLabelNormalized
-        ? customerNotes
-        : serviceLabel;
-      const project = await Project.create({
-        appointmentId: report.appointmentId,
-        visitReportId: report._id,
-        customerId: report.customerId,
-        salesStaffId: report.salesStaffId,
-        title: titleBase,
-        serviceType: serviceLabel,
-        description: report.customerRequirements || report.notes || 'Created from consultation',
-        siteAddress: appt.customerAddress || 'TBD',
-        measurements: report.measurements,
-        materialType: report.materials,
-        finishColor: report.finishes,
-        quantity: 1,
-        notes: report.notes,
-        designReviewStatus: 'not_required',
-        status: ProjectStatus.DRAFT,
-        mediaKeys: [...report.photoKeys, ...report.sketchKeys, ...report.referenceImageKeys],
-      });
-
-      await AuditLog.create({
-        action: AuditAction.PROJECT_CREATED,
-        actorId: salesStaffId,
-        targetType: 'project',
-        targetId: project._id,
-        details: { triggeredBy: 'system', reason: 'consultation_submitted', visitReportId: reportId },
-        ipAddress: ip,
-        userAgent: ua,
-      });
+    const serviceLabel = report.serviceTypeCustom || report.serviceType || 'General Fabrication';
+    const project = await ensureConsultationDraftProject(
+      report,
+      appt,
+      salesStaffId,
+      'consultation_submitted',
+      ip,
+      ua,
+    );
 
       // Notify agent with recommended ocular info
       const formatOcularSlot = (slot: string) => {
@@ -606,7 +994,7 @@ export async function submitReport(
         `/projects/${project._id}`,
       );
 
-      // Mark consultation as ready_for_ocular once the consultation report is submitted.
+      // Mark consultation as ready for ocular once the consultation report is submitted.
       appt.consultationReportSubmitted = true;
       if (appt.status === AppointmentStatus.COMPLETED) {
         appointmentStateMachine.assertTransition(
@@ -625,6 +1013,7 @@ export async function submitReport(
       const recommendedOcularSlot = report.recommendedOcularSlot;
 
       if (recommendedOcularDate && recommendedOcularSlot) {
+        const consultationServiceTypes = await getAppointmentVisitReportServiceTypes(report.appointmentId);
         const hasActiveOcular = await Appointment.exists({
           customerId: report.customerId,
           type: AppointmentType.OCULAR,
@@ -648,6 +1037,12 @@ export async function submitReport(
             status: AppointmentStatus.REQUESTED,
             salesStaffId: report.salesStaffId,
             bookedBy: report.salesStaffId,
+            serviceTypes: consultationServiceTypes,
+            serviceTypeCustom: appt.serviceTypeCustom,
+            customerSiteDetails: {
+              serviceTypes: consultationServiceTypes,
+              serviceTypeCustom: appt.serviceTypeCustom,
+            },
             customerNotes: `Ocular follow-up scheduled from consultation report ${report._id}`,
           });
 
@@ -692,8 +1087,18 @@ export async function submitReport(
             `/appointments/${ocularAppointment._id}`,
           );
         }
+
+        if (appt.status !== AppointmentStatus.COMPLETED) {
+          appointmentStateMachine.assertTransition(
+            appt.status,
+            AppointmentStatus.COMPLETED,
+          );
+          appt.status = AppointmentStatus.COMPLETED;
+          await appt.save();
+        }
       }
-    }
+
+    await submitSiblingConsultationReports(report, appt, salesStaffId, ip, ua);
   } else {
     // ── Ocular: update existing project with measurements, transition DRAFT → SUBMITTED ──
     const linkedProject = report.linkedProjectId
@@ -725,6 +1130,9 @@ export async function submitReport(
       }
 
       await linkedProject.save();
+      const item = await upsertProjectItemFromVisitReport(linkedProject, report);
+      item.status = linkedProject.status;
+      await item.save();
 
       await AuditLog.create({
         action: AuditAction.PROJECT_UPDATED,
@@ -773,6 +1181,7 @@ export async function submitReport(
           ? customerNotes
           : serviceLabel;
         const project = await Project.create({
+          projectNumber: await generateProjectNumber(),
           appointmentId: report.appointmentId,
           visitReportId: report._id,
           customerId: report.customerId,

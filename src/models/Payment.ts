@@ -25,6 +25,7 @@ export interface IPaymentStage {
 export interface IPaymentPlan extends Document {
   _id: Types.ObjectId;
   projectId: Types.ObjectId;
+  projectItemId?: Types.ObjectId;
   totalAmount: number;
   isPayInFull: boolean;
   stages: IPaymentStage[];
@@ -63,7 +64,8 @@ const paymentStageSchema = new Schema<IPaymentStage>(
 
 const paymentPlanSchema = new Schema<IPaymentPlan>(
   {
-    projectId: { type: Schema.Types.ObjectId, ref: 'Project', required: true, unique: true },
+    projectId: { type: Schema.Types.ObjectId, ref: 'Project', required: true },
+    projectItemId: { type: Schema.Types.ObjectId, ref: 'ProjectItem' },
     totalAmount: { type: Number, required: true, min: 0 },
     isPayInFull: { type: Boolean, default: false },
     stages: { type: [paymentStageSchema], required: true },
@@ -79,6 +81,7 @@ export const PaymentPlan = mongoose.model<IPaymentPlan>('PaymentPlan', paymentPl
 export interface IPayment extends Document {
   _id: Types.ObjectId;
   projectId: Types.ObjectId;
+  projectItemId?: Types.ObjectId;
   stageId: string;
   method: PaymentMethod;
   amountPaid: number;
@@ -141,6 +144,7 @@ const paymentEvidenceSchema = new Schema(
 const paymentSchema = new Schema<IPayment>(
   {
     projectId: { type: Schema.Types.ObjectId, ref: 'Project', required: true },
+    projectItemId: { type: Schema.Types.ObjectId, ref: 'ProjectItem' },
     stageId: { type: String, required: true },
     method: { type: String, enum: Object.values(PaymentMethod), required: true },
     amountPaid: { type: Number, required: true, min: 0 },
@@ -165,7 +169,10 @@ const paymentSchema = new Schema<IPayment>(
   { timestamps: true },
 );
 
+paymentPlanSchema.index({ projectId: 1 }, { unique: true, partialFilterExpression: { projectItemId: { $exists: false } } });
+paymentPlanSchema.index({ projectItemId: 1 }, { unique: true, sparse: true });
 paymentSchema.index({ projectId: 1, stageId: 1 });
+paymentSchema.index({ projectItemId: 1, stageId: 1 });
 paymentSchema.index({ idempotencyKey: 1 }, { unique: true, sparse: true });
 
 export const Payment = mongoose.model<IPayment>('Payment', paymentSchema);

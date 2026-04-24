@@ -1,5 +1,5 @@
 import {
-  Project, Appointment, User, AuditLog, VisitReport,
+  Project, ProjectItem, Appointment, User, AuditLog, VisitReport,
 } from '../../models/index.js';
 import { PaymentPlan } from '../../models/Payment.js';
 import { Blueprint } from '../../models/Blueprint.js';
@@ -34,6 +34,139 @@ import { v4 as uuidv4 } from 'uuid';
 import { PaymentStageStatus } from '../../utils/constants.js';
 import { getInstallmentConfig } from '../config/config.service.js';
 import { generateProjectNumber } from '../../utils/projectNumber.js';
+
+function readableServiceTitle(serviceType?: string, custom?: string) {
+  if (serviceType === 'custom' && custom?.trim()) return custom.trim();
+  return (serviceType || 'Custom')
+    .split(/[_\s-]+/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ');
+}
+
+async function syncProjectItemFromReport(project: any, report: any) {
+  const serviceType = report.serviceType || 'custom';
+  const title = readableServiceTitle(serviceType, report.serviceTypeCustom);
+  const hasInitialDesign = Boolean(report.initialDesignKeys?.length || report.initialDesignNotes?.trim());
+  const mediaKeys = [
+    ...(report.photoKeys || []),
+    ...(report.sketchKeys || []),
+    ...(report.referenceImageKeys || []),
+  ];
+
+  const item = await ProjectItem.findOneAndUpdate(
+    { projectId: project._id, serviceType },
+    {
+      $set: {
+        projectId: project._id,
+        appointmentId: project.appointmentId,
+        title,
+        serviceType,
+        serviceTypeCustom: report.serviceTypeCustom,
+        measurements: report.measurements || project.measurements,
+        measurementUnit: report.measurementUnit,
+        lineItems: report.lineItems || [],
+        materials: report.materials,
+        finishes: report.finishes,
+        preferredDesign: report.preferredDesign,
+        customerRequirements: report.customerRequirements,
+        notes: report.notes,
+        initialDesignKeys: report.initialDesignKeys || [],
+        initialDesignNotes: report.initialDesignNotes,
+        mediaKeys,
+        ...(report.visitType === 'ocular'
+          ? { ocularVisitReportId: report._id }
+          : { consultationVisitReportId: report._id }),
+      },
+      $setOnInsert: {
+        status: project.status || ProjectStatus.DRAFT,
+        designReviewStatus: hasInitialDesign ? 'pending' : 'not_required',
+      },
+    },
+    { upsert: true, new: true },
+  );
+
+  if (!report.projectItemId || report.projectItemId.toString() !== item._id.toString()) {
+    report.projectItemId = item._id;
+    if (!report.linkedProjectId) report.linkedProjectId = project._id;
+    await report.save();
+  }
+
+  return item;
+}
+
+async function ensureProjectItems(project: any) {
+  const reports = await VisitReport.find({
+    $or: [
+      { linkedProjectId: project._id },
+      { appointmentId: project.appointmentId },
+    ],
+  }).sort({ visitType: 1, createdAt: 1 });
+
+  for (const report of reports) {
+    if (report.serviceType) {
+      await syncProjectItemFromReport(project, report);
+    }
+  }
+
+  const existingItems = await ProjectItem.find({ projectId: project._id }).sort({ createdAt: 1 });
+  const existingTypes = new Set(existingItems.map((item) => item.serviceType));
+  const serviceTypes = (project.serviceTypes?.length ? project.serviceTypes : [project.serviceType])
+    .filter((serviceType: string | undefined): serviceType is string => Boolean(serviceType?.trim()));
+
+  for (const serviceType of serviceTypes) {
+    if (existingTypes.has(serviceType)) continue;
+    await ProjectItem.create({
+      projectId: project._id,
+      appointmentId: project.appointmentId,
+      serviceType,
+      title: readableServiceTitle(serviceType),
+      status: project.status || ProjectStatus.DRAFT,
+      measurements: project.measurements,
+      materials: project.materialType,
+      finishes: project.finishColor,
+      notes: project.notes,
+      initialDesignKeys: project.initialDesignKeys || [],
+      initialDesignNotes: project.initialDesignNotes,
+      designReviewStatus: hasInitialDesignSubmission(project) ? 'pending' : 'not_required',
+      mediaKeys: project.mediaKeys || [],
+    });
+  }
+
+  return ProjectItem.find({ projectId: project._id })
+    .populate('consultationVisitReportId')
+    .populate('ocularVisitReportId')
+    .sort({ createdAt: 1 })
+    .lean();
+}
+
+async function syncProjectDesignReviewRollup(project: any) {
+  const items = await ProjectItem.find({ projectId: project._id }).select('designReviewStatus initialDesignKeys initialDesignNotes').lean();
+  const reviewableItems = items.filter((item) => hasInitialDesignSubmission(item));
+
+  if (reviewableItems.length === 0) {
+    project.designReviewStatus = hasInitialDesignSubmission(project) ? project.designReviewStatus : 'not_required';
+    return;
+  }
+
+  if (reviewableItems.some((item) => item.designReviewStatus === 'declined')) {
+    project.designReviewStatus = 'declined';
+    return;
+  }
+
+  if (reviewableItems.every((item) => item.designReviewStatus === 'approved')) {
+    project.designReviewStatus = 'approved';
+    return;
+  }
+
+  project.designReviewStatus = 'pending';
+}
+
+async function attachProjectItems(project: any) {
+  const projectObject = project.toObject ? project.toObject() : { ...project };
+  projectObject.items = await ensureProjectItems(project);
+  return projectObject;
+}
 
 // ── Create Project (from completed appointment) ──
 
@@ -174,6 +307,13 @@ export async function assignEngineers(
   }
 
   await project.save();
+  await ProjectItem.updateMany(
+    {
+      projectId: project._id,
+      status: { $in: [ProjectStatus.DRAFT, ProjectStatus.SUBMITTED] },
+    },
+    { $set: { status: ProjectStatus.BLUEPRINT } },
+  );
 
   await AuditLog.create({
     action: AuditAction.PROJECT_REASSIGNED,
@@ -196,7 +336,7 @@ export async function assignEngineers(
     );
   }
 
-  return project;
+  return attachProjectItems(project);
 }
 
 export async function reassignProjectSalesStaff(
@@ -382,18 +522,36 @@ export async function reviewInitialDesign(
     throw AppError.forbidden('Only an assigned engineer or admin can review the initial design');
   }
 
-  if (!hasInitialDesignSubmission(project)) {
-    throw AppError.badRequest('No initial design has been submitted for this project');
+  const projectItem = input.projectItemId
+    ? await ProjectItem.findOne({ _id: input.projectItemId, projectId: project._id })
+    : null;
+
+  if (input.projectItemId && !projectItem) {
+    throw AppError.notFound('Project item not found');
   }
 
-  if (project.designReviewStatus === 'approved' && input.decision === 'approved') {
-    return project;
+  const reviewTarget = projectItem || project;
+  if (!hasInitialDesignSubmission(reviewTarget)) {
+    throw AppError.badRequest('No initial design has been submitted for this item');
   }
 
-  project.designReviewStatus = input.decision;
-  project.designReviewNotes = input.notes;
-  project.designReviewedBy = actorId as unknown as Types.ObjectId;
-  project.designReviewedAt = new Date();
+  if (reviewTarget.designReviewStatus === 'approved' && input.decision === 'approved') {
+    return attachProjectItems(project);
+  }
+
+  reviewTarget.designReviewStatus = input.decision;
+  reviewTarget.designReviewNotes = input.notes;
+  reviewTarget.designReviewedBy = actorId as unknown as Types.ObjectId;
+  reviewTarget.designReviewedAt = new Date();
+  if (projectItem) {
+    await projectItem.save();
+    await syncProjectDesignReviewRollup(project);
+  } else {
+    project.designReviewStatus = input.decision;
+    project.designReviewNotes = input.notes;
+    project.designReviewedBy = actorId as unknown as Types.ObjectId;
+    project.designReviewedAt = new Date();
+  }
   await project.save();
 
   await AuditLog.create({
@@ -401,7 +559,13 @@ export async function reviewInitialDesign(
     actorId,
     targetType: 'project',
     targetId: project._id,
-    details: { action: 'initial_design_reviewed', decision: input.decision, notes: input.notes || null },
+    details: {
+      action: 'initial_design_reviewed',
+      projectItemId: projectItem?._id || null,
+      itemTitle: projectItem?.title || null,
+      decision: input.decision,
+      notes: input.notes || null,
+    },
     ipAddress: ip,
     userAgent: ua,
   });
@@ -411,12 +575,12 @@ export async function reviewInitialDesign(
     NotificationCategory.PROJECT,
     input.decision === 'approved' ? 'Initial Design Approved' : 'Initial Design Needs Changes',
     input.decision === 'approved'
-      ? `The initial design for project "${project.title}" has been approved by engineering.`
-      : `Engineering declined the initial design for project "${project.title}".${input.notes ? ` Notes: ${input.notes}` : ''}`,
+      ? `The initial design for "${projectItem?.title || project.title}" has been approved by engineering.`
+      : `Engineering declined the initial design for "${projectItem?.title || project.title}".${input.notes ? ` Notes: ${input.notes}` : ''}`,
     `/projects/${project._id}`,
   );
 
-  return project;
+  return attachProjectItems(project);
 }
 
 export async function resubmitInitialDesign(
@@ -445,12 +609,31 @@ export async function resubmitInitialDesign(
     throw AppError.badRequest('Initial design can no longer be updated after the blueprint has been uploaded');
   }
 
-  project.initialDesignKeys = input.initialDesignKeys || [];
-  project.initialDesignNotes = input.initialDesignNotes || undefined;
-  project.designReviewStatus = 'pending';
-  project.designReviewedBy = undefined;
-  project.designReviewedAt = undefined;
-  project.designReviewNotes = undefined;
+  const projectItem = input.projectItemId
+    ? await ProjectItem.findOne({ _id: input.projectItemId, projectId: project._id })
+    : null;
+
+  if (input.projectItemId && !projectItem) {
+    throw AppError.notFound('Project item not found');
+  }
+
+  if (projectItem) {
+    projectItem.initialDesignKeys = input.initialDesignKeys || [];
+    projectItem.initialDesignNotes = input.initialDesignNotes || undefined;
+    projectItem.designReviewStatus = 'pending';
+    projectItem.designReviewedBy = undefined;
+    projectItem.designReviewedAt = undefined;
+    projectItem.designReviewNotes = undefined;
+    await projectItem.save();
+    await syncProjectDesignReviewRollup(project);
+  } else {
+    project.initialDesignKeys = input.initialDesignKeys || [];
+    project.initialDesignNotes = input.initialDesignNotes || undefined;
+    project.designReviewStatus = 'pending';
+    project.designReviewedBy = undefined;
+    project.designReviewedAt = undefined;
+    project.designReviewNotes = undefined;
+  }
   await project.save();
 
   await AuditLog.create({
@@ -460,8 +643,10 @@ export async function resubmitInitialDesign(
     targetId: project._id,
     details: {
       action: 'initial_design_resubmitted',
-      initialDesignKeyCount: project.initialDesignKeys.length,
-      hasNotes: !!project.initialDesignNotes,
+      projectItemId: projectItem?._id || null,
+      itemTitle: projectItem?.title || null,
+      initialDesignKeyCount: projectItem ? projectItem.initialDesignKeys.length : project.initialDesignKeys.length,
+      hasNotes: projectItem ? !!projectItem.initialDesignNotes : !!project.initialDesignNotes,
     },
     ipAddress: ip,
     userAgent: ua,
@@ -472,12 +657,12 @@ export async function resubmitInitialDesign(
       engineerId,
       NotificationCategory.PROJECT,
       'Initial Design Resubmitted',
-      `Sales staff updated the initial design for project "${project.title}". Please review it again.`,
+      `Sales staff updated the initial design for "${projectItem?.title || project.title}". Please review it again.`,
       `/projects/${project._id}`,
     );
   }
 
-  return project;
+  return attachProjectItems(project);
 }
 
 export async function backfillInitialDesign(
@@ -536,8 +721,20 @@ export async function backfillInitialDesign(
   return project;
 }
 
-async function buildPaymentStages(projectId: string, paymentType: 'full' | 'installment') {
-  const blueprint = await Blueprint.findOne({ projectId }).sort({ version: -1 });
+function itemScopedQuery(projectId: string, projectItemId?: string) {
+  return projectItemId
+    ? { projectId, projectItemId }
+    : { projectId, projectItemId: { $exists: false } };
+}
+
+type BuiltPaymentStages = Awaited<ReturnType<typeof buildPaymentStages>>;
+
+async function getActiveProjectItems(projectId: string) {
+  return ProjectItem.find({ projectId }).sort({ createdAt: 1 });
+}
+
+async function buildPaymentStages(projectId: string, paymentType: 'full' | 'installment', projectItemId?: string) {
+  const blueprint = await Blueprint.findOne(itemScopedQuery(projectId, projectItemId)).sort({ version: -1 });
   if (!blueprint?.quotation || blueprint.status !== 'approved') {
     throw AppError.badRequest('Customer payment selection is only available after the approved quotation is ready');
   }
@@ -588,6 +785,76 @@ async function buildPaymentStages(projectId: string, paymentType: 'full' | 'inst
   };
 }
 
+function buildAggregateContractData(
+  project: any,
+  itemBuilds: Array<{ item?: any; built: BuiltPaymentStages }>,
+  paymentType: 'full' | 'installment',
+) {
+  const firstBuilt = itemBuilds[0]?.built;
+  if (!firstBuilt) {
+    throw AppError.badRequest('No approved item quotations are available for contract generation');
+  }
+
+  const totalAmount = itemBuilds.reduce((sum, entry) => sum + entry.built.totalAmount, 0);
+  const maxStageCount = Math.max(...itemBuilds.map((entry) => entry.built.stages.length));
+  const stages = Array.from({ length: maxStageCount }).map((_, index) => {
+    const matchingStages = itemBuilds
+      .map((entry) => entry.built.stages[index])
+      .filter(Boolean);
+    const firstStage = matchingStages[0];
+    const amount = matchingStages.reduce((sum, stage) => sum + stage.amount, 0);
+    const percentage = totalAmount > 0 ? Math.round((amount / totalAmount) * 10000) / 100 : 0;
+    return {
+      label: paymentType === 'full' ? 'Full Payment' : firstStage?.label || `Stage ${index + 1}`,
+      description: firstStage?.description,
+      percentage,
+      amount,
+    };
+  });
+
+  const quotationLineItems = itemBuilds.flatMap(({ item, built }) => {
+    const itemTitle = item?.title || project.title;
+    return (built.blueprint.quotation?.lineItems || []).map((lineItem: any) => ({
+      label: `${itemTitle}: ${lineItem.label}`,
+      quantity: lineItem.quantity,
+      materials: lineItem.materials,
+      labor: lineItem.labor,
+      amount: lineItem.amount,
+    }));
+  });
+
+  const lineItems = itemBuilds.flatMap(({ item }) => (
+    (item?.lineItems || []).map((lineItem: any) => ({
+      label: `${item.title}: ${lineItem.label}`,
+      length: lineItem.length,
+      width: lineItem.width,
+      height: lineItem.height,
+      quantity: lineItem.quantity,
+      notes: lineItem.notes,
+    }))
+  ));
+
+  return {
+    ...buildContractData(project, firstBuilt.blueprint, {
+      totalAmount,
+      isPayInFull: paymentType === 'full',
+      stages,
+    }),
+    serviceType: itemBuilds.map(({ item }) => item?.title).filter(Boolean).join(', ') || project.serviceType,
+    lineItems,
+    quotationLineItems,
+    quotationFees: itemBuilds.reduce((sum, entry) => sum + (entry.built.blueprint.quotation?.fees || 0), 0),
+    scopeOfWork: itemBuilds
+      .map(({ item, built }) => {
+        const title = item?.title || project.title;
+        const scope = built.blueprint.quotation?.breakdown;
+        return scope ? `${title}: ${scope}` : null;
+      })
+      .filter(Boolean)
+      .join('\n\n') || firstBuilt.blueprint.quotation?.breakdown,
+  };
+}
+
 export async function selectPaymentPlan(
   projectId: string,
   input: SelectPaymentPlanInput,
@@ -604,20 +871,31 @@ export async function selectPaymentPlan(
     throw AppError.forbidden('Only the project customer can select a payment plan');
   }
 
-  const approvedBlueprint = await Blueprint.findOne({ projectId }).sort({ version: -1 });
-  if (!approvedBlueprint?.quotation || approvedBlueprint.status !== 'approved') {
-    throw AppError.badRequest('Customer payment selection is only available after the approved quotation is ready');
-  }
+  const projectItems = await getActiveProjectItems(projectId);
+  const paymentTargets = projectItems.length
+    ? projectItems.map((item) => ({ item, projectItemId: item._id.toString() }))
+    : [{ item: undefined, projectItemId: input.projectItemId }];
 
-  const existingPlan = await PaymentPlan.findOne({ projectId: project._id });
+  const itemBuilds = await Promise.all(paymentTargets.map(async (target) => ({
+    item: target.item,
+    projectItemId: target.projectItemId,
+    built: await buildPaymentStages(projectId, input.paymentType, target.projectItemId),
+  })));
 
-  if (existingPlan) {
+  const existingPlans = await Promise.all(
+    paymentTargets.map((target) => PaymentPlan.findOne(itemScopedQuery(String(project._id), target.projectItemId))),
+  );
+
+  if (existingPlans.some(Boolean)) {
+    if (!existingPlans.every(Boolean)) {
+      throw AppError.conflict('Payment plans are partially created for this project. Please contact an admin before continuing.', ErrorCode.DUPLICATE_ENTRY);
+    }
     if (![ProjectStatus.APPROVED, ProjectStatus.PAYMENT_PENDING].includes(project.status)) {
       throw AppError.conflict('A payment plan already exists for this project', ErrorCode.DUPLICATE_ENTRY);
     }
 
     if (!project.contractKey) {
-      const recoveryContractData = buildContractData(project, approvedBlueprint, existingPlan);
+      const recoveryContractData = buildAggregateContractData(project, itemBuilds, input.paymentType);
       const { originalKey } = await generateAndUploadContract(recoveryContractData);
       project.contractKey = originalKey;
       project.contractGeneratedAt = new Date();
@@ -630,29 +908,24 @@ export async function selectPaymentPlan(
     }
 
     await project.save();
-    return { paymentPlan: existingPlan, contractKey: project.contractKey, project };
+    return { paymentPlan: existingPlans[0], paymentPlans: existingPlans, contractKey: project.contractKey, project };
   }
 
   if (project.status !== ProjectStatus.APPROVED) {
     throw AppError.badRequest('Payment plan selection is only available after blueprint approval');
   }
 
-  const { blueprint, totalAmount, isPayInFull, surchargePercent, stages } = await buildPaymentStages(projectId, input.paymentType);
-
-  const contractData = buildContractData(project, blueprint, {
-    totalAmount,
-    isPayInFull,
-    stages,
-  });
+  const contractData = buildAggregateContractData(project, itemBuilds, input.paymentType);
   const { originalKey } = await generateAndUploadContract(contractData);
 
-  const plan = await PaymentPlan.create({
+  const plans = await PaymentPlan.insertMany(itemBuilds.map(({ projectItemId, built }) => ({
     projectId: project._id,
-    totalAmount,
-    isPayInFull,
-    stages,
+    projectItemId,
+    totalAmount: built.totalAmount,
+    isPayInFull: built.isPayInFull,
+    stages: built.stages,
     createdBy: actorId,
-  });
+  })));
 
   projectStateMachine.assertTransition(project.status, ProjectStatus.PAYMENT_PENDING);
   project.status = ProjectStatus.PAYMENT_PENDING;
@@ -660,13 +933,25 @@ export async function selectPaymentPlan(
   project.contractGeneratedAt = new Date();
   project.originalContractDownloadedAt = undefined as any;
   await project.save();
+  const itemIds = paymentTargets
+    .map((target) => target.projectItemId)
+    .filter((projectItemId): projectItemId is string => Boolean(projectItemId));
+  if (itemIds.length) {
+    await ProjectItem.updateMany({ _id: { $in: itemIds } }, { $set: { status: ProjectStatus.PAYMENT_PENDING } });
+  }
 
   await AuditLog.create({
     action: AuditAction.PAYMENT_PLAN_CREATED,
     actorId,
     targetType: 'payment_plan',
-    targetId: plan._id,
-    details: { projectId, paymentType: input.paymentType, totalAmount, surchargePercent, stageCount: stages.length },
+    targetId: plans[0]?._id || project._id,
+    details: {
+      projectId,
+      paymentType: input.paymentType,
+      totalAmount: itemBuilds.reduce((sum, entry) => sum + entry.built.totalAmount, 0),
+      surchargePercent: itemBuilds[0]?.built.surchargePercent || 0,
+      itemCount: plans.length,
+    },
     ipAddress: ip,
     userAgent: ua,
   });
@@ -675,11 +960,11 @@ export async function selectPaymentPlan(
     actorId,
     NotificationCategory.PAYMENT,
     'Payment Plan Created',
-    `Your ${isPayInFull ? 'full payment' : 'installment'} plan for "${project.title}" is ready. Please review and sign the contract next.`,
+    `Your ${input.paymentType === 'full' ? 'full payment' : 'installment'} plan for "${project.title}" is ready. Please review and sign the contract next.`,
     `/projects/${project._id}`,
   );
 
-  return { paymentPlan: plan, contractKey: originalKey, project };
+  return { paymentPlan: plans[0], paymentPlans: plans, contractKey: originalKey, project };
 }
 
 // ── Assign Fabrication Staff ──
@@ -868,12 +1153,12 @@ export async function getProjectById(
 
   if (!isPrivileged) {
     // Mask financial data for engineers/fabricators
-    const maskedProject = project.toObject();
+    const maskedProject = await attachProjectItems(project);
     maskedProject.totalCost = undefined;
     return maskedProject;
   }
 
-  return project;
+  return attachProjectItems(project);
 }
 
 // ── List Projects ──
@@ -882,7 +1167,6 @@ export async function getProjectByVisitReportId(visitReportId: string) {
   // Direct match: project was created from this visit report
   const project = await Project.findOne({ visitReportId }).select('_id title serviceType status').lean();
   if (project) return project;
-
   // Indirect match: ocular visit report linked to the consultation's project
   const report = await VisitReport.findById(visitReportId).select('linkedProjectId').lean();
   if (report?.linkedProjectId) {
@@ -959,32 +1243,113 @@ export async function listProjects(
       .populate('engineerIds', 'firstName lastName phone')
       .sort({ [sortField]: sortOrder })
       .skip((page - 1) * limit)
-      .limit(limit),
+      .limit(limit)
+      .lean(),
     Project.countDocuments(filter),
   ]);
 
   return {
-    items: await enrichWithBlueprintStatus(projects),
+    items: await enrichProjectsForList(projects),
     total,
     hasMore: page * limit < total,
     pagination: { page, limit, total, pages: Math.ceil(total / limit) },
   };
 }
 
-/** Attach `latestBlueprintStatus` to each project for the list view */
-async function enrichWithBlueprintStatus(projects: any[]) {
+/**
+ * Batch-enrich projects for the list view in a single pass.
+ * Replaces the previous N+1 pattern (ensureProjectItems per project + enrichWithBlueprintStatus)
+ * with 2-4 bulk queries regardless of project count.
+ */
+async function enrichProjectsForList(projects: any[]) {
   if (!projects.length) return projects;
   const projectIds = projects.map((p) => p._id);
-  // One aggregate: get the latest blueprint per project
-  const latestBlueprints = await Blueprint.aggregate([
-    { $match: { projectId: { $in: projectIds } } },
-    { $sort: { version: -1 } },
-    { $group: { _id: '$projectId', status: { $first: '$status' } } },
+
+  // 1. Batch-fetch latest blueprint status + existing project items in parallel
+  const [latestBlueprints, existingItems] = await Promise.all([
+    Blueprint.aggregate([
+      { $match: { projectId: { $in: projectIds } } },
+      { $sort: { version: -1 } },
+      { $group: { _id: '$projectId', status: { $first: '$status' } } },
+    ]),
+    ProjectItem.find({ projectId: { $in: projectIds } })
+      .sort({ createdAt: 1 })
+      .lean(),
   ]);
+
   const bpMap = new Map(latestBlueprints.map((b) => [String(b._id), b.status]));
+
+  // Group existing items by projectId
+  const itemMap = new Map<string, any[]>();
+  for (const item of existingItems) {
+    const key = String(item.projectId);
+    const list = itemMap.get(key);
+    if (list) list.push(item);
+    else itemMap.set(key, [item]);
+  }
+
+  // 2. Batch-create missing project items using bulkWrite (only when needed)
+  const bulkOps: any[] = [];
+  for (const project of projects) {
+    const pid = String(project._id);
+    const existing = itemMap.get(pid) || [];
+    const existingTypes = new Set(existing.map((i: any) => i.serviceType));
+    const serviceTypes = (project.serviceTypes?.length ? project.serviceTypes : [project.serviceType])
+      .filter((st: string | undefined): st is string => Boolean(st?.trim()));
+
+    for (const serviceType of serviceTypes) {
+      if (existingTypes.has(serviceType)) continue;
+      bulkOps.push({
+        updateOne: {
+          filter: { projectId: project._id, serviceType, deletedAt: null },
+          update: {
+            $setOnInsert: {
+              projectId: project._id,
+              appointmentId: project.appointmentId,
+              serviceType,
+              title: readableServiceTitle(serviceType),
+              status: project.status || ProjectStatus.DRAFT,
+              measurements: project.measurements,
+              materials: project.materialType,
+              finishes: project.finishColor,
+              notes: project.notes,
+              initialDesignKeys: project.initialDesignKeys || [],
+              initialDesignNotes: project.initialDesignNotes,
+              designReviewStatus: hasInitialDesignSubmission(project) ? 'pending' : 'not_required',
+              mediaKeys: project.mediaKeys || [],
+              deletedAt: null,
+            },
+          },
+          upsert: true,
+        },
+      });
+    }
+  }
+
+  if (bulkOps.length > 0) {
+    await ProjectItem.bulkWrite(bulkOps, { ordered: false });
+
+    // Re-fetch items for projects that had missing items
+    const modifiedIds = [...new Set(bulkOps.map((op) => op.updateOne.filter.projectId))];
+    const newItems = await ProjectItem.find({ projectId: { $in: modifiedIds } })
+      .sort({ createdAt: 1 })
+      .lean();
+
+    // Rebuild item map entries for modified projects
+    for (const id of modifiedIds) {
+      itemMap.set(String(id), []);
+    }
+    for (const item of newItems) {
+      const key = String(item.projectId);
+      itemMap.get(key)!.push(item);
+    }
+  }
+
+  // 3. Assemble final results
   return projects.map((p) => {
-    const obj = p.toObject ? p.toObject() : { ...p };
+    const obj = { ...p };
     obj.latestBlueprintStatus = bpMap.get(String(obj._id)) || null;
+    obj.items = itemMap.get(String(obj._id)) || [];
     return obj;
   });
 }
@@ -1046,22 +1411,38 @@ export async function generateContract(
     throw AppError.badRequest('Contract can only be generated after blueprint acceptance');
   }
 
-  // Get the latest blueprint for quotation
-  const blueprint = await Blueprint.findOne({ projectId })
-    .sort({ version: -1 });
-
-  if (!blueprint?.quotation) {
-    throw AppError.badRequest('No quotation found for this project');
-  }
-
-  // Get payment plan
-  const paymentPlan = await PaymentPlan.findOne({ projectId });
-  if (!paymentPlan) {
+  const projectItems = await getActiveProjectItems(projectId);
+  const plans = await PaymentPlan.find({ projectId });
+  const relevantPlans = projectItems.length
+    ? plans.filter((plan) => projectItems.some((item) => item._id.toString() === plan.projectItemId?.toString()))
+    : plans.filter((plan) => !plan.projectItemId);
+  if (!relevantPlans.length) {
     throw AppError.badRequest('No payment plan found for this project');
   }
 
   const customer = project.customerId as any;
-  const contractData = buildContractData(project, blueprint, paymentPlan);
+  const itemBuilds = await Promise.all(relevantPlans.map(async (plan) => {
+    const item = projectItems.find((projectItem) => projectItem._id.toString() === plan.projectItemId?.toString());
+    const blueprint = await Blueprint.findOne(itemScopedQuery(projectId, plan.projectItemId?.toString())).sort({ version: -1 });
+    return blueprint?.quotation
+      ? {
+        item,
+        built: {
+          blueprint,
+          totalAmount: plan.totalAmount,
+          isPayInFull: plan.isPayInFull,
+          surchargePercent: 0,
+          stages: plan.stages,
+        },
+      }
+      : null;
+  }));
+  const validItemBuilds = itemBuilds.filter(Boolean) as Array<{ item?: any; built: BuiltPaymentStages }>;
+  if (!validItemBuilds.length) {
+    throw AppError.badRequest('No quotation found for this project');
+  }
+  const paymentType = relevantPlans.every((plan) => plan.isPayInFull) ? 'full' : 'installment';
+  const contractData = buildAggregateContractData(project, validItemBuilds, paymentType);
 
   const { originalKey, copyKey } = await generateAndUploadContract(contractData);
 
@@ -1135,23 +1516,47 @@ export async function signContract(
 
   // Re-generate contract PDF with the signature embedded
   try {
-    const blueprint = await Blueprint.findOne({ projectId }).sort({ version: -1 });
-    const paymentPlan = await PaymentPlan.findOne({ projectId });
+    const projectItems = await getActiveProjectItems(projectId);
+    const plans = await PaymentPlan.find({ projectId });
+    const relevantPlans = projectItems.length
+      ? plans.filter((plan) => projectItems.some((item) => item._id.toString() === plan.projectItemId?.toString()))
+      : plans.filter((plan) => !plan.projectItemId);
 
-    if (blueprint?.quotation && paymentPlan) {
-      const contractData: ContractData = {
-        ...buildContractData(project, blueprint, paymentPlan),
-        customerSignatureKey: input.signatureKey,
-        contractSignedAt: project.contractSignedAt,
-      };
+    if (relevantPlans.length) {
+      const itemBuilds = await Promise.all(relevantPlans.map(async (plan) => {
+        const item = projectItems.find((projectItem) => projectItem._id.toString() === plan.projectItemId?.toString());
+        const blueprint = await Blueprint.findOne(itemScopedQuery(projectId, plan.projectItemId?.toString())).sort({ version: -1 });
+        return blueprint?.quotation
+          ? {
+            item,
+            built: {
+              blueprint,
+              totalAmount: plan.totalAmount,
+              isPayInFull: plan.isPayInFull,
+              surchargePercent: 0,
+              stages: plan.stages,
+            },
+          }
+          : null;
+      }));
+      const validItemBuilds = itemBuilds.filter(Boolean) as Array<{ item?: any; built: BuiltPaymentStages }>;
+      const paymentType = relevantPlans.every((plan) => plan.isPayInFull) ? 'full' : 'installment';
 
-      const { originalKey } = await generateAndUploadContract(contractData);
-      project.contractKey = originalKey;
-      project.contractGeneratedAt = new Date();
-      project.originalContractDownloadedAt = undefined as any; // reset one-time download
-      await project.save();
+      if (validItemBuilds.length) {
+        const contractData: ContractData = {
+          ...buildAggregateContractData(project, validItemBuilds, paymentType),
+          customerSignatureKey: input.signatureKey,
+          contractSignedAt: project.contractSignedAt,
+        };
 
-      logger.info(`Contract re-generated with signature for project ${projectId}: ${originalKey}`);
+        const { originalKey } = await generateAndUploadContract(contractData);
+        project.contractKey = originalKey;
+        project.contractGeneratedAt = new Date();
+        project.originalContractDownloadedAt = undefined as any; // reset one-time download
+        await project.save();
+
+        logger.info(`Contract re-generated with signature for project ${projectId}: ${originalKey}`);
+      }
     }
   } catch (err) {
     logger.error('Failed to re-generate contract with signature', err);

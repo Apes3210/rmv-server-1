@@ -77,6 +77,7 @@ export interface IVisitReport extends Document {
   recommendedOcularDate?: Date;
   recommendedOcularSlot?: string;
   linkedProjectId?: Types.ObjectId;
+  projectItemId?: Types.ObjectId;
 
   // File uploads (R2 keys)
   photoKeys: string[];
@@ -183,6 +184,7 @@ const visitReportSchema = new Schema<IVisitReport>(
     recommendedOcularDate: { type: Date },
     recommendedOcularSlot: { type: String },
     linkedProjectId: { type: Schema.Types.ObjectId, ref: 'Project' },
+    projectItemId: { type: Schema.Types.ObjectId, ref: 'ProjectItem' },
 
     returnReason: { type: String },
   },
@@ -190,6 +192,7 @@ const visitReportSchema = new Schema<IVisitReport>(
 );
 
 visitReportSchema.index({ appointmentId: 1 }); // no longer unique — multiple reports per appointment
+visitReportSchema.index({ projectItemId: 1 });
 visitReportSchema.index({ salesStaffId: 1, status: 1 });
 visitReportSchema.index({ status: 1 });
 

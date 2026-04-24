@@ -71,11 +71,13 @@ export const signEngineerContractSchema = z.object({
 export const reviewInitialDesignSchema = z.object({
   decision: z.enum(['approved', 'declined']),
   notes: z.string().max(2000).trim().optional(),
+  projectItemId: z.string().min(1).optional(),
 });
 
 export const resubmitInitialDesignSchema = z.object({
   initialDesignKeys: z.array(z.string()).max(10).optional(),
   initialDesignNotes: z.string().max(2000).trim().optional(),
+  projectItemId: z.string().min(1).optional(),
 }).refine(
   (data) => (data.initialDesignKeys?.length || 0) > 0 || !!data.initialDesignNotes,
   {
@@ -98,6 +100,7 @@ export const backfillInitialDesignSchema = z.object({
 
 export const selectPaymentPlanSchema = z.object({
   paymentType: z.enum(['full', 'installment']),
+  projectItemId: z.string().min(1).optional(),
 });
 
 export const submitProjectReviewSchema = z.object({

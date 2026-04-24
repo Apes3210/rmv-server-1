@@ -44,6 +44,7 @@ export const getPaymentPlanByProject = asyncHandler(async (req: Request, res: Re
     (req.params.projectId as string),
     req.userId!,
     req.userRoles!,
+    req.query.projectItemId as string | undefined,
   );
   res.json({ success: true, data: plan });
 });
@@ -53,6 +54,7 @@ export const listPaymentsByProject = asyncHandler(async (req: Request, res: Resp
     (req.params.projectId as string),
     req.userId!,
     req.userRoles!,
+    req.query.projectItemId as string | undefined,
   );
   res.json({ success: true, data: payments });
 });

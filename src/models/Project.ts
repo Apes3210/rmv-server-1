@@ -15,6 +15,7 @@ export interface IProject extends Document {
   title: string;
   totalCost?: number;
   serviceType: string; // e.g., gate, railing, kitchen
+  serviceTypes?: string[];
   description: string;
   siteAddress: string;
   siteAddressStructured?: {
@@ -93,6 +94,7 @@ const projectSchema = new Schema<IProject>(
     title: { type: String, required: true, trim: true },
     totalCost: { type: Number },
     serviceType: { type: String, required: true, trim: true },
+    serviceTypes: [{ type: String, trim: true }],
     description: { type: String, required: true },
     siteAddress: { type: String, required: true },
     siteAddressStructured: {

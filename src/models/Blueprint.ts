@@ -4,6 +4,7 @@ import { BlueprintStatus } from '../utils/constants.js';
 export interface IBlueprint extends Document {
   _id: Types.ObjectId;
   projectId: Types.ObjectId;
+  projectItemId?: Types.ObjectId;
   version: number;
   status: BlueprintStatus;
   blueprintKey: string;  // R2 key for technical blueprint (fabricators)
@@ -40,6 +41,7 @@ export interface IBlueprint extends Document {
 const blueprintSchema = new Schema<IBlueprint>(
   {
     projectId: { type: Schema.Types.ObjectId, ref: 'Project', required: true },
+    projectItemId: { type: Schema.Types.ObjectId, ref: 'ProjectItem' },
     version: { type: Number, required: true, min: 1 },
     status: {
       type: String,
@@ -79,8 +81,9 @@ const blueprintSchema = new Schema<IBlueprint>(
   { timestamps: true },
 );
 
-// Unique version per project
-blueprintSchema.index({ projectId: 1, version: 1 }, { unique: true });
+// Unique version per project item. Legacy project-level blueprints keep projectItemId empty.
+blueprintSchema.index({ projectId: 1, projectItemId: 1, version: 1 }, { unique: true });
 blueprintSchema.index({ projectId: 1 });
+blueprintSchema.index({ projectItemId: 1 });
 
 export const Blueprint = mongoose.model<IBlueprint>('Blueprint', blueprintSchema);

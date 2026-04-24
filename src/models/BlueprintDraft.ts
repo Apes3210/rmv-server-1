@@ -23,6 +23,7 @@ export interface IBlueprintDraftQuotationMilestone {
 export interface IBlueprintDraft extends Document {
   _id: Types.ObjectId;
   projectId: Types.ObjectId;
+  projectItemId?: Types.ObjectId;
   mode: 'initial' | 'revision';
   sourceBlueprintId?: Types.ObjectId;
   files: {
@@ -76,7 +77,8 @@ const blueprintDraftMilestoneSchema = new Schema<IBlueprintDraftQuotationMilesto
 
 const blueprintDraftSchema = new Schema<IBlueprintDraft>(
   {
-    projectId: { type: Schema.Types.ObjectId, ref: 'Project', required: true, unique: true },
+    projectId: { type: Schema.Types.ObjectId, ref: 'Project', required: true },
+    projectItemId: { type: Schema.Types.ObjectId, ref: 'ProjectItem' },
     mode: {
       type: String,
       enum: ['initial', 'revision'],
@@ -103,7 +105,7 @@ const blueprintDraftSchema = new Schema<IBlueprintDraft>(
   { timestamps: true },
 );
 
-blueprintDraftSchema.index({ projectId: 1 }, { unique: true });
+blueprintDraftSchema.index({ projectId: 1, projectItemId: 1 }, { unique: true });
 blueprintDraftSchema.index({ sourceBlueprintId: 1 });
 
 export const BlueprintDraft = mongoose.model<IBlueprintDraft>('BlueprintDraft', blueprintDraftSchema);

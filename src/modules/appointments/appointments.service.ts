@@ -696,6 +696,7 @@ export async function confirmAppointment(
     salesStaff._id,
     appointment.type === AppointmentType.OCULAR ? 'ocular' : 'consultation',
     appointment.customerSiteDetails || undefined,
+    appointment.serviceTypes,
     appointment.serviceTypes?.[0],
     appointment.serviceTypeCustom,
   );
@@ -1209,15 +1210,23 @@ export async function agentFinalizeOcular(
   // Pre-populate ocular report with data from the consultation visit report
   let consultationSiteDetails: import('../../models/Appointment.js').ICustomerSiteDetails | undefined;
   if (consultationProject) {
-    const consultationReport = await VisitReport.findOne({
+    const consultationReports = await VisitReport.find({
       customerId: appointment.customerId,
       visitType: 'consultation',
       status: { $in: [VisitReportStatus.SUBMITTED, VisitReportStatus.COMPLETED] },
-    }).sort({ createdAt: -1 }).lean();
+    }).sort({ createdAt: 1 }).lean();
+    const consultationReport = consultationReports.at(-1);
+    const serviceTypes = appointment.serviceTypes?.length
+      ? appointment.serviceTypes
+      : [...new Set(
+        consultationReports
+          .map((report) => report.serviceType)
+          .filter((value): value is string => Boolean(value?.trim())),
+      )];
     if (consultationReport) {
       consultationSiteDetails = {
-        serviceTypes: consultationReport.serviceType ? [consultationReport.serviceType] : undefined,
-        serviceTypeCustom: consultationReport.serviceTypeCustom,
+        serviceTypes: serviceTypes.length ? serviceTypes : undefined,
+        serviceTypeCustom: appointment.serviceTypeCustom || consultationReport.serviceTypeCustom,
         materials: consultationReport.materials,
         finishes: consultationReport.finishes,
         preferredDesign: consultationReport.preferredDesign,
@@ -1234,8 +1243,9 @@ export async function agentFinalizeOcular(
     salesStaff._id,
     'ocular',
     consultationSiteDetails,
-    consultationProject?.serviceType,
-    undefined, // serviceTypeCustomOverride
+    consultationSiteDetails?.serviceTypes || appointment.serviceTypes,
+    consultationSiteDetails?.serviceTypes?.[0] || appointment.serviceTypes?.[0] || consultationProject?.serviceType,
+    appointment.serviceTypeCustom || consultationSiteDetails?.serviceTypeCustom,
     consultationProject?._id,
   );
 

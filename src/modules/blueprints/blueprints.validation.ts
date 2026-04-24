@@ -25,6 +25,7 @@ const quotationSchema = z.object({
 
 export const uploadBlueprintSchema = z.object({
   projectId: z.string().min(1),
+  projectItemId: z.string().min(1).optional(),
   blueprintKey: z.string().min(1),
   designKey: z.string().min(1),
   costingKey: z.string().min(1),
@@ -78,6 +79,7 @@ const draftQuotationSchema = z.object({
 }).optional();
 
 export const upsertBlueprintDraftSchema = z.object({
+  projectItemId: z.string().min(1).optional(),
   mode: z.enum(['initial', 'revision']),
   sourceBlueprintId: z.string().min(1).optional(),
   files: z.object({

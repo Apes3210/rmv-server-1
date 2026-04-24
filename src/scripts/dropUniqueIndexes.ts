@@ -55,6 +55,43 @@ async function dropUniqueIndexes(): Promise<void> {
       logger.info('No unique appointmentId index found on projects — already clean.');
     }
 
+    // ── Blueprint: drop old unique projectId + version index ──
+    const blueprintCollection = db.collection('blueprints');
+    const blueprintIndexes = await blueprintCollection.indexes();
+    const blueprintProjectVersionUnique = blueprintIndexes.find(
+      (idx) =>
+        idx.unique &&
+        idx.key &&
+        Object.keys(idx.key).length === 2 &&
+        idx.key.projectId === 1 &&
+        idx.key.version === 1,
+    );
+
+    if (blueprintProjectVersionUnique) {
+      await blueprintCollection.dropIndex(blueprintProjectVersionUnique.name!);
+      logger.info(`Dropped unique index "${blueprintProjectVersionUnique.name}" from blueprints`);
+    } else {
+      logger.info('No old unique projectId/version index found on blueprints — already clean.');
+    }
+
+    // ── PaymentPlan: drop old unique projectId-only index ──
+    const paymentPlanCollection = db.collection('paymentplans');
+    const paymentPlanIndexes = await paymentPlanCollection.indexes();
+    const paymentPlanProjectUnique = paymentPlanIndexes.find(
+      (idx) =>
+        idx.unique &&
+        idx.key &&
+        Object.keys(idx.key).length === 1 &&
+        idx.key.projectId === 1,
+    );
+
+    if (paymentPlanProjectUnique) {
+      await paymentPlanCollection.dropIndex(paymentPlanProjectUnique.name!);
+      logger.info(`Dropped unique index "${paymentPlanProjectUnique.name}" from paymentplans`);
+    } else {
+      logger.info('No old unique projectId index found on paymentplans — already clean.');
+    }
+
     logger.info('Migration complete.');
     await mongoose.connection.close();
     process.exit(0);

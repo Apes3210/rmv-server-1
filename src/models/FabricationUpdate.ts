@@ -4,6 +4,7 @@ import { FabricationStatus } from '../utils/constants.js';
 export interface IFabricationUpdate extends Document {
   _id: Types.ObjectId;
   projectId: Types.ObjectId;
+  projectItemId?: Types.ObjectId;
   status: FabricationStatus;
   notes: string; // Required per spec
   photoKeys: string[]; // Optional photos per update
@@ -14,6 +15,7 @@ export interface IFabricationUpdate extends Document {
 const fabricationUpdateSchema = new Schema<IFabricationUpdate>(
   {
     projectId: { type: Schema.Types.ObjectId, ref: 'Project', required: true },
+    projectItemId: { type: Schema.Types.ObjectId, ref: 'ProjectItem' },
     status: {
       type: String,
       enum: Object.values(FabricationStatus),
@@ -33,5 +35,6 @@ const fabricationUpdateSchema = new Schema<IFabricationUpdate>(
 );
 
 fabricationUpdateSchema.index({ projectId: 1, createdAt: -1 });
+fabricationUpdateSchema.index({ projectItemId: 1, createdAt: -1 });
 
 export const FabricationUpdate = mongoose.model<IFabricationUpdate>('FabricationUpdate', fabricationUpdateSchema);

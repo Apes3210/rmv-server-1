@@ -166,18 +166,49 @@ export async function updateUser(userId: string, input: UpdateUserInput, adminId
     user.expiresAt = input.expiresAt ? new Date(input.expiresAt) : undefined;
   }
 
-  if (input.availabilityStatus !== undefined || input.availabilityNote !== undefined) {
+  if (
+    input.availabilityStatus !== undefined
+    || input.availabilityNote !== undefined
+    || input.shiftStartAt !== undefined
+    || input.shiftEndAt !== undefined
+  ) {
     if (!targetsInternalRole) {
       throw AppError.badRequest('Availability status can only be set for internal staff accounts');
     }
 
+    const now = new Date();
+
     if (input.availabilityStatus !== undefined) {
+      const openSession = await getOpenAvailabilitySession(user._id);
+      if (openSession) {
+        openSession.closedAt = now;
+        openSession.updatedBy = adminId as unknown as Types.ObjectId;
+        await openSession.save();
+      }
       user.availabilityStatus = input.availabilityStatus;
     }
     if (input.availabilityNote !== undefined) {
       user.availabilityNote = input.availabilityNote || undefined;
     }
-    user.availabilityUpdatedAt = new Date();
+    user.availabilityUpdatedAt = now;
+
+    if (input.availabilityStatus !== undefined) {
+      await AvailabilitySession.create({
+        userId: user._id,
+        availabilityStatus: input.availabilityStatus,
+        availabilityNote: input.availabilityNote || undefined,
+        shiftStartAt:
+          input.availabilityStatus === StaffAvailabilityStatus.AVAILABLE && input.shiftStartAt
+            ? new Date(input.shiftStartAt)
+            : undefined,
+        shiftEndAt:
+          input.availabilityStatus === StaffAvailabilityStatus.AVAILABLE && input.shiftEndAt
+            ? new Date(input.shiftEndAt)
+            : undefined,
+        createdBy: adminId as unknown as Types.ObjectId,
+        updatedBy: adminId as unknown as Types.ObjectId,
+      });
+    }
   }
 
   if (input.roles && !targetsInternalRole) {
@@ -337,42 +368,30 @@ export async function updateSalesAvailability(
   return { message: 'Availability updated' };
 }
 
-// Self/Admin: Update own availability status
+// Employee: Time in. Availability scheduling remains admin-managed.
 export async function updateOwnAvailability(userId: string, input: UpdateOwnAvailabilityInput) {
   const user = await User.findById(userId);
   if (!user) throw AppError.notFound('User not found');
   if (!hasInternalAvailabilityRole(user.roles)) {
-    throw AppError.badRequest('Only internal staff can manage availability');
+    throw AppError.badRequest('Only internal staff can time in');
   }
 
   const now = new Date();
   const openSession = await getOpenAvailabilitySession(user._id);
   if (openSession) {
-    openSession.closedAt = now;
-    openSession.updatedBy = user._id;
-    await openSession.save();
+    throw AppError.badRequest('You are already timed in');
   }
 
-  const shiftStartAt =
-    input.availabilityStatus === StaffAvailabilityStatus.AVAILABLE && input.shiftStartAt
-      ? new Date(input.shiftStartAt)
-      : undefined;
-  const shiftEndAt =
-    input.availabilityStatus === StaffAvailabilityStatus.AVAILABLE && input.shiftEndAt
-      ? new Date(input.shiftEndAt)
-      : undefined;
-
-  user.availabilityStatus = input.availabilityStatus;
-  user.availabilityNote = input.availabilityNote || undefined;
+  user.availabilityStatus = StaffAvailabilityStatus.AVAILABLE;
+  user.availabilityNote = input.availabilityNote || 'Timed in';
   user.availabilityUpdatedAt = now;
   await user.save();
 
   await AvailabilitySession.create({
     userId: user._id,
-    availabilityStatus: input.availabilityStatus,
-    availabilityNote: input.availabilityNote || undefined,
-    shiftStartAt,
-    shiftEndAt,
+    availabilityStatus: StaffAvailabilityStatus.AVAILABLE,
+    availabilityNote: input.availabilityNote || 'Timed in',
+    shiftStartAt: now,
     createdBy: user._id,
     updatedBy: user._id,
   });
@@ -383,11 +402,8 @@ export async function updateOwnAvailability(userId: string, input: UpdateOwnAvai
     targetType: 'user',
     targetId: user._id,
     details: {
-      availabilityStatus: input.availabilityStatus,
-      availabilityNote: input.availabilityNote || null,
-      shiftStartAt: shiftStartAt?.toISOString() || null,
-      shiftEndAt: shiftEndAt?.toISOString() || null,
-      selfUpdate: true,
+      timeIn: true,
+      shiftStartAt: now.toISOString(),
     },
   });
 
@@ -402,16 +418,17 @@ export async function closeOwnAvailability(userId: string) {
   const user = await User.findById(userId);
   if (!user) throw AppError.notFound('User not found');
   if (!hasInternalAvailabilityRole(user.roles)) {
-    throw AppError.badRequest('Only internal staff can close availability');
+    throw AppError.badRequest('Only internal staff can time out');
   }
 
   const session = await getOpenAvailabilitySession(user._id);
   if (!session) {
-    throw AppError.badRequest('There is no open availability to close');
+    throw AppError.badRequest('You are not currently timed in');
   }
 
   const now = new Date();
   session.closedAt = now;
+  session.shiftEndAt = session.shiftEndAt || now;
   session.updatedBy = user._id;
   await session.save();
 
@@ -425,7 +442,7 @@ export async function closeOwnAvailability(userId: string) {
     actorId: user._id,
     targetType: 'user',
     targetId: user._id,
-    details: { selfUpdate: true, closedAvailability: true, closedSessionId: session._id.toString() },
+    details: { timeOut: true, closedSessionId: session._id.toString(), shiftEndAt: now.toISOString() },
   });
 
   return {

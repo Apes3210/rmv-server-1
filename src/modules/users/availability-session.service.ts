@@ -32,7 +32,7 @@ const PH_TIMEZONE_OFFSET = '+08:00';
 export interface AvailabilityShiftState {
   sessionId: string;
   shiftStartAt: Date;
-  shiftEndAt: Date;
+  shiftEndAt?: Date;
   isCurrent: boolean;
   reminderSentAt?: Date;
 }
@@ -96,6 +96,15 @@ export function doesShiftCoverDateTime(
   const shiftStart = session.shiftStartAt instanceof Date ? session.shiftStartAt : new Date(session.shiftStartAt as any);
   const shiftEnd = session.shiftEndAt instanceof Date ? session.shiftEndAt : new Date(session.shiftEndAt as any);
 
+  // Employee time-in sessions intentionally have no shift end until time-out.
+  // For this mode, being actively timed in means assignable.
+  if (!session.shiftEndAt) {
+    return (
+      session.availabilityStatus === StaffAvailabilityStatus.AVAILABLE
+      && !isNaN(shiftStart.getTime())
+    );
+  }
+
   if (isNaN(shiftStart.getTime()) || isNaN(shiftEnd.getTime())) {
     return false;
   }
@@ -111,14 +120,14 @@ function toShiftState(
   session: Pick<IAvailabilitySession, '_id' | 'shiftStartAt' | 'shiftEndAt' | 'reminderSentAt'>,
   now = new Date(),
 ): AvailabilityShiftState | undefined {
-  if (!session.shiftStartAt || !session.shiftEndAt) return undefined;
+  if (!session.shiftStartAt) return undefined;
   return {
     sessionId: session._id.toString(),
     shiftStartAt: session.shiftStartAt,
     shiftEndAt: session.shiftEndAt,
     isCurrent:
       session.shiftStartAt.getTime() <= now.getTime()
-      && session.shiftEndAt.getTime() >= now.getTime(),
+      && (!session.shiftEndAt || session.shiftEndAt.getTime() >= now.getTime()),
     reminderSentAt: session.reminderSentAt,
   };
 }
@@ -182,7 +191,7 @@ export function buildAvailabilityStateSummary(
       return summary;
     }
 
-    if (shiftState.shiftEndAt.getTime() < now.getTime()) {
+    if (shiftState.shiftEndAt && shiftState.shiftEndAt.getTime() < now.getTime()) {
       summary.expiredShift = shiftState;
       summary.activeShift = undefined;
       summary.availabilitySetupRequired = true;
@@ -300,4 +309,3 @@ export async function evaluateSalesAssignmentEligibility(input: {
 
   return { assignmentEligible: true };
 }
-

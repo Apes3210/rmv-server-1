@@ -36,6 +36,7 @@ export const listBlueprintsByProject = asyncHandler(async (req: Request, res: Re
     (req.params.projectId as string),
     req.userId!,
     req.userRoles!,
+    req.query.projectItemId as string | undefined,
   );
   res.json({ success: true, data: blueprints });
 });
@@ -45,6 +46,7 @@ export const getLatestBlueprint = asyncHandler(async (req: Request, res: Respons
     (req.params.projectId as string),
     req.userId!,
     req.userRoles!,
+    req.query.projectItemId as string | undefined,
   );
   res.json({ success: true, data: blueprint });
 });
@@ -53,6 +55,7 @@ export const getBlueprintDraft = asyncHandler(async (req: Request, res: Response
   const draft = await blueprintsService.getBlueprintDraft(
     (req.params.projectId as string),
     req.userId!,
+    req.query.projectItemId as string | undefined,
   );
   res.json({ success: true, data: draft });
 });
@@ -72,6 +75,7 @@ export const finalizeBlueprintDraft = asyncHandler(async (req: Request, res: Res
     req.userId!,
     req.ip,
     req.get('user-agent'),
+    req.query.projectItemId as string | undefined,
   );
   res.status(201).json({ success: true, data: blueprint });
 });
@@ -80,6 +84,7 @@ export const deleteBlueprintDraft = asyncHandler(async (req: Request, res: Respo
   await blueprintsService.deleteBlueprintDraft(
     (req.params.projectId as string),
     req.userId!,
+    req.query.projectItemId as string | undefined,
   );
   res.status(204).send();
 });

@@ -1,7 +1,7 @@
 import { v4 as uuidv4 } from 'uuid';
 import { PutObjectCommand } from '@aws-sdk/client-s3';
 import {
-  PaymentPlan, Payment, Project, User, AuditLog, ReceiptCounter, Appointment,
+  PaymentPlan, Payment, Project, ProjectItem, User, AuditLog, ReceiptCounter, Appointment,
 } from '../../models/index.js';
 import { AppError, ErrorCode } from '../../utils/appError.js';
 import {
@@ -71,6 +71,49 @@ function appendPaymentEvidenceVersion(
   });
 }
 
+function itemScopedQuery(projectId: string, projectItemId?: string) {
+  return projectItemId
+    ? { projectId, projectItemId }
+    : { projectId, projectItemId: { $exists: false } };
+}
+
+async function allProjectItemsHaveFirstPaymentVerified(projectId: string) {
+  const items = await ProjectItem.find({ projectId }).select('_id');
+  if (!items.length) return true;
+
+  const plans = await PaymentPlan.find({
+    projectId,
+    projectItemId: { $in: items.map((item) => item._id) },
+  });
+  if (plans.length < items.length) return false;
+
+  return plans.every((plan) => plan.stages[0]?.status === PaymentStageStatus.VERIFIED);
+}
+
+async function advancePaidScopeToFabrication(project: any, projectItemId?: string) {
+  if (projectItemId) {
+    await ProjectItem.findByIdAndUpdate(projectItemId, { $set: { status: ProjectStatus.FABRICATION } });
+  }
+
+  const parentReady = projectItemId
+    ? await allProjectItemsHaveFirstPaymentVerified(project._id.toString())
+    : true;
+
+  if (parentReady && project.status === ProjectStatus.PAYMENT_PENDING) {
+    projectStateMachine.assertTransition(project.status, ProjectStatus.FABRICATION);
+    project.status = ProjectStatus.FABRICATION;
+    await project.save();
+
+    try {
+      await seedFabricationItems(project._id.toString());
+    } catch (err) {
+      logger.error(`Failed to seed fabrication items for project ${project._id}`, err);
+    }
+  }
+
+  return parentReady;
+}
+
 // ── Cashier: Create Payment Plan ──
 
 export async function createPaymentPlan(
@@ -92,7 +135,7 @@ export async function createPaymentPlan(
   }
 
   // Check no existing plan
-  const existing = await PaymentPlan.findOne({ projectId: input.projectId });
+  const existing = await PaymentPlan.findOne(itemScopedQuery(input.projectId, input.projectItemId));
   if (existing) {
     throw AppError.conflict(
       'Payment plan already exists for this project',
@@ -122,6 +165,7 @@ export async function createPaymentPlan(
 
   const plan = await PaymentPlan.create({
     projectId: input.projectId,
+    projectItemId: input.projectItemId,
     totalAmount: input.totalAmount,
     isPayInFull,
     stages,
@@ -132,6 +176,9 @@ export async function createPaymentPlan(
   projectStateMachine.assertTransition(project.status, ProjectStatus.PAYMENT_PENDING);
   project.status = ProjectStatus.PAYMENT_PENDING;
   await project.save();
+  if (input.projectItemId) {
+    await ProjectItem.findByIdAndUpdate(input.projectItemId, { $set: { status: ProjectStatus.PAYMENT_PENDING } });
+  }
 
   await AuditLog.create({
     action: AuditAction.PAYMENT_PLAN_CREATED,
@@ -241,7 +288,7 @@ export async function verifyPayment(
 
   paymentStateMachine.assertTransition(payment.status, PaymentStageStatus.VERIFIED);
 
-  const plan = await PaymentPlan.findOne({ projectId: payment.projectId });
+  const plan = await PaymentPlan.findOne(itemScopedQuery(payment.projectId.toString(), payment.projectItemId?.toString()));
   if (!plan) throw AppError.notFound('Payment plan not found');
 
   const stage = plan.stages.find(s => s.stageId === payment.stageId);
@@ -365,28 +412,24 @@ export async function verifyPayment(
     }, receipt.buffer.length > 0 ? receipt.buffer : undefined);
   }
 
-  // Check if first stage (down payment / full payment) is verified — transition project to fabrication
+  // Check if first stage (down payment / full payment) is verified — transition this item to fabrication.
+  // The parent project enters fabrication only after every item has its first required payment verified.
   const firstStageVerified = plan.stages[0]?.status === PaymentStageStatus.VERIFIED;
   if (firstStageVerified && project.status === ProjectStatus.PAYMENT_PENDING) {
-    projectStateMachine.assertTransition(project.status, ProjectStatus.FABRICATION);
-    project.status = ProjectStatus.FABRICATION;
-    await project.save();
-
-    // Epic 8: Seed fabrication items from latest VisitReport (or fallback to generic)
-    try {
-      await seedFabricationItems(project._id.toString());
-    } catch (err) {
-      logger.error(`Failed to seed fabrication items for project ${project._id}`, err);
-    }
+    const parentReady = await advancePaidScopeToFabrication(project, payment.projectItemId?.toString());
 
     const allVerified = plan.stages.every(s => s.status === PaymentStageStatus.VERIFIED);
     await createAndSendNotification(
       project.customerId,
       NotificationCategory.SYSTEM,
-      allVerified ? 'All Payments Verified' : 'Down Payment Verified',
-      allVerified
-        ? `All payments for "${project.title}" are verified! Your project is now moving to fabrication.`
-        : `Your down payment for "${project.title}" has been verified! Your project is now moving to fabrication. Remaining payments can be made during the fabrication phase.`,
+      parentReady
+        ? (allVerified ? 'All Payments Verified' : 'Down Payment Verified')
+        : 'Item Payment Verified',
+      parentReady
+        ? (allVerified
+          ? `All payments for "${project.title}" are verified! Your project is now moving to fabrication.`
+          : `The required first payments for "${project.title}" are verified. Your project is now moving to fabrication. Remaining payments can be made during the fabrication phase.`)
+        : `Payment for one item in "${project.title}" has been verified. Other items still need their required first payment before the full project enters fabrication.`,
       `/projects/${project._id}`,
     );
   }
@@ -416,7 +459,7 @@ export async function declinePayment(
 
   paymentStateMachine.assertTransition(payment.status, PaymentStageStatus.DECLINED);
 
-  const plan = await PaymentPlan.findOne({ projectId: payment.projectId });
+  const plan = await PaymentPlan.findOne(itemScopedQuery(payment.projectId.toString(), payment.projectItemId?.toString()));
   if (!plan) throw AppError.notFound('Payment plan not found');
 
   const stage = plan.stages.find(s => s.stageId === payment.stageId);
@@ -510,9 +553,10 @@ export async function getPaymentPlanByProject(
   projectId: string,
   actorId: string,
   actorRoles: Role[],
+  projectItemId?: string,
 ) {
   await assertPaymentProjectAccess(projectId, actorId, actorRoles);
-  const plan = await PaymentPlan.findOne({ projectId })
+  const plan = await PaymentPlan.findOne(itemScopedQuery(projectId, projectItemId))
     .populate('createdBy', 'firstName lastName');
   return plan;
 }
@@ -523,9 +567,10 @@ export async function listPaymentsByProject(
   projectId: string,
   actorId: string,
   actorRoles: Role[],
+  projectItemId?: string,
 ) {
   await assertPaymentProjectAccess(projectId, actorId, actorRoles);
-  const payments = await Payment.find({ projectId })
+  const payments = await Payment.find(itemScopedQuery(projectId, projectItemId))
     .populate('verifiedBy', 'firstName lastName')
     .sort({ createdAt: -1 });
   return payments;
@@ -785,6 +830,7 @@ export async function requestStageCashPayment(
 
   const payment = await Payment.create({
     projectId: plan.projectId,
+    projectItemId: plan.projectItemId,
     stageId: stage.stageId,
     method: PaymentMethod.CASH,
     amountPaid: remaining,
@@ -872,6 +918,7 @@ export async function handleStagePaymongoPayment(checkoutSessionId: string) {
   // Create Payment record — awaiting cashier verification
   const payment = await Payment.create({
     projectId: plan.projectId,
+    projectItemId: plan.projectItemId,
     stageId: stage.stageId,
     method: PaymentMethod.QRPH,
     amountPaid,
@@ -959,6 +1006,7 @@ export async function simulateStagePayment(
   // Create Payment record — awaiting cashier verification (same as real QR flow)
   const payment = await Payment.create({
     projectId: plan.projectId,
+    projectItemId: plan.projectItemId,
     stageId: stage.stageId,
     method: PaymentMethod.QRPH,
     amountPaid: remaining,
@@ -1039,6 +1087,7 @@ export async function recordCashPayment(
   const receiptNumber = await generateNextReceiptNumber();
   const payment = await Payment.create({
     projectId: plan.projectId,
+    projectItemId: plan.projectItemId,
     stageId: stage.stageId,
     method: PaymentMethod.CASH,
     amountPaid,
@@ -1134,21 +1183,24 @@ export async function recordCashPayment(
     }, cashReceipt.buffer.length > 0 ? cashReceipt.buffer : undefined);
   }
 
-  // Check if first stage (down payment / full payment) is verified → fabrication
+  // Check if first stage (down payment / full payment) is verified → item fabrication.
+  // The parent project enters fabrication only after all project items satisfy this gate.
   const firstStageVerified = plan.stages[0]?.status === PaymentStageStatus.VERIFIED;
   if (firstStageVerified && project.status === ProjectStatus.PAYMENT_PENDING) {
-    projectStateMachine.assertTransition(project.status, ProjectStatus.FABRICATION);
-    project.status = ProjectStatus.FABRICATION;
-    await project.save();
+    const parentReady = await advancePaidScopeToFabrication(project, plan.projectItemId?.toString());
 
     const allVerified = plan.stages.every(s => s.status === PaymentStageStatus.VERIFIED);
     await createAndSendNotification(
       project.customerId,
       NotificationCategory.SYSTEM,
-      allVerified ? 'All Payments Verified' : 'Down Payment Verified',
-      allVerified
-        ? `All payments for "${project.title}" are verified! Your project is now moving to fabrication.`
-        : `Your down payment for "${project.title}" has been verified! Your project is now moving to fabrication. Remaining payments can be made during the fabrication phase.`,
+      parentReady
+        ? (allVerified ? 'All Payments Verified' : 'Down Payment Verified')
+        : 'Item Payment Verified',
+      parentReady
+        ? (allVerified
+          ? `All payments for "${project.title}" are verified! Your project is now moving to fabrication.`
+          : `The required first payments for "${project.title}" are verified. Your project is now moving to fabrication. Remaining payments can be made during the fabrication phase.`)
+        : `Payment for one item in "${project.title}" has been verified. Other items still need their required first payment before the full project enters fabrication.`,
       `/projects/${project._id}`,
     );
   }

@@ -1,5 +1,5 @@
 import {
-  FabricationUpdate, FabricationItem, Project, User, AuditLog, VisitReport,
+  FabricationUpdate, FabricationItem, Project, ProjectItem, User, AuditLog, VisitReport,
 } from '../../models/index.js';
 import { PaymentPlan } from '../../models/Payment.js';
 import { AppError, ErrorCode } from '../../utils/appError.js';
@@ -46,6 +46,12 @@ function getRequiredPaidStages(targetStatus: FabricationStatus, totalPaymentStag
   );
 }
 
+function itemScopedQuery(projectId: string, projectItemId?: string) {
+  return projectItemId
+    ? { projectId, projectItemId }
+    : { projectId, projectItemId: { $exists: false } };
+}
+
 // ── Fabrication Staff: Create Update ──
 
 export async function createFabricationUpdate(
@@ -58,9 +64,19 @@ export async function createFabricationUpdate(
   const project = await Project.findById(input.projectId);
   if (!project) throw AppError.notFound('Project not found');
 
-  if (project.status !== ProjectStatus.FABRICATION) {
+  let projectItem: any = null;
+  if (input.projectItemId) {
+    projectItem = await ProjectItem.findOne({ _id: input.projectItemId, projectId: project._id });
+    if (!projectItem) throw AppError.notFound('Project item not found');
+  }
+
+  const itemReadyForFabrication = Boolean(
+    projectItem && [ProjectStatus.FABRICATION, ProjectStatus.COMPLETED].includes(projectItem.status),
+  );
+
+  if (project.status !== ProjectStatus.FABRICATION && !itemReadyForFabrication) {
     throw AppError.badRequest(
-      'Project is not in fabrication phase',
+      input.projectItemId ? 'This project item is not in fabrication phase' : 'Project is not in fabrication phase',
       ErrorCode.FABRICATION_NOT_IN_PHASE,
       { helpPath: '/help/projects-fabrication/fabrication-gates-and-payments#overview' },
     );
@@ -76,7 +92,7 @@ export async function createFabricationUpdate(
   }
 
   // Get current fabrication status (from latest update or queued)
-  const latestUpdate = await FabricationUpdate.findOne({ projectId: input.projectId })
+  const latestUpdate = await FabricationUpdate.findOne(itemScopedQuery(input.projectId, input.projectItemId))
     .sort({ createdAt: -1 });
 
   const currentStatus = latestUpdate
@@ -87,7 +103,7 @@ export async function createFabricationUpdate(
   fabricationStateMachine.assertTransition(currentStatus, input.status);
 
   // Per-stage payment gate: require proportional payment stages to be verified
-  const plan = await PaymentPlan.findOne({ projectId: input.projectId });
+  const plan = await PaymentPlan.findOne(itemScopedQuery(input.projectId, input.projectItemId));
   if (plan && plan.stages.length > 0) {
     const requiredPaid = getRequiredPaidStages(input.status, plan.stages.length);
     const actualPaid = plan.stages.filter(s => s.status === PaymentStageStatus.VERIFIED).length;
@@ -113,6 +129,7 @@ export async function createFabricationUpdate(
 
   const update = await FabricationUpdate.create({
     projectId: input.projectId,
+    projectItemId: input.projectItemId,
     status: input.status,
     notes: input.notes,
     photoKeys: input.photoKeys,
@@ -128,6 +145,24 @@ export async function createFabricationUpdate(
     ipAddress: ip,
     userAgent: ua,
   });
+  let shouldCompleteParentProject = input.status === FabricationStatus.DONE && !input.projectItemId;
+  if (input.projectItemId) {
+    await ProjectItem.findByIdAndUpdate(input.projectItemId, {
+      $set: {
+        status: input.status === FabricationStatus.DONE
+          ? ProjectStatus.COMPLETED
+          : ProjectStatus.FABRICATION,
+      },
+    });
+    if (input.status === FabricationStatus.DONE) {
+      const remainingOpenItems = await ProjectItem.countDocuments({
+        projectId: project._id,
+        _id: { $ne: input.projectItemId },
+        status: { $ne: ProjectStatus.COMPLETED },
+      });
+      shouldCompleteParentProject = remainingOpenItems === 0;
+    }
+  }
 
   // Notify customer
   const customer = await User.findById(project.customerId);
@@ -155,7 +190,7 @@ export async function createFabricationUpdate(
         projectTitle: project.title,
         projectId: project._id.toString(),
       });
-    } else if (input.status === FabricationStatus.DONE) {
+    } else if (input.status === FabricationStatus.DONE && shouldCompleteParentProject) {
       // Completion notification + email
       await createAndSendNotification(
         project.customerId,
@@ -289,7 +324,7 @@ export async function createFabricationUpdate(
   }
 
   // If fabrication is done, transition project to completed
-  if (input.status === FabricationStatus.DONE) {
+  if (input.status === FabricationStatus.DONE && shouldCompleteParentProject) {
     projectStateMachine.assertTransition(project.status, ProjectStatus.COMPLETED);
     project.status = ProjectStatus.COMPLETED;
     await project.save();
@@ -483,9 +518,10 @@ export async function listFabricationUpdates(
   projectId: string,
   actorId: string,
   actorRoles: Role[],
+  projectItemId?: string,
 ) {
   await assertFabricationProjectAccess(projectId, actorId, actorRoles);
-  const updates = await FabricationUpdate.find({ projectId })
+  const updates = await FabricationUpdate.find(itemScopedQuery(projectId, projectItemId))
     .populate('updatedBy', 'firstName lastName')
     .sort({ createdAt: 1 });
   return updates;
@@ -497,14 +533,15 @@ export async function getLatestFabricationStatus(
   projectId: string,
   actorId: string,
   actorRoles: Role[],
+  projectItemId?: string,
 ) {
   await assertFabricationProjectAccess(projectId, actorId, actorRoles);
-  const latest = await FabricationUpdate.findOne({ projectId })
+  const latest = await FabricationUpdate.findOne(itemScopedQuery(projectId, projectItemId))
     .sort({ createdAt: -1 })
     .populate('updatedBy', 'firstName lastName');
 
   // Check payment gate — per-stage info
-  const plan = await PaymentPlan.findOne({ projectId });
+  const plan = await PaymentPlan.findOne(itemScopedQuery(projectId, projectItemId));
   const totalStages = plan ? plan.stages.length : 0;
   const paidCount = plan ? plan.stages.filter(s => s.status === PaymentStageStatus.VERIFIED).length : 0;
   const allPaid = totalStages > 0 && paidCount === totalStages;

@@ -3,6 +3,7 @@ import { FabricationStatus } from '../../utils/constants.js';
 
 export const createFabricationUpdateSchema = z.object({
   projectId: z.string().min(1),
+  projectItemId: z.string().min(1).optional(),
   status: z.nativeEnum(FabricationStatus),
   notes: z.string().min(1).max(2000).trim(),
   photoKeys: z.array(z.string().min(1)).max(10).optional(),
