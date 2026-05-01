@@ -65,7 +65,7 @@ export async function getInstallmentConfig() {
     getConfigValue<number>('installment_surcharge_percent', 10),
     getConfigValue<number[]>('installment_split', [30, 40, 30]),
     getConfigValue<string[]>('installment_stage_labels', ['Down Payment', 'Mid-Project', 'Final Payment']),
-    getConfigValue<string[]>('installment_stage_descriptions', ['Due upon contract signing', 'Due when fabrication is complete', 'Due after installation & acceptance']),
+    getConfigValue<string[]>('installment_stage_descriptions', ['Initial payment before fabrication', 'Due when fabrication is complete', 'Due after installation & acceptance']),
   ]);
   return { surchargePercent: surcharge, split, stageLabels: labels, stageDescriptions: descriptions };
 }
@@ -617,7 +617,7 @@ export async function seedDefaultConfigs(): Promise<void> {
       description: 'Labels for each installment stage corresponding to installment_split',
     },
     installment_stage_descriptions: {
-      value: ['Due upon contract signing', 'Due when fabrication is complete', 'Due after installation & acceptance'],
+      value: ['Initial payment before fabrication', 'Due when fabrication is complete', 'Due after installation & acceptance'],
       description: 'Default milestone descriptions for each installment stage',
     },
     payment_activation_map: {

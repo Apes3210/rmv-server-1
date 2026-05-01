@@ -5,13 +5,13 @@ import { PaymentPlan } from '../../models/Payment.js';
 import { Blueprint } from '../../models/Blueprint.js';
 import { AppError, ErrorCode } from '../../utils/appError.js';
 import {
-  ProjectStatus, AppointmentStatus, Role, AuditAction, NotificationCategory, StaffAvailabilityStatus,
+  ContractStatus, ProjectStatus, AppointmentStatus, Role, AuditAction, NotificationCategory, StaffAvailabilityStatus,
 } from '../../utils/constants.js';
 import { VisitReportStatus } from '../../models/VisitReport.js';
 import { projectStateMachine } from '../../utils/stateMachine.js';
 import { createAndSendNotification, notifyRole } from '../notifications/socket.service.js';
 import { generateAndUploadContract, type ContractData } from '../../services/contract.service.js';
-import { generateDownloadUrl } from '../uploads/upload.service.js';
+import { generateDownloadUrl, verifyFileExists } from '../uploads/upload.service.js';
 import { logger } from '../../utils/logger.js';
 import type {
   CreateProjectInput,
@@ -22,6 +22,7 @@ import type {
   TransitionProjectInput,
   SignContractInput,
   SignEngineerContractInput,
+  UploadSignedContractInput,
   ReviewInitialDesignInput,
   ResubmitInitialDesignInput,
   BackfillInitialDesignInput,
@@ -42,6 +43,82 @@ function readableServiceTitle(serviceType?: string, custom?: string) {
     .filter(Boolean)
     .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
     .join(' ');
+}
+
+function buildProjectItemLink(projectId: string, path = '', projectItemId?: string) {
+  const basePath = path ? `/projects/${projectId}/${path}` : `/projects/${projectId}`;
+  return projectItemId ? `${basePath}?projectItemId=${projectItemId}` : basePath;
+}
+
+const SIGNED_CONTRACT_EXTENSIONS = new Set(['pdf', 'jpg', 'jpeg', 'png']);
+
+function getObjectFileName(key: string) {
+  return key.split('/').pop() || key;
+}
+
+function getObjectFileExtension(key: string) {
+  const fileName = getObjectFileName(key);
+  const ext = fileName.split('.').pop();
+  return ext ? ext.toLowerCase() : '';
+}
+
+function inferContractContentType(key: string) {
+  switch (getObjectFileExtension(key)) {
+    case 'pdf':
+      return 'application/pdf';
+    case 'jpg':
+    case 'jpeg':
+      return 'image/jpeg';
+    case 'png':
+      return 'image/png';
+    default:
+      return undefined;
+  }
+}
+
+function assertSignedContractKey(key: string) {
+  if (!key.startsWith('contracts/')) {
+    throw AppError.badRequest('Signed contract must be uploaded to the contracts folder');
+  }
+
+  const ext = getObjectFileExtension(key);
+  if (!SIGNED_CONTRACT_EXTENSIONS.has(ext)) {
+    throw AppError.badRequest('Signed contract must be a PDF, JPG, JPEG, or PNG file');
+  }
+}
+
+async function notifyProjectSubmittedAfterContract(project: any) {
+  await createAndSendNotification(
+    project.customerId,
+    NotificationCategory.PROJECT,
+    'Signed Contract Uploaded',
+    `The signed contract for "${project.title}" has been uploaded. Your project is now submitted for engineering.`,
+    `/projects/${project._id}/contract`,
+  );
+
+  await notifyRole(
+    Role.ADMIN,
+    NotificationCategory.PROJECT,
+    'Project Submitted',
+    `Project "${project.title}" has a signed contract and is ready for engineer assignment.`,
+    `/projects/${project._id}`,
+  );
+
+  await notifyRole(
+    Role.ENGINEER,
+    NotificationCategory.PROJECT,
+    'New Project Submitted',
+    `Project "${project.title}" has a signed contract and is ready for blueprint work.`,
+    `/projects/${project._id}`,
+  );
+}
+
+function generatedContractFlowDisabled(): void {
+  throw new AppError(
+    'Generated contracts and e-signatures are disabled. Upload the manually signed contract instead.',
+    410,
+    ErrorCode.GONE,
+  );
 }
 
 async function syncProjectItemFromReport(project: any, report: any) {
@@ -211,6 +288,7 @@ export async function createProject(
     notes: input.notes,
     designReviewStatus: 'not_required',
     status: ProjectStatus.DRAFT,
+    contractStatus: ContractStatus.MISSING,
     ...(latestReport && { visitReportId: latestReport._id }),
   });
 
@@ -223,15 +301,6 @@ export async function createProject(
     ipAddress: ip,
     userAgent: ua,
   });
-
-  // Notify customer
-  await createAndSendNotification(
-    appointment.customerId,
-    NotificationCategory.SYSTEM,
-    'Project Created',
-    `Your project "${input.title}" has been created.`,
-    `/projects/${project._id}`,
-  );
 
   return project;
 }
@@ -287,6 +356,13 @@ export async function assignEngineers(
 ) {
   const project = await Project.findById(projectId);
   if (!project) throw AppError.notFound('Project not found');
+
+  if (
+    [ProjectStatus.DRAFT, ProjectStatus.SUBMITTED].includes(project.status)
+    && project.contractStatus !== ContractStatus.UPLOADED
+  ) {
+    throw AppError.badRequest('A signed contract must be uploaded before engineers can claim or be assigned');
+  }
 
   // Verify all are engineers
   const engineers = await User.find({
@@ -727,6 +803,24 @@ function itemScopedQuery(projectId: string, projectItemId?: string) {
     : { projectId, projectItemId: { $exists: false } };
 }
 
+async function hasRequiredInitialFabricationPayment(projectId: string) {
+  const items = await ProjectItem.find({ projectId }).select('_id');
+
+  if (!items.length) {
+    const plan = await PaymentPlan.findOne(itemScopedQuery(projectId));
+    return Boolean(plan?.stages[0]?.status === PaymentStageStatus.VERIFIED);
+  }
+
+  const plans = await PaymentPlan.find({
+    projectId,
+    projectItemId: { $in: items.map((item) => item._id) },
+  });
+
+  if (plans.length < items.length) return false;
+
+  return plans.every((plan) => plan.stages[0]?.status === PaymentStageStatus.VERIFIED);
+}
+
 type BuiltPaymentStages = Awaited<ReturnType<typeof buildPaymentStages>>;
 
 async function getActiveProjectItems(projectId: string) {
@@ -739,7 +833,8 @@ async function buildPaymentStages(projectId: string, paymentType: 'full' | 'inst
     throw AppError.badRequest('Customer payment selection is only available after the approved quotation is ready');
   }
 
-  const baseTotal = blueprint.quotation.total;
+  const quotedTotal = Number(blueprint.quotation.total);
+  const baseTotal = Number.isFinite(quotedTotal) && quotedTotal > 0 ? quotedTotal : 1;
   const installmentConfig = await getInstallmentConfig();
   const isPayInFull = paymentType === 'full';
   const totalAmount = isPayInFull
@@ -750,7 +845,7 @@ async function buildPaymentStages(projectId: string, paymentType: 'full' | 'inst
     ? [{
       stageId: uuidv4(),
       label: 'Full Payment',
-      description: 'Due upon contract signing',
+      description: 'Due before fabrication starts',
       percentage: 100,
       amount: totalAmount,
       status: PaymentStageStatus.PENDING,
@@ -783,6 +878,32 @@ async function buildPaymentStages(projectId: string, paymentType: 'full' | 'inst
     surchargePercent: isPayInFull ? 0 : installmentConfig.surchargePercent,
     stages,
   };
+}
+
+async function buildContractItemBuildsFromPlans(
+  projectId: string,
+  projectItems: any[],
+  plans: any[],
+) {
+  const itemBuilds = await Promise.all(plans.map(async (plan) => {
+    const item = projectItems.find((projectItem) => projectItem._id.toString() === plan.projectItemId?.toString());
+    const blueprint = await Blueprint.findOne(itemScopedQuery(projectId, plan.projectItemId?.toString())).sort({ version: -1 });
+
+    return blueprint?.quotation
+      ? {
+        item,
+        built: {
+          blueprint,
+          totalAmount: plan.totalAmount,
+          isPayInFull: plan.isPayInFull,
+          surchargePercent: 0,
+          stages: plan.stages,
+        },
+      }
+      : null;
+  }));
+
+  return itemBuilds.filter(Boolean) as Array<{ item?: any; built: BuiltPaymentStages }>;
 }
 
 function buildAggregateContractData(
@@ -872,9 +993,27 @@ export async function selectPaymentPlan(
   }
 
   const projectItems = await getActiveProjectItems(projectId);
-  const paymentTargets = projectItems.length
-    ? projectItems.map((item) => ({ item, projectItemId: item._id.toString() }))
+  const hasMultipleItems = projectItems.length > 1;
+
+  if (hasMultipleItems && !input.projectItemId) {
+    throw AppError.badRequest('Select a project item before choosing a payment plan');
+  }
+
+  const selectedItem = input.projectItemId
+    ? projectItems.find((item) => item._id.toString() === input.projectItemId)
+    : projectItems[0];
+
+  if (input.projectItemId && !selectedItem) {
+    throw AppError.notFound('Project item not found');
+  }
+
+  const paymentTargets = selectedItem
+    ? [{ item: selectedItem, projectItemId: selectedItem._id.toString() }]
     : [{ item: undefined, projectItemId: input.projectItemId }];
+
+  if (![ProjectStatus.APPROVED, ProjectStatus.PAYMENT_PENDING].includes(project.status)) {
+    throw AppError.badRequest('Payment plan selection is only available after blueprint approval');
+  }
 
   const itemBuilds = await Promise.all(paymentTargets.map(async (target) => ({
     item: target.item,
@@ -887,36 +1026,8 @@ export async function selectPaymentPlan(
   );
 
   if (existingPlans.some(Boolean)) {
-    if (!existingPlans.every(Boolean)) {
-      throw AppError.conflict('Payment plans are partially created for this project. Please contact an admin before continuing.', ErrorCode.DUPLICATE_ENTRY);
-    }
-    if (![ProjectStatus.APPROVED, ProjectStatus.PAYMENT_PENDING].includes(project.status)) {
-      throw AppError.conflict('A payment plan already exists for this project', ErrorCode.DUPLICATE_ENTRY);
-    }
-
-    if (!project.contractKey) {
-      const recoveryContractData = buildAggregateContractData(project, itemBuilds, input.paymentType);
-      const { originalKey } = await generateAndUploadContract(recoveryContractData);
-      project.contractKey = originalKey;
-      project.contractGeneratedAt = new Date();
-      project.originalContractDownloadedAt = undefined as any;
-    }
-
-    if (project.status === ProjectStatus.APPROVED) {
-      projectStateMachine.assertTransition(project.status, ProjectStatus.PAYMENT_PENDING);
-      project.status = ProjectStatus.PAYMENT_PENDING;
-    }
-
-    await project.save();
-    return { paymentPlan: existingPlans[0], paymentPlans: existingPlans, contractKey: project.contractKey, project };
+    throw AppError.conflict('A payment plan already exists for this item', ErrorCode.DUPLICATE_ENTRY);
   }
-
-  if (project.status !== ProjectStatus.APPROVED) {
-    throw AppError.badRequest('Payment plan selection is only available after blueprint approval');
-  }
-
-  const contractData = buildAggregateContractData(project, itemBuilds, input.paymentType);
-  const { originalKey } = await generateAndUploadContract(contractData);
 
   const plans = await PaymentPlan.insertMany(itemBuilds.map(({ projectItemId, built }) => ({
     projectId: project._id,
@@ -927,11 +1038,10 @@ export async function selectPaymentPlan(
     createdBy: actorId,
   })));
 
-  projectStateMachine.assertTransition(project.status, ProjectStatus.PAYMENT_PENDING);
-  project.status = ProjectStatus.PAYMENT_PENDING;
-  project.contractKey = originalKey;
-  project.contractGeneratedAt = new Date();
-  project.originalContractDownloadedAt = undefined as any;
+  if (project.status === ProjectStatus.APPROVED) {
+    projectStateMachine.assertTransition(project.status, ProjectStatus.PAYMENT_PENDING);
+    project.status = ProjectStatus.PAYMENT_PENDING;
+  }
   await project.save();
   const itemIds = paymentTargets
     .map((target) => target.projectItemId)
@@ -960,11 +1070,11 @@ export async function selectPaymentPlan(
     actorId,
     NotificationCategory.PAYMENT,
     'Payment Plan Created',
-    `Your ${input.paymentType === 'full' ? 'full payment' : 'installment'} plan for "${project.title}" is ready. Please review and sign the contract next.`,
-    `/projects/${project._id}`,
+    `Your ${input.paymentType === 'full' ? 'full payment' : 'installment'} plan for "${project.title}" is ready. You can now continue to payments.`,
+    buildProjectItemLink(project._id.toString(), 'payments', paymentTargets[0]?.projectItemId),
   );
 
-  return { paymentPlan: plans[0], paymentPlans: plans, contractKey: originalKey, project };
+  return { paymentPlan: plans[0], paymentPlans: plans, project };
 }
 
 // ── Assign Fabrication Staff ──
@@ -990,6 +1100,11 @@ export async function assignFabricationStaff(
 
   if (latestBlueprint.status !== 'approved') {
     throw AppError.badRequest('Fabrication team can only be assigned after the customer approves the blueprint and costing');
+  }
+
+  const initialPaymentVerified = await hasRequiredInitialFabricationPayment(projectId);
+  if (!initialPaymentVerified) {
+    throw AppError.badRequest('Fabrication team can only be assigned after the first payment has been cashier-verified');
   }
 
   // Verify lead is fabrication staff
@@ -1049,6 +1164,13 @@ export async function transitionProject(
 ) {
   const project = await Project.findById(projectId);
   if (!project) throw AppError.notFound('Project not found');
+
+  if (
+    input.status === ProjectStatus.SUBMITTED
+    && project.contractStatus !== ContractStatus.UPLOADED
+  ) {
+    throw AppError.badRequest('Upload the signed contract before submitting this project');
+  }
 
   projectStateMachine.assertTransition(project.status, input.status);
 
@@ -1144,6 +1266,9 @@ export async function getProjectById(
     if (project.customerId._id?.toString() !== actorId) {
       throw AppError.forbidden('Access denied');
     }
+    if (project.status === ProjectStatus.DRAFT && project.contractStatus !== ContractStatus.UPLOADED) {
+      throw AppError.notFound('Project not found');
+    }
   }
 
   // Epic 9: Engineer/Fabrication staff masking (AND Admin as requested)
@@ -1198,6 +1323,14 @@ export async function listProjects(
   // Role-based filtering
   if (actorRoles.includes(Role.CUSTOMER) && !actorRoles.some(r => [Role.ADMIN, Role.SALES_STAFF, Role.ENGINEER].includes(r))) {
     filter.customerId = actorId;
+    filter.$and = [
+      {
+        $or: [
+          { contractStatus: ContractStatus.UPLOADED },
+          { contractStatus: { $exists: false }, status: { $ne: ProjectStatus.DRAFT } },
+        ],
+      },
+    ];
   } else if (actorRoles.includes(Role.SALES_STAFF) && !actorRoles.some(r => [Role.ADMIN].includes(r))) {
     filter.salesStaffId = actorId;
   } else if (actorRoles.includes(Role.ENGINEER) && !actorRoles.some(r => [Role.ADMIN, Role.SALES_STAFF].includes(r))) {
@@ -1386,6 +1519,92 @@ export async function removeMediaKey(
   return project;
 }
 
+// ── Upload manually signed contract ──
+
+export async function uploadSignedContract(
+  projectId: string,
+  input: UploadSignedContractInput,
+  actorId: string,
+  actorRoles: Role[],
+  ip?: string,
+  ua?: string,
+) {
+  const project = await Project.findById(projectId);
+  if (!project) throw AppError.notFound('Project not found');
+
+  const isAdmin = actorRoles.includes(Role.ADMIN);
+  const isAssignedSales = project.salesStaffId.toString() === actorId;
+  if (!isAdmin && !isAssignedSales) {
+    throw AppError.forbidden('Only admins or the assigned sales staff can upload the signed contract');
+  }
+
+  const engineeringStarted = project.engineerIds.length > 0 || ![ProjectStatus.DRAFT, ProjectStatus.SUBMITTED].includes(project.status);
+  if (engineeringStarted) {
+    throw AppError.badRequest('Signed contract can only be uploaded or replaced before engineering starts');
+  }
+
+  assertSignedContractKey(input.contractFileKey);
+
+  const exists = await verifyFileExists(input.contractFileKey);
+  if (!exists) {
+    throw AppError.badRequest('Uploaded contract file could not be verified. Please upload the file again.');
+  }
+
+  const wasMissing = project.contractStatus !== ContractStatus.UPLOADED;
+  const oldStatus = project.status;
+
+  project.contractStatus = ContractStatus.UPLOADED;
+  project.contractFileKey = input.contractFileKey;
+  project.contractFileName = input.contractFileName || getObjectFileName(input.contractFileKey);
+  project.contractContentType = input.contractContentType || inferContractContentType(input.contractFileKey);
+  project.contractFileSize = input.contractFileSize;
+  project.contractUploadedAt = new Date();
+  project.contractUploadedBy = actorId as unknown as Types.ObjectId;
+
+  if (project.status === ProjectStatus.DRAFT) {
+    projectStateMachine.assertTransition(project.status, ProjectStatus.SUBMITTED);
+    project.status = ProjectStatus.SUBMITTED;
+  }
+
+  await project.save();
+
+  if (oldStatus === ProjectStatus.DRAFT && project.status === ProjectStatus.SUBMITTED) {
+    await ProjectItem.updateMany(
+      { projectId: project._id, status: ProjectStatus.DRAFT },
+      { $set: { status: ProjectStatus.SUBMITTED } },
+    );
+  }
+
+  await AuditLog.create({
+    action: AuditAction.PROJECT_UPDATED,
+    actorId,
+    targetType: 'project',
+    targetId: project._id,
+    details: {
+      action: wasMissing ? 'signed_contract_uploaded' : 'signed_contract_replaced',
+      contractFileKey: input.contractFileKey,
+      fromStatus: oldStatus,
+      toStatus: project.status,
+    },
+    ipAddress: ip,
+    userAgent: ua,
+  });
+
+  if (wasMissing) {
+    await notifyProjectSubmittedAfterContract(project);
+  } else {
+    await createAndSendNotification(
+      project.customerId,
+      NotificationCategory.PROJECT,
+      'Signed Contract Updated',
+      `The signed contract for "${project.title}" has been replaced.`,
+      `/projects/${project._id}/contract`,
+    );
+  }
+
+  return attachProjectItems(project);
+}
+
 // ── Generate Contract PDF ──
 
 export async function generateContract(
@@ -1394,6 +1613,8 @@ export async function generateContract(
   ip?: string,
   ua?: string,
 ) {
+  generatedContractFlowDisabled();
+
   const project = await Project.findById(projectId)
     .populate('customerId', 'firstName lastName email phone address signatureKey')
     .populate('engineerIds', 'firstName lastName phone signatureKey');
@@ -1485,6 +1706,8 @@ export async function signContract(
   ip?: string,
   ua?: string,
 ) {
+  generatedContractFlowDisabled();
+
   const project = await Project.findById(projectId)
     .populate('customerId', 'firstName lastName email phone address signatureKey')
     .populate('engineerIds', 'firstName lastName phone signatureKey');
@@ -1603,6 +1826,8 @@ export async function signEngineerContract(
   ip?: string,
   ua?: string,
 ) {
+  generatedContractFlowDisabled();
+
   const project = await Project.findById(projectId).populate('engineerIds', 'firstName lastName email signatureKey');
   if (!project) throw AppError.notFound('Project not found');
 
@@ -1652,31 +1877,25 @@ export async function getContractDownloadUrl(
   const project = await Project.findById(projectId);
   if (!project) throw AppError.notFound('Project not found');
 
-  if (!project.contractKey) {
-    throw AppError.badRequest('No contract has been generated for this project');
+  const isInternal = actorRoles.some((role) => [
+    Role.ADMIN,
+    Role.SALES_STAFF,
+    Role.APPOINTMENT_AGENT,
+    Role.ENGINEER,
+    Role.CASHIER,
+    Role.FABRICATION_STAFF,
+  ].includes(role));
+  const isCustomerOwner = actorRoles.includes(Role.CUSTOMER) && project.customerId.toString() === actorId;
+  if (!isInternal && !isCustomerOwner) {
+    throw AppError.forbidden('Access denied');
   }
 
-  // One-time original download enforcement
-  if (copy === 'original' && project.originalContractDownloadedAt) {
-    throw AppError.badRequest(
-      'The original contract has already been downloaded. Please use the copy version.',
-    );
+  if (project.contractStatus !== ContractStatus.UPLOADED || !project.contractFileKey) {
+    throw AppError.badRequest('No signed contract has been uploaded for this project');
   }
 
-  // Derive copy key from original key
-  const key = copy === 'original'
-    ? project.contractKey
-    : project.contractKey.replace('-original.pdf', '-copy.pdf');
-
-  const url = await generateDownloadUrl(key);
-
-  // Mark original as downloaded
-  if (copy === 'original') {
-    project.originalContractDownloadedAt = new Date();
-    await project.save();
-  }
-
-  return { url, key, originalDownloaded: !!project.originalContractDownloadedAt };
+  const url = await generateDownloadUrl(project.contractFileKey);
+  return { url, key: project.contractFileKey, originalDownloaded: false };
 }
 
 // ── Customer: Submit/Skip Internal Project Review ──
@@ -1799,6 +2018,7 @@ export async function confirmInstallation(
   projectId: string,
   actorId: string,
   actorRoles: Role[],
+  projectItemId?: string,
 ) {
   const project = await Project.findById(projectId)
     .populate('customerId', 'firstName lastName email')
@@ -1816,19 +2036,53 @@ export async function confirmInstallation(
     throw AppError.forbidden('Only the project customer or an admin can confirm installation');
   }
 
-  if ((project as any).installationConfirmedAt) {
-    throw AppError.badRequest('Installation has already been confirmed for this project');
+  const projectItems = await ProjectItem.find({ projectId: project._id }).sort({ createdAt: 1 });
+  const hasMultipleItems = projectItems.length > 1;
+  if (hasMultipleItems && !projectItemId) {
+    throw AppError.badRequest('Select a project item before confirming installation');
   }
 
-  (project as any).installationConfirmedAt = new Date();
-  await project.save();
+  const selectedItem = projectItemId
+    ? projectItems.find((item) => item._id.toString() === projectItemId)
+    : projectItems[0];
+
+  if (projectItemId && !selectedItem) {
+    throw AppError.notFound('Project item not found');
+  }
+
+  if (selectedItem) {
+    if ((selectedItem as any).installationConfirmedAt) {
+      return attachProjectItems(project);
+    }
+
+    (selectedItem as any).installationConfirmedAt = new Date();
+    await selectedItem.save();
+
+    const allItemsConfirmed = projectItems.every((item) => (
+      item._id.toString() === selectedItem._id.toString()
+        ? true
+        : Boolean((item as any).installationConfirmedAt)
+    ));
+
+    if (allItemsConfirmed) {
+      (project as any).installationConfirmedAt = new Date();
+      await project.save();
+    }
+  } else {
+    if ((project as any).installationConfirmedAt) {
+      return attachProjectItems(project);
+    }
+
+    (project as any).installationConfirmedAt = new Date();
+    await project.save();
+  }
 
   await AuditLog.create({
     action: AuditAction.PROJECT_UPDATED,
     actorId,
-    targetType: 'project',
-    targetId: project._id,
-    details: { installationConfirmed: true },
+    targetType: selectedItem ? 'project_item' : 'project',
+    targetId: selectedItem?._id || project._id,
+    details: { installationConfirmed: true, projectId, projectItemId: selectedItem?._id || null },
   });
 
   // Notify fabrication lead and all admin
@@ -1841,8 +2095,8 @@ export async function confirmInstallation(
       leadId,
       NotificationCategory.PROJECT,
       'Installation Confirmed',
-      `Customer ${customerName} has confirmed the installation schedule for project "${project.title}". You may now proceed to mark it as Done.`,
-      `/projects/${project._id}/fabrication`,
+      `Customer ${customerName} has confirmed the installation schedule for "${selectedItem?.title || project.title}". You may now proceed to mark it as Done.`,
+      buildProjectItemLink(project._id.toString(), 'fabrication', selectedItem?._id?.toString()),
     );
   }
 
@@ -1850,9 +2104,9 @@ export async function confirmInstallation(
     Role.ADMIN,
     NotificationCategory.PROJECT,
     'Installation Confirmed',
-    `Customer ${customerName} confirmed installation for project "${project.title}".`,
-    `/projects/${project._id}/fabrication`,
+    `Customer ${customerName} confirmed installation for "${selectedItem?.title || project.title}".`,
+    buildProjectItemLink(project._id.toString(), 'fabrication', selectedItem?._id?.toString()),
   );
 
-  return project;
+  return attachProjectItems(project);
 }

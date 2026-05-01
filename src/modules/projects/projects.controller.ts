@@ -74,6 +74,18 @@ export const generateContract = asyncHandler(async (req: Request, res: Response)
   res.json({ success: true, data: { originalKey: result.originalKey, copyKey: result.copyKey } });
 });
 
+export const uploadSignedContract = asyncHandler(async (req: Request, res: Response) => {
+  const project = await projectsService.uploadSignedContract(
+    req.params.id as string,
+    req.body,
+    req.userId!,
+    req.userRoles!,
+    req.ip,
+    req.get('user-agent'),
+  );
+  res.json({ success: true, data: project });
+});
+
 export const getContractDownloadUrl = asyncHandler(async (req: Request, res: Response) => {
   const copy = (req.query.copy as string) === 'copy' ? 'copy' : 'original';
   const result = await projectsService.getContractDownloadUrl(
@@ -157,6 +169,7 @@ export const confirmInstallation = asyncHandler(async (req: Request, res: Respon
     req.params.id as string,
     req.userId!,
     req.userRoles!,
+    (req.body?.projectItemId || req.query.projectItemId) as string | undefined,
   );
   res.json({ success: true, data: project });
 });

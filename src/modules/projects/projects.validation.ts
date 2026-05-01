@@ -68,6 +68,21 @@ export const signEngineerContractSchema = z.object({
   signatureKey: z.string().min(1, 'Engineer signature is required'),
 });
 
+const signedContractFileKeySchema = z.string()
+  .min(1, 'Contract file is required')
+  .refine((key) => key.startsWith('contracts/'), 'Contract file must be uploaded to the contracts folder')
+  .refine(
+    (key) => /\.(pdf|jpe?g|png)$/i.test(key),
+    'Signed contract must be a PDF, JPG, JPEG, or PNG file',
+  );
+
+export const uploadSignedContractSchema = z.object({
+  contractFileKey: signedContractFileKeySchema,
+  contractFileName: z.string().max(255).trim().optional(),
+  contractContentType: z.string().max(100).trim().optional(),
+  contractFileSize: z.number().int().positive().optional(),
+});
+
 export const reviewInitialDesignSchema = z.object({
   decision: z.enum(['approved', 'declined']),
   notes: z.string().max(2000).trim().optional(),
@@ -120,6 +135,7 @@ export type AssignFabricationInput = z.infer<typeof assignFabricationSchema>;
 export type TransitionProjectInput = z.infer<typeof transitionProjectSchema>;
 export type SignContractInput = z.infer<typeof signContractSchema>;
 export type SignEngineerContractInput = z.infer<typeof signEngineerContractSchema>;
+export type UploadSignedContractInput = z.infer<typeof uploadSignedContractSchema>;
 export type ReviewInitialDesignInput = z.infer<typeof reviewInitialDesignSchema>;
 export type ResubmitInitialDesignInput = z.infer<typeof resubmitInitialDesignSchema>;
 export type BackfillInitialDesignInput = z.infer<typeof backfillInitialDesignSchema>;

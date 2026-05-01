@@ -11,8 +11,7 @@ import {
   reassignProjectSalesSchema,
   assignFabricationSchema,
   transitionProjectSchema,
-  signContractSchema,
-  signEngineerContractSchema,
+  uploadSignedContractSchema,
   reviewInitialDesignSchema,
   resubmitInitialDesignSchema,
   backfillInitialDesignSchema,
@@ -122,6 +121,14 @@ router.post(
 );
 
 router.post(
+  '/:id/contract',
+  authenticate,
+  authorize(Role.SALES_STAFF, Role.ADMIN),
+  validate(uploadSignedContractSchema),
+  ctrl.uploadSignedContract,
+);
+
+router.post(
   '/:id/select-payment-plan',
   authenticate,
   authorize(Role.CUSTOMER),
@@ -139,7 +146,6 @@ router.post(
   '/:id/sign-contract',
   authenticate,
   authorize(Role.CUSTOMER),
-  validate(signContractSchema),
   ctrl.signContract,
 );
 
@@ -147,7 +153,6 @@ router.post(
   '/:id/sign-contract-engineer',
   authenticate,
   authorize(Role.ENGINEER, Role.ADMIN),
-  validate(signEngineerContractSchema),
   ctrl.signEngineerContract,
 );
 

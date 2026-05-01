@@ -12,6 +12,7 @@ import {
   rescheduleRequestSchema,
   rescheduleCompleteSchema,
   cancelAppointmentSchema,
+  consultationAttendanceSchema,
   noShowSchema,
   recordOcularFeeSchema,
   submitOcularFeeProofSchema,
@@ -148,6 +149,14 @@ router.post(
   authorize(Role.SALES_STAFF),
   validate(noShowSchema),
   ctrl.markNoShow,
+);
+
+router.post(
+  '/:id/consultation-attendance',
+  authenticate,
+  authorize(Role.SALES_STAFF, Role.ADMIN),
+  validate(consultationAttendanceSchema),
+  ctrl.updateConsultationAttendance,
 );
 
 router.post(

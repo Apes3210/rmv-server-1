@@ -6,7 +6,7 @@ import {
 } from '../../models/index.js';
 import { AppError, ErrorCode } from '../../utils/appError.js';
 import {
-  AppointmentStatus, AppointmentType, Role, AuditAction,
+  AppointmentStatus, AppointmentType, AppointmentAttendanceStatus, Role, AuditAction,
   NotificationCategory, PaymentMethod, OcularFeePaymentChoice, ProjectStatus, SLOT_CODES, StaffAvailabilityStatus, type SlotCode,
 } from '../../utils/constants.js';
 import { appointmentStateMachine } from '../../utils/stateMachine.js';
@@ -28,6 +28,7 @@ import type {
   ConfirmAppointmentInput,
   ReassignAppointmentSalesInput,
   AppointmentQueueQuery,
+  ConsultationAttendanceInput,
   RescheduleRequestInput,
   RescheduleCompleteInput,
   RecordOcularFeeInput,
@@ -47,6 +48,8 @@ const APPOINTMENT_QUEUE_ACTIONABLE_STATUSES: AppointmentStatus[] = [
   AppointmentStatus.CONFIRMED,
   AppointmentStatus.PREPARING,
   AppointmentStatus.ON_THE_WAY,
+  AppointmentStatus.ARRIVED_AT_SITE,
+  AppointmentStatus.IN_PROGRESS,
   AppointmentStatus.RESCHEDULE_REQUESTED,
   AppointmentStatus.READY_FOR_OCULAR,
 ];
@@ -60,6 +63,8 @@ const APPOINTMENT_REASSIGNABLE_STATUSES: AppointmentStatus[] = [
   AppointmentStatus.CONFIRMED,
   AppointmentStatus.PREPARING,
   AppointmentStatus.ON_THE_WAY,
+  AppointmentStatus.ARRIVED_AT_SITE,
+  AppointmentStatus.IN_PROGRESS,
   AppointmentStatus.RESCHEDULE_REQUESTED,
 ];
 
@@ -213,6 +218,66 @@ function formatSlotTime(slotCode: string): string {
   const ampm = hour >= 12 ? 'PM' : 'AM';
   const displayHour = hour > 12 ? hour - 12 : hour === 0 ? 12 : hour;
   return `${displayHour}:00 ${ampm}`;
+}
+
+function getConsultationWindow(date: string, slotCode: string) {
+  const start = new Date(`${date}T${slotCode}:00+08:00`);
+  return {
+    start,
+    graceEnd: addMinutes(start, 15),
+    end: addMinutes(start, 60),
+  };
+}
+
+function classifyArrival(appointment: { date: string; slotCode: string }, actualArrivalAt: Date) {
+  const window = getConsultationWindow(appointment.date, appointment.slotCode);
+  return {
+    attendanceStatus: actualArrivalAt <= window.graceEnd
+      ? AppointmentAttendanceStatus.ON_TIME
+      : AppointmentAttendanceStatus.LATE_ARRIVAL,
+    outsideWindow: actualArrivalAt > window.end,
+  };
+}
+
+function assertAttendanceTransition(
+  currentStatus: AppointmentAttendanceStatus,
+  nextStatus: AppointmentAttendanceStatus,
+  isAdminOverride = false,
+) {
+  if (isAdminOverride) return;
+
+  const allowed: Record<AppointmentAttendanceStatus, AppointmentAttendanceStatus[]> = {
+    [AppointmentAttendanceStatus.SCHEDULED]: [
+      AppointmentAttendanceStatus.ON_TIME,
+      AppointmentAttendanceStatus.LATE_ARRIVAL,
+      AppointmentAttendanceStatus.NO_SHOW,
+      AppointmentAttendanceStatus.RESCHEDULED,
+    ],
+    [AppointmentAttendanceStatus.ON_TIME]: [
+      AppointmentAttendanceStatus.IN_PROGRESS,
+      AppointmentAttendanceStatus.RESCHEDULED,
+    ],
+    [AppointmentAttendanceStatus.LATE_ARRIVAL]: [
+      AppointmentAttendanceStatus.IN_PROGRESS,
+      AppointmentAttendanceStatus.RESCHEDULED,
+    ],
+    [AppointmentAttendanceStatus.IN_PROGRESS]: [
+      AppointmentAttendanceStatus.COMPLETED,
+    ],
+    [AppointmentAttendanceStatus.COMPLETED]: [],
+    [AppointmentAttendanceStatus.NO_SHOW]: [
+      AppointmentAttendanceStatus.RESCHEDULED,
+    ],
+    [AppointmentAttendanceStatus.RESCHEDULED]: [],
+  };
+
+  if (!allowed[currentStatus]?.includes(nextStatus)) {
+    throw AppError.badRequest(
+      `Invalid attendance transition: ${currentStatus} → ${nextStatus}`,
+      ErrorCode.INVALID_TRANSITION,
+      { currentStatus, attemptedStatus: nextStatus, allowedNextStatuses: allowed[currentStatus] || [] },
+    );
+  }
 }
 
 async function assertNoActiveAppointment(customerId: string): Promise<void> {
@@ -1004,19 +1069,115 @@ export async function customerSubmitOcularLocation(
   ip?: string,
   ua?: string,
 ) {
-  const appointment = await Appointment.findById(appointmentId);
+  let appointment = await Appointment.findById(appointmentId);
   if (!appointment) throw AppError.notFound('Appointment not found');
 
   if (appointment.customerId.toString() !== customerId) {
     throw AppError.forbidden('You do not own this appointment');
   }
 
+  if (appointment.type === AppointmentType.OFFICE) {
+    const isReadyForOcular =
+      appointment.status === AppointmentStatus.READY_FOR_OCULAR
+      || (appointment.status === AppointmentStatus.COMPLETED && appointment.consultationReportSubmitted);
+
+    if (!isReadyForOcular) {
+      throw AppError.badRequest('This consultation is not ready for ocular location submission');
+    }
+
+    const activeOcularStatuses = [
+      AppointmentStatus.REQUESTED,
+      AppointmentStatus.CONFIRMED,
+      AppointmentStatus.PREPARING,
+      AppointmentStatus.ON_THE_WAY,
+      AppointmentStatus.ARRIVED_AT_SITE,
+      AppointmentStatus.IN_PROGRESS,
+      AppointmentStatus.RESCHEDULE_REQUESTED,
+    ];
+
+    const consultationReport = await VisitReport.findOne({
+      appointmentId: appointment._id,
+      visitType: 'consultation',
+      consultationOutcome: 'schedule_ocular',
+      recommendedOcularDate: { $exists: true, $ne: null },
+      recommendedOcularSlot: { $exists: true, $ne: null },
+      status: { $in: [VisitReportStatus.SUBMITTED, VisitReportStatus.COMPLETED] },
+    }).sort({ updatedAt: -1, createdAt: -1 });
+
+    if (!consultationReport?.recommendedOcularDate || !consultationReport.recommendedOcularSlot) {
+      throw AppError.badRequest(
+        'The ocular visit schedule is not ready yet. Please wait for sales to schedule the ocular visit date and time.',
+        ErrorCode.VALIDATION_ERROR,
+      );
+    }
+
+    const recommendedOcularDate = consultationReport.recommendedOcularDate.toISOString().split('T')[0];
+
+    let ocularAppointment = await Appointment.findOne({
+      customerId: appointment.customerId,
+      type: AppointmentType.OCULAR,
+      date: recommendedOcularDate,
+      slotCode: consultationReport.recommendedOcularSlot,
+      status: { $in: activeOcularStatuses },
+    }).sort({ updatedAt: -1, createdAt: -1 });
+
+    if (!ocularAppointment) {
+      const serviceTypes = [
+        ...new Set([
+          ...(appointment.serviceTypes || []),
+          ...(consultationReport.serviceType ? [consultationReport.serviceType] : []),
+        ]),
+      ].filter(Boolean);
+      const salesStaffId = consultationReport.salesStaffId || appointment.salesStaffId;
+
+      ocularAppointment = await Appointment.create({
+        customerId: appointment.customerId,
+        type: AppointmentType.OCULAR,
+        date: recommendedOcularDate,
+        slotCode: consultationReport.recommendedOcularSlot,
+        status: AppointmentStatus.REQUESTED,
+        salesStaffId,
+        bookedBy: salesStaffId,
+        serviceTypes,
+        serviceTypeCustom: consultationReport.serviceTypeCustom || appointment.serviceTypeCustom,
+        customerSiteDetails: {
+          serviceTypes,
+          serviceTypeCustom: consultationReport.serviceTypeCustom || appointment.serviceTypeCustom,
+        },
+        customerNotes: `Ocular follow-up scheduled from consultation report ${consultationReport._id}`,
+      });
+
+      await AuditLog.create({
+        action: AuditAction.APPOINTMENT_CREATED,
+        actorId: customerId,
+        targetType: 'appointment',
+        targetId: ocularAppointment._id,
+        details: {
+          triggeredBy: 'customer_location_submission',
+          reason: 'ready_for_ocular_consultation_repair',
+          sourceAppointmentId: appointment._id,
+          sourceVisitReportId: consultationReport._id,
+        },
+        ipAddress: ip,
+        userAgent: ua,
+      });
+    }
+
+    appointment = ocularAppointment;
+  }
+
   if (appointment.type !== AppointmentType.OCULAR) {
     throw AppError.badRequest('This is not an ocular appointment');
   }
 
-  if (appointment.status !== AppointmentStatus.REQUESTED) {
-    throw AppError.badRequest('Location can only be submitted for pending ocular appointments');
+  const locationSubmissionStatuses = [
+    AppointmentStatus.REQUESTED,
+    AppointmentStatus.CONFIRMED,
+    AppointmentStatus.READY_FOR_OCULAR,
+    AppointmentStatus.PREPARING,
+  ];
+  if (!locationSubmissionStatuses.includes(appointment.status)) {
+    throw AppError.badRequest('Location can only be submitted before the ocular visit starts');
   }
 
   // Validate Philippines bounds
@@ -1312,25 +1473,100 @@ export async function completeAppointment(
   return appointment;
 }
 
-// ── Update Visit Status (Preparing / On The Way) ──
+// ── Update Visit Status (Transition-only progress updates) ──
 
 export async function updateVisitStatus(
   appointmentId: string,
-  newStatus: AppointmentStatus.PREPARING | AppointmentStatus.ON_THE_WAY,
+  newStatus:
+    | AppointmentStatus.PREPARING
+    | AppointmentStatus.ON_THE_WAY
+    | AppointmentStatus.ARRIVED_AT_SITE
+    | AppointmentStatus.IN_PROGRESS,
   actorId: string,
   ip?: string,
   ua?: string,
 ) {
+  if (![
+    AppointmentStatus.PREPARING,
+    AppointmentStatus.ON_THE_WAY,
+    AppointmentStatus.ARRIVED_AT_SITE,
+    AppointmentStatus.IN_PROGRESS,
+  ].includes(newStatus)) {
+    throw AppError.badRequest('Unsupported visit status transition target', ErrorCode.VALIDATION_ERROR);
+  }
+
   const appointment = await Appointment.findById(appointmentId);
   if (!appointment) throw AppError.notFound('Appointment not found');
+
+  if (
+    appointment.type === AppointmentType.OCULAR
+    && [
+      AppointmentStatus.ON_THE_WAY,
+      AppointmentStatus.ARRIVED_AT_SITE,
+      AppointmentStatus.IN_PROGRESS,
+    ].includes(newStatus)
+    && !appointment.customerLocation
+    && !appointment.latitude
+  ) {
+    throw AppError.badRequest(
+      'Customer site location is required before starting the ocular visit.',
+      ErrorCode.VALIDATION_ERROR,
+    );
+  }
+
+  if (
+    appointment.type === AppointmentType.OCULAR
+    && [
+      AppointmentStatus.ON_THE_WAY,
+      AppointmentStatus.ARRIVED_AT_SITE,
+      AppointmentStatus.IN_PROGRESS,
+    ].includes(newStatus)
+    && appointment.ocularFeeBreakdown
+    && !appointment.ocularFeeBreakdown.isWithinNCR
+    && !appointment.ocularFeePaid
+    && appointment.ocularFeeStatus !== 'cash_pending'
+  ) {
+    throw AppError.badRequest(
+      'Ocular fee must be paid before starting the visit. The location is outside Metro Manila.',
+      ErrorCode.VALIDATION_ERROR,
+    );
+  }
 
   appointmentStateMachine.assertTransition(appointment.status, newStatus);
 
   appointment.status = newStatus;
   await appointment.save();
 
+  const statusMeta: Record<
+    AppointmentStatus.PREPARING | AppointmentStatus.ON_THE_WAY | AppointmentStatus.ARRIVED_AT_SITE | AppointmentStatus.IN_PROGRESS,
+    { action: AuditAction; title: string; statusLabel: string }
+  > = {
+    [AppointmentStatus.PREPARING]: {
+      action: AuditAction.APPOINTMENT_PREPARING,
+      title: 'Staff Preparing',
+      statusLabel: 'preparing for your visit',
+    },
+    [AppointmentStatus.ON_THE_WAY]: {
+      action: AuditAction.APPOINTMENT_ON_THE_WAY,
+      title: 'Staff On The Way',
+      statusLabel: 'on the way to your location',
+    },
+    [AppointmentStatus.ARRIVED_AT_SITE]: {
+      action: AuditAction.APPOINTMENT_ARRIVED_AT_SITE,
+      title: 'Staff Arrived at Site',
+      statusLabel: 'arrived at your site',
+    },
+    [AppointmentStatus.IN_PROGRESS]: {
+      action: AuditAction.APPOINTMENT_IN_PROGRESS,
+      title: 'Site Visit Started',
+      statusLabel: 'now conducting your site visit',
+    },
+  };
+
+  const meta = statusMeta[newStatus];
+
   await AuditLog.create({
-    action: newStatus === AppointmentStatus.PREPARING ? AuditAction.APPOINTMENT_PREPARING : AuditAction.APPOINTMENT_ON_THE_WAY,
+    action: meta.action,
     actorId,
     targetType: 'appointment',
     targetId: appointment._id,
@@ -1338,13 +1574,11 @@ export async function updateVisitStatus(
     userAgent: ua,
   });
 
-  const statusLabel = newStatus === AppointmentStatus.PREPARING ? 'preparing for your visit' : 'on the way to your location';
-
   await createAndSendNotification(
     appointment.customerId,
     NotificationCategory.APPOINTMENT,
-    newStatus === AppointmentStatus.PREPARING ? 'Staff Preparing' : 'Staff On The Way',
-    `Your sales staff is ${statusLabel} for your ${appointment.type} appointment on ${appointment.date}.`,
+    meta.title,
+    `Your sales staff is ${meta.statusLabel} for your ${appointment.type} appointment on ${appointment.date}.`,
     `/appointments/${appointment._id}`,
   );
 
@@ -1390,6 +1624,120 @@ export async function markNoShow(
     'Appointment Marked as No-Show',
     `Your appointment on ${appointment.date} was marked as a no-show.`,
   );
+
+  return appointment;
+}
+
+export async function updateConsultationAttendance(
+  appointmentId: string,
+  input: ConsultationAttendanceInput,
+  actorId: string,
+  actorRoles: Role[],
+  ip?: string,
+  ua?: string,
+) {
+  const appointment = await Appointment.findById(appointmentId);
+  if (!appointment) throw AppError.notFound('Appointment not found');
+
+  if (appointment.type !== AppointmentType.OFFICE) {
+    throw AppError.badRequest('Consultation attendance is only available for office consultations');
+  }
+
+  const isAdmin = actorRoles.includes(Role.ADMIN);
+  const isAssignedSales = actorRoles.includes(Role.SALES_STAFF)
+    && appointment.salesStaffId?.toString() === actorId;
+
+  if (!isAdmin && !isAssignedSales) {
+    throw AppError.forbidden('Only the assigned sales staff or an admin can update consultation attendance');
+  }
+
+  const currentStatus = appointment.attendanceStatus || AppointmentAttendanceStatus.SCHEDULED;
+  let nextStatus = currentStatus;
+  const now = new Date();
+  const changes: Record<string, unknown> = {
+    action: input.action,
+    previousAttendanceStatus: currentStatus,
+  };
+  let outsideWindow = false;
+
+  if (input.action === 'check_in') {
+    const arrivalAt = input.actualArrivalAt ? new Date(input.actualArrivalAt) : now;
+    if (Number.isNaN(arrivalAt.getTime())) {
+      throw AppError.badRequest('Invalid arrival time', ErrorCode.VALIDATION_ERROR);
+    }
+    const classification = classifyArrival(appointment, arrivalAt);
+    nextStatus = classification.attendanceStatus;
+    outsideWindow = classification.outsideWindow;
+    appointment.actualArrivalAt = arrivalAt;
+    changes.actualArrivalAt = arrivalAt;
+    changes.outsideWindow = outsideWindow;
+  } else if (input.action === 'start') {
+    nextStatus = AppointmentAttendanceStatus.IN_PROGRESS;
+    appointment.consultationStartedAt = now;
+    changes.consultationStartedAt = now;
+  } else if (input.action === 'complete') {
+    nextStatus = AppointmentAttendanceStatus.COMPLETED;
+    appointment.consultationCompletedAt = now;
+    changes.consultationCompletedAt = now;
+  } else if (input.action === 'no_show') {
+    if (!input.notes?.trim()) {
+      throw AppError.badRequest('No-show attendance requires notes', ErrorCode.VALIDATION_ERROR);
+    }
+    nextStatus = AppointmentAttendanceStatus.NO_SHOW;
+    appointmentStateMachine.assertTransition(appointment.status, AppointmentStatus.NO_SHOW);
+    appointment.status = AppointmentStatus.NO_SHOW;
+    appointment.internalNotes = input.notes.trim();
+    changes.appointmentStatus = AppointmentStatus.NO_SHOW;
+  } else if (input.action === 'reschedule') {
+    if (!input.notes?.trim()) {
+      throw AppError.badRequest('Rescheduled attendance requires notes', ErrorCode.VALIDATION_ERROR);
+    }
+    nextStatus = AppointmentAttendanceStatus.RESCHEDULED;
+    appointmentStateMachine.assertTransition(appointment.status, AppointmentStatus.RESCHEDULE_REQUESTED);
+    appointment.status = AppointmentStatus.RESCHEDULE_REQUESTED;
+    appointment.rescheduleReason = input.notes.trim();
+    changes.appointmentStatus = AppointmentStatus.RESCHEDULE_REQUESTED;
+  }
+
+  const isOverride = currentStatus !== AppointmentAttendanceStatus.SCHEDULED
+    && currentStatus !== nextStatus
+    && isAdmin
+    && Boolean(input.overrideReason?.trim());
+  const needsOverrideReason = currentStatus !== AppointmentAttendanceStatus.SCHEDULED
+    && currentStatus !== nextStatus
+    && ![
+      AppointmentAttendanceStatus.ON_TIME,
+      AppointmentAttendanceStatus.LATE_ARRIVAL,
+      AppointmentAttendanceStatus.IN_PROGRESS,
+    ].includes(currentStatus);
+
+  if (needsOverrideReason && !input.overrideReason?.trim()) {
+    throw AppError.badRequest('Attendance override reason is required', ErrorCode.VALIDATION_ERROR);
+  }
+
+  assertAttendanceTransition(currentStatus, nextStatus, isOverride);
+
+  appointment.attendanceStatus = nextStatus;
+  if (input.notes?.trim()) appointment.attendanceNotes = input.notes.trim();
+  if (input.overrideReason?.trim()) appointment.attendanceOverrideReason = input.overrideReason.trim();
+  appointment.attendanceUpdatedBy = actorId as unknown as Types.ObjectId;
+  appointment.attendanceUpdatedAt = now;
+  await appointment.save();
+
+  await AuditLog.create({
+    action: AuditAction.APPOINTMENT_ATTENDANCE_UPDATED,
+    actorId,
+    targetType: 'appointment',
+    targetId: appointment._id,
+    details: {
+      ...changes,
+      attendanceStatus: nextStatus,
+      notes: input.notes || undefined,
+      overrideReason: input.overrideReason || undefined,
+    },
+    ipAddress: ip,
+    userAgent: ua,
+  });
 
   return appointment;
 }
@@ -1490,6 +1838,12 @@ export async function completeReschedule(
   appointment.date = input.date;
   appointment.slotCode = input.slotCode as SlotCode;
   appointment.status = AppointmentStatus.CONFIRMED;
+  appointment.attendanceStatus = AppointmentAttendanceStatus.SCHEDULED;
+  appointment.actualArrivalAt = undefined;
+  appointment.consultationStartedAt = undefined;
+  appointment.consultationCompletedAt = undefined;
+  appointment.attendanceNotes = undefined;
+  appointment.attendanceOverrideReason = undefined;
   appointment.rescheduleCount += 1;
   if (salesId) appointment.salesStaffId = salesId as unknown as Types.ObjectId;
   await appointment.save();

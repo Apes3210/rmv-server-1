@@ -116,7 +116,11 @@ export const completeAppointment = asyncHandler(async (req: Request, res: Respon
 
 // ── Update Visit Status (Preparing / On The Way) ──
 export const updateVisitStatus = asyncHandler(async (req: Request, res: Response) => {
-  const newStatus = req.params.status as AppointmentStatus.PREPARING | AppointmentStatus.ON_THE_WAY;
+  const newStatus = req.params.status as
+    | AppointmentStatus.PREPARING
+    | AppointmentStatus.ON_THE_WAY
+    | AppointmentStatus.ARRIVED_AT_SITE
+    | AppointmentStatus.IN_PROGRESS;
   const appointment = await appointmentsService.updateVisitStatus(
     req.params.id as string,
     newStatus,
@@ -137,6 +141,18 @@ export const markNoShow = asyncHandler(async (req: Request, res: Response) => {
     req.get('user-agent'),
   );
   res.json({ success: true, data: appointment });
+});
+
+export const updateConsultationAttendance = asyncHandler(async (req: Request, res: Response) => {
+  const appointment = await appointmentsService.updateConsultationAttendance(
+    req.params.id as string,
+    req.body,
+    req.userId!,
+    req.userRoles!,
+    req.ip,
+    req.get('user-agent'),
+  );
+  res.json({ success: true, data: formatAppointment(appointment) });
 });
 
 // ── Customer: Request Reschedule ──
@@ -360,7 +376,7 @@ export const agentCreateOcular = asyncHandler(async (req: Request, res: Response
 
 // ── Customer: Submit Ocular Location ──
 export const customerSubmitOcularLocation = asyncHandler(async (req: Request, res: Response) => {
-  await appointmentsService.customerSubmitOcularLocation(
+  const submittedAppointment = await appointmentsService.customerSubmitOcularLocation(
     req.params.id as string,
     req.body,
     req.userId!,
@@ -370,7 +386,7 @@ export const customerSubmitOcularLocation = asyncHandler(async (req: Request, re
 
   // Re-fetch with populated refs so response keeps stable customer/sales display fields.
   const appointment = await appointmentsService.getAppointmentById(
-    req.params.id as string,
+    submittedAppointment._id.toString(),
     req.userId!,
     req.userRoles!,
   );

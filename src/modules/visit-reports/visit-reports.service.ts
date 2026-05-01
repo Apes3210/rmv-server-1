@@ -4,7 +4,7 @@ import {
 import { VisitReportStatus } from '../../models/VisitReport.js';
 import { AppError, ErrorCode } from '../../utils/appError.js';
 import {
-  AppointmentStatus, AppointmentType, ProjectStatus, Role, AuditAction, NotificationCategory,
+  AppointmentStatus, AppointmentType, AppointmentAttendanceStatus, ContractStatus, ProjectStatus, Role, AuditAction, NotificationCategory,
   ServiceType, OcularFeePaymentChoice,
 } from '../../utils/constants.js';
 import { visitReportStateMachine, appointmentStateMachine } from '../../utils/stateMachine.js';
@@ -26,6 +26,30 @@ function readableServiceTitle(serviceType?: string, custom?: string) {
     .filter(Boolean)
     .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
     .join(' ');
+}
+
+async function getRelatedOcularAppointmentForConsultation(report: any) {
+  if (
+    report.visitType !== 'consultation'
+    || report.consultationOutcome !== 'schedule_ocular'
+    || !report.recommendedOcularDate
+    || !report.recommendedOcularSlot
+  ) {
+    return null;
+  }
+
+  const customerId = (report.customerId as any)?._id || report.customerId;
+  const recommendedOcularDate = report.recommendedOcularDate.toISOString().split('T')[0];
+
+  return Appointment.findOne({
+    customerId,
+    type: AppointmentType.OCULAR,
+    date: recommendedOcularDate,
+    slotCode: report.recommendedOcularSlot,
+    status: { $nin: [AppointmentStatus.CANCELLED, AppointmentStatus.NO_SHOW] },
+  })
+    .select('_id status customerLocation formattedAddress customerAddress distanceKm ocularFee ocularFeeBreakdown ocularFeePaid ocularFeeStatus ocularFeePaymentChoice date slotCode')
+    .lean();
 }
 
 async function upsertProjectItemFromVisitReport(project: any, report: any) {
@@ -375,6 +399,71 @@ function getIncompleteOcularFields(report: {
   return [...new Set(missing)];
 }
 
+function getIncompleteNoOcularFields(report: {
+  title?: string;
+  serviceType?: string;
+  serviceTypeCustom?: string;
+  discussionNotes?: string;
+  customerRequirements?: string;
+  notes?: string;
+  lineItems?: Array<{
+    label?: string;
+    length?: number;
+    width?: number;
+    height?: number;
+    area?: number;
+    thickness?: number;
+    quantity?: number;
+    notes?: string;
+  }>;
+  measurements?: {
+    length?: number;
+    width?: number;
+    height?: number;
+    area?: number;
+    thickness?: number;
+    raw?: string;
+  };
+  materials?: string;
+  preferredDesign?: string;
+  photoKeys?: string[];
+  referenceImageKeys?: string[];
+  initialDesignKeys?: string[];
+}) {
+  const missing: string[] = [];
+
+  const hasServiceDetails = isNonEmptyString(report.title)
+    || isNonEmptyString(report.serviceType)
+    || isNonEmptyString(report.serviceTypeCustom);
+  if (!hasServiceDetails) missing.push('project title or service details');
+
+  const hasDescription = isNonEmptyString(report.discussionNotes)
+    || isNonEmptyString(report.customerRequirements)
+    || isNonEmptyString(report.notes);
+  if (!hasDescription) missing.push('project description or requirement notes');
+
+  if (!hasAnyMeasuredDimensions(report)) {
+    missing.push('measurements/dimensions');
+  }
+
+  if (!isNonEmptyString(report.materials)) {
+    missing.push('material preference');
+  }
+
+  const hasDesignReferences = isNonEmptyString(report.preferredDesign)
+    || (report.referenceImageKeys?.length || 0) > 0
+    || (report.initialDesignKeys?.length || 0) > 0;
+  if (!hasDesignReferences) {
+    missing.push('design/reference details');
+  }
+
+  if ((report.photoKeys?.length || 0) === 0) {
+    missing.push('uploaded reference files/images');
+  }
+
+  return [...new Set(missing)];
+}
+
 async function ensureConsultationDraftProject(
   report: any,
   appt: any,
@@ -401,6 +490,9 @@ async function ensureConsultationDraftProject(
     ],
   });
   if (existingProject) {
+    if (!existingProject.contractStatus) {
+      existingProject.contractStatus = ContractStatus.MISSING;
+    }
     const nextServiceTypes = [...new Set([...(existingProject.serviceTypes || []), ...serviceTypes])];
     existingProject.serviceTypes = nextServiceTypes;
     existingProject.serviceType = nextServiceTypes.length > 0 ? nextServiceTypes.join(', ') : serviceLabel;
@@ -444,6 +536,7 @@ async function ensureConsultationDraftProject(
     notes: report.notes,
     designReviewStatus: 'not_required',
     status: ProjectStatus.DRAFT,
+    contractStatus: ContractStatus.MISSING,
     mediaKeys: [...report.photoKeys, ...report.sketchKeys, ...report.referenceImageKeys],
   });
 
@@ -470,6 +563,24 @@ async function ensureConsultationDraftProject(
   return project;
 }
 
+async function notifySalesContractUploadRequired(project: any, serviceLabel: string, reason: string) {
+  await notifyRole(
+    Role.ADMIN,
+    NotificationCategory.PROJECT,
+    'Signed Contract Required',
+    `Project "${serviceLabel}" is ready for signed contract upload before engineering can claim it. ${reason}`,
+    `/projects/${project._id}/contract`,
+  );
+
+  await createAndSendNotification(
+    project.salesStaffId,
+    NotificationCategory.PROJECT,
+    'Upload Signed Contract',
+    `Upload the manually signed contract for "${serviceLabel}" so engineering can claim the project.`,
+    `/projects/${project._id}/contract`,
+  );
+}
+
 async function submitSiblingConsultationReports(
   sourceReport: any,
   _appt: any,
@@ -486,14 +597,27 @@ async function submitSiblingConsultationReports(
   });
 
   for (const sibling of siblingReports) {
-    if (!sibling.recommendedOcularDate && sourceReport.recommendedOcularDate) {
-      sibling.recommendedOcularDate = sourceReport.recommendedOcularDate;
-    }
-    if (!sibling.recommendedOcularSlot && sourceReport.recommendedOcularSlot) {
-      sibling.recommendedOcularSlot = sourceReport.recommendedOcularSlot;
+    if (sourceReport.consultationOutcome === 'no_ocular') {
+      sibling.recommendedOcularDate = undefined;
+      sibling.recommendedOcularSlot = undefined;
+    } else {
+      if (!sibling.recommendedOcularDate && sourceReport.recommendedOcularDate) {
+        sibling.recommendedOcularDate = sourceReport.recommendedOcularDate;
+      }
+      if (!sibling.recommendedOcularSlot && sourceReport.recommendedOcularSlot) {
+        sibling.recommendedOcularSlot = sourceReport.recommendedOcularSlot;
+      }
     }
     if (!sibling.actualVisitDateTime && sourceReport.actualVisitDateTime) {
       sibling.actualVisitDateTime = sourceReport.actualVisitDateTime;
+    }
+    if (sourceReport.consultationOutcome) {
+      sibling.consultationOutcome = sourceReport.consultationOutcome;
+    }
+    if (sourceReport.consultationOutcome === 'no_ocular') {
+      sibling.noOcularReason = sourceReport.noOcularReason;
+    } else {
+      sibling.noOcularReason = undefined;
     }
 
     visitReportStateMachine.assertTransition(sibling.status, VisitReportStatus.SUBMITTED);
@@ -646,7 +770,7 @@ export async function getVisitReport(reportId: string) {
   const report = await VisitReport.findById(reportId)
     .populate('customerId', 'firstName lastName email phone')
     .populate('salesStaffId', 'firstName lastName email')
-    .populate('appointmentId', 'date slotCode type customerAddress serviceTypes serviceTypeCustom customerSiteDetails salesStaffId');
+    .populate('appointmentId', 'date slotCode type customerAddress serviceTypes serviceTypeCustom customerSiteDetails salesStaffId attendanceStatus actualArrivalAt consultationStartedAt consultationCompletedAt attendanceNotes attendanceUpdatedAt');
 
   if (!report) throw AppError.notFound('Visit report not found');
 
@@ -679,10 +803,12 @@ export async function getVisitReport(reportId: string) {
     status: p.status,
     path: `/projects/${p._id}`,
   }));
+  const relatedOcularAppointment = await getRelatedOcularAppointmentForConsultation(report);
 
   return {
     ...report.toObject(),
     sampleProjects,
+    relatedOcularAppointment,
   };
 }
 
@@ -709,7 +835,7 @@ export async function getByAppointment(appointmentId: string) {
   const reports = await VisitReport.find({ appointmentId })
     .populate('customerId', 'firstName lastName email phone')
     .populate('salesStaffId', 'firstName lastName email')
-    .populate('appointmentId', 'date slotCode type customerAddress')
+    .populate('appointmentId', 'date slotCode type customerAddress attendanceStatus actualArrivalAt consultationStartedAt consultationCompletedAt attendanceNotes attendanceUpdatedAt')
     .sort({ createdAt: 1 });
   return reports;
 }
@@ -729,7 +855,7 @@ export async function listForSalesStaff(salesStaffId: string, query: {
   const [reports, total] = await Promise.all([
     VisitReport.find(filter)
       .populate('customerId', 'firstName lastName email')
-      .populate('appointmentId', 'date slotCode type customerAddress')
+      .populate('appointmentId', 'date slotCode type customerAddress attendanceStatus actualArrivalAt consultationStartedAt consultationCompletedAt attendanceNotes attendanceUpdatedAt')
       .sort({ updatedAt: -1 })
       .skip((page - 1) * limit)
       .limit(limit),
@@ -753,7 +879,7 @@ export async function listSubmitted(query: {
     VisitReport.find(filter)
       .populate('customerId', 'firstName lastName email')
       .populate('salesStaffId', 'firstName lastName')
-      .populate('appointmentId', 'date slotCode type customerAddress')
+      .populate('appointmentId', 'date slotCode type customerAddress attendanceStatus actualArrivalAt consultationStartedAt consultationCompletedAt attendanceNotes attendanceUpdatedAt')
       .sort({ updatedAt: -1 })
       .skip((page - 1) * limit)
       .limit(limit),
@@ -781,7 +907,7 @@ export async function listAll(query: {
     VisitReport.find(filter)
       .populate('customerId', 'firstName lastName email')
       .populate('salesStaffId', 'firstName lastName')
-      .populate('appointmentId', 'date slotCode type customerAddress')
+      .populate('appointmentId', 'date slotCode type customerAddress attendanceStatus actualArrivalAt consultationStartedAt consultationCompletedAt attendanceNotes attendanceUpdatedAt')
       .sort({ updatedAt: -1 })
       .skip((page - 1) * limit)
       .limit(limit),
@@ -836,11 +962,22 @@ export async function updateReport(
     }
   }
 
-  if (report.visitType === 'consultation') {
+  if (report.visitType === 'consultation' && report.consultationOutcome !== 'no_ocular') {
     report.initialDesignKeys = [];
     report.initialDesignNotes = undefined;
+    if (input.consultationOutcome === 'no_ocular') {
+      input.recommendedOcularDate = undefined;
+      input.recommendedOcularSlot = undefined;
+    }
     delete changes.initialDesignKeys;
     delete changes.initialDesignNotes;
+  }
+
+  if (report.visitType === 'consultation' && report.consultationOutcome === 'no_ocular') {
+    report.recommendedOcularDate = undefined;
+    report.recommendedOcularSlot = undefined;
+    changes.recommendedOcularDate = undefined;
+    changes.recommendedOcularSlot = undefined;
   }
 
   await report.save();
@@ -879,21 +1016,87 @@ export async function submitReport(
 
   const isConsultationReport = report.visitType === 'consultation';
   const hasRecommendedOcularSchedule = Boolean(report.recommendedOcularDate && report.recommendedOcularSlot);
+  const consultationOutcome = report.consultationOutcome as 'schedule_ocular' | 'no_ocular' | undefined;
+
+  if (isConsultationReport) {
+    const attendanceStatus = appt.attendanceStatus || AppointmentAttendanceStatus.SCHEDULED;
+    if (attendanceStatus === AppointmentAttendanceStatus.NO_SHOW) {
+      throw AppError.badRequest(
+        'Consultation report cannot be submitted because the consultation was marked as No Show. Save notes only.',
+        ErrorCode.VALIDATION_ERROR,
+      );
+    }
+    if (attendanceStatus === AppointmentAttendanceStatus.RESCHEDULED) {
+      throw AppError.badRequest(
+        'Consultation report cannot be submitted because the consultation was marked as Rescheduled. Save notes only.',
+        ErrorCode.VALIDATION_ERROR,
+      );
+    }
+    if (attendanceStatus !== AppointmentAttendanceStatus.COMPLETED) {
+      throw AppError.badRequest(
+        'Complete the consultation attendance before submitting the consultation report.',
+        ErrorCode.VALIDATION_ERROR,
+      );
+    }
+    if (!consultationOutcome) {
+      throw AppError.badRequest(
+        'Choose whether to schedule an ocular visit or proceed without ocular before submitting the consultation report.',
+        ErrorCode.VALIDATION_ERROR,
+      );
+    }
+    if (consultationOutcome === 'schedule_ocular' && !hasRecommendedOcularSchedule) {
+      throw AppError.badRequest(
+        'Select an ocular visit date and time before scheduling the ocular visit.',
+        ErrorCode.VALIDATION_ERROR,
+      );
+    }
+    if (consultationOutcome === 'no_ocular' && !report.noOcularReason?.trim()) {
+      throw AppError.badRequest(
+        'Explain why ocular is not needed before proceeding without ocular.',
+        ErrorCode.VALIDATION_ERROR,
+      );
+    }
+    if (consultationOutcome === 'no_ocular') {
+      report.recommendedOcularDate = undefined;
+      report.recommendedOcularSlot = undefined;
+      const missingFields = getIncompleteNoOcularFields({
+        title: readableServiceTitle(report.serviceType, report.serviceTypeCustom),
+        serviceType: report.serviceType,
+        serviceTypeCustom: report.serviceTypeCustom,
+        discussionNotes: report.discussionNotes,
+        customerRequirements: report.customerRequirements,
+        notes: report.notes,
+        lineItems: report.lineItems,
+        measurements: report.measurements,
+        materials: report.materials,
+        preferredDesign: report.preferredDesign,
+        photoKeys: report.photoKeys,
+        referenceImageKeys: report.referenceImageKeys,
+        initialDesignKeys: report.initialDesignKeys,
+      });
+      if (missingFields.length > 0) {
+        throw AppError.badRequest(
+          `Proceeding without ocular requires complete project details. Missing: ${missingFields.join(', ')}.`,
+          ErrorCode.VALIDATION_ERROR,
+        );
+      }
+    }
+  }
 
   if (report.visitType === 'ocular' && appt.status !== AppointmentStatus.COMPLETED) {
+    if (appt.status !== AppointmentStatus.IN_PROGRESS) {
+      throw AppError.badRequest(
+        'Start the site visit first before submitting the final ocular report.',
+        ErrorCode.VALIDATION_ERROR,
+      );
+    }
+
     await completeOcularAppointmentForReport(appt, salesStaffId, ip, ua);
   }
 
   if (!isConsultationReport && appt.status !== AppointmentStatus.COMPLETED) {
     throw AppError.badRequest(
       'The appointment must be marked as complete before submitting reports',
-      ErrorCode.VALIDATION_ERROR,
-    );
-  }
-
-  if (isConsultationReport && appt.status !== AppointmentStatus.COMPLETED && !hasRecommendedOcularSchedule) {
-    throw AppError.badRequest(
-      'Select an ocular visit date and time before scheduling the ocular visit.',
       ErrorCode.VALIDATION_ERROR,
     );
   }
@@ -921,7 +1124,15 @@ export async function submitReport(
     }
   }
 
+  if (isConsultationReport && consultationOutcome === 'no_ocular') {
+    report.recommendedOcularDate = undefined;
+    report.recommendedOcularSlot = undefined;
+  }
+
   if (isConsultationReport && report.status === VisitReportStatus.SUBMITTED) {
+    if (consultationOutcome === 'no_ocular') {
+      await report.save();
+    }
     await ensureConsultationDraftProject(
       report,
       appt,
@@ -949,7 +1160,7 @@ export async function submitReport(
   });
 
   if (isConsultationReport) {
-    // ── Consultation: auto-create DRAFT project, notify agent about recommended ocular ──
+    // ── Consultation: auto-create DRAFT project, then branch by ocular decision ──
     const serviceLabel = report.serviceTypeCustom || report.serviceType || 'General Fabrication';
     const project = await ensureConsultationDraftProject(
       report,
@@ -960,11 +1171,12 @@ export async function submitReport(
       ua,
     );
 
-      // Notify agent with recommended ocular info
-      const formatOcularSlot = (slot: string) => {
-        const h = parseInt(slot.split(':')[0]);
-        return `${h > 12 ? h - 12 : h === 0 ? 12 : h}:00 ${h >= 12 ? 'PM' : 'AM'}`;
-      };
+    const formatOcularSlot = (slot: string) => {
+      const h = parseInt(slot.split(':')[0]);
+      return `${h > 12 ? h - 12 : h === 0 ? 12 : h}:00 ${h >= 12 ? 'PM' : 'AM'}`;
+    };
+
+    if (consultationOutcome === 'schedule_ocular') {
       const ocularDateInfo = report.recommendedOcularDate
         ? ` Recommended ocular date: ${report.recommendedOcularDate.toISOString().split('T')[0]}${report.recommendedOcularSlot ? ` at ${formatOcularSlot(report.recommendedOcularSlot)}` : ''}.`
         : '';
@@ -976,7 +1188,6 @@ export async function submitReport(
         `/appointments/${appt._id}`,
       );
 
-      // Notify admin
       await notifyRole(
         Role.ADMIN,
         NotificationCategory.PROJECT,
@@ -985,16 +1196,14 @@ export async function submitReport(
         `/projects/${project._id}`,
       );
 
-      // Notify customer
       await createAndSendNotification(
         report.customerId,
         NotificationCategory.PROJECT,
         'Consultation Complete',
-        `Your consultation has been completed and project "${serviceLabel}" has been created. An ocular visit will be scheduled.`,
-        `/projects/${project._id}`,
+        `Your consultation has been completed for "${serviceLabel}". An ocular visit will be scheduled next.`,
+        `/appointments/${appt._id}`,
       );
 
-      // Mark consultation as ready for ocular once the consultation report is submitted.
       appt.consultationReportSubmitted = true;
       if (appt.status === AppointmentStatus.COMPLETED) {
         appointmentStateMachine.assertTransition(
@@ -1005,98 +1214,179 @@ export async function submitReport(
       }
       await appt.save();
 
-      // If consultation included a recommended ocular schedule, auto-create ocular request
-      // so the customer can immediately submit site pin/address from their account.
       const recommendedOcularDate = report.recommendedOcularDate
         ? report.recommendedOcularDate.toISOString().split('T')[0]
         : undefined;
       const recommendedOcularSlot = report.recommendedOcularSlot;
 
-      if (recommendedOcularDate && recommendedOcularSlot) {
-        const consultationServiceTypes = await getAppointmentVisitReportServiceTypes(report.appointmentId);
-        const hasActiveOcular = await Appointment.exists({
+      const consultationServiceTypes = await getAppointmentVisitReportServiceTypes(report.appointmentId);
+      const activeOcular = await Appointment.findOne({
+        customerId: report.customerId,
+        type: AppointmentType.OCULAR,
+        status: {
+          $in: [
+            AppointmentStatus.REQUESTED,
+            AppointmentStatus.CONFIRMED,
+            AppointmentStatus.PREPARING,
+            AppointmentStatus.ON_THE_WAY,
+            AppointmentStatus.ARRIVED_AT_SITE,
+            AppointmentStatus.IN_PROGRESS,
+            AppointmentStatus.RESCHEDULE_REQUESTED,
+            AppointmentStatus.READY_FOR_OCULAR,
+          ],
+        },
+      }).sort({ updatedAt: -1, createdAt: -1 });
+
+      let ocularAppointment = activeOcular;
+      const ocularServiceTypeCustom = report.serviceTypeCustom || appt.serviceTypeCustom;
+
+      if (!ocularAppointment) {
+        ocularAppointment = await Appointment.create({
           customerId: report.customerId,
           type: AppointmentType.OCULAR,
-          status: {
-            $in: [
-              AppointmentStatus.REQUESTED,
-              AppointmentStatus.CONFIRMED,
-              AppointmentStatus.PREPARING,
-              AppointmentStatus.ON_THE_WAY,
-              AppointmentStatus.RESCHEDULE_REQUESTED,
-            ],
-          },
-        });
-
-        if (!hasActiveOcular) {
-          const ocularAppointment = await Appointment.create({
-            customerId: report.customerId,
-            type: AppointmentType.OCULAR,
-            date: recommendedOcularDate,
-            slotCode: recommendedOcularSlot,
-            status: AppointmentStatus.REQUESTED,
-            salesStaffId: report.salesStaffId,
-            bookedBy: report.salesStaffId,
+          date: recommendedOcularDate!,
+          slotCode: recommendedOcularSlot!,
+          status: AppointmentStatus.REQUESTED,
+          salesStaffId: report.salesStaffId,
+          bookedBy: report.salesStaffId,
+          serviceTypes: consultationServiceTypes,
+          serviceTypeCustom: appt.serviceTypeCustom,
+          customerSiteDetails: {
             serviceTypes: consultationServiceTypes,
             serviceTypeCustom: appt.serviceTypeCustom,
-            customerSiteDetails: {
-              serviceTypes: consultationServiceTypes,
-              serviceTypeCustom: appt.serviceTypeCustom,
-            },
-            customerNotes: `Ocular follow-up scheduled from consultation report ${report._id}`,
-          });
+          },
+          customerNotes: `Ocular follow-up scheduled from consultation report ${report._id}`,
+        });
 
-          if (appt.status === AppointmentStatus.READY_FOR_OCULAR) {
-            appointmentStateMachine.assertTransition(
-              appt.status,
-              AppointmentStatus.COMPLETED,
-            );
-            appt.status = AppointmentStatus.COMPLETED;
-            await appt.save();
+        await AuditLog.create({
+          action: AuditAction.APPOINTMENT_CREATED,
+          actorId: salesStaffId,
+          targetType: 'appointment',
+          targetId: ocularAppointment._id,
+          details: {
+            triggeredBy: 'system',
+            reason: 'consultation_report_recommended_ocular',
+            sourceVisitReportId: report._id,
+          },
+          ipAddress: ip,
+          userAgent: ua,
+        });
+      } else {
+        let changedExistingOcular = false;
+
+        if (!ocularAppointment.date && recommendedOcularDate) {
+          ocularAppointment.date = recommendedOcularDate;
+          changedExistingOcular = true;
+        }
+        if (!ocularAppointment.slotCode && recommendedOcularSlot) {
+          ocularAppointment.slotCode = recommendedOcularSlot as any;
+          changedExistingOcular = true;
+        }
+        if (!ocularAppointment.salesStaffId) {
+          ocularAppointment.salesStaffId = report.salesStaffId;
+          changedExistingOcular = true;
+        }
+        if (!ocularAppointment.bookedBy) {
+          ocularAppointment.bookedBy = report.salesStaffId;
+          changedExistingOcular = true;
+        }
+        if ((!ocularAppointment.serviceTypes || ocularAppointment.serviceTypes.length === 0) && consultationServiceTypes.length > 0) {
+          ocularAppointment.serviceTypes = consultationServiceTypes;
+          changedExistingOcular = true;
+        }
+        if (!ocularAppointment.serviceTypeCustom && ocularServiceTypeCustom) {
+          ocularAppointment.serviceTypeCustom = ocularServiceTypeCustom;
+          changedExistingOcular = true;
+        }
+        if (!ocularAppointment.customerSiteDetails) {
+          ocularAppointment.customerSiteDetails = {
+            serviceTypes: consultationServiceTypes,
+            serviceTypeCustom: ocularServiceTypeCustom,
+          };
+          changedExistingOcular = true;
+        } else {
+          if ((!ocularAppointment.customerSiteDetails.serviceTypes || ocularAppointment.customerSiteDetails.serviceTypes.length === 0) && consultationServiceTypes.length > 0) {
+            ocularAppointment.customerSiteDetails.serviceTypes = consultationServiceTypes;
+            changedExistingOcular = true;
           }
-
-          await AuditLog.create({
-            action: AuditAction.APPOINTMENT_CREATED,
-            actorId: salesStaffId,
-            targetType: 'appointment',
-            targetId: ocularAppointment._id,
-            details: {
-              triggeredBy: 'system',
-              reason: 'consultation_report_recommended_ocular',
-              sourceVisitReportId: report._id,
-            },
-            ipAddress: ip,
-            userAgent: ua,
-          });
-
-          const readableSlot = formatOcularSlot(recommendedOcularSlot);
-
-          await createAndSendNotification(
-            report.customerId,
-            NotificationCategory.APPOINTMENT,
-            'Ocular Visit Needs Your Location Confirmation',
-            `An ocular visit is ready for ${recommendedOcularDate} at ${readableSlot}. Open the appointment and submit your site map pin/address to continue.`,
-            `/appointments/${ocularAppointment._id}`,
-          );
-
-          await createAndSendNotification(
-            report.customerId,
-            NotificationCategory.SYSTEM,
-            'Action Required: Submit Ocular Map Address',
-            `Please confirm your ocular appointment by submitting your map pin/address for ${recommendedOcularDate} at ${readableSlot}.`,
-            `/appointments/${ocularAppointment._id}`,
-          );
+          if (!ocularAppointment.customerSiteDetails.serviceTypeCustom && ocularServiceTypeCustom) {
+            ocularAppointment.customerSiteDetails.serviceTypeCustom = ocularServiceTypeCustom;
+            changedExistingOcular = true;
+          }
         }
 
-        if (appt.status !== AppointmentStatus.COMPLETED) {
-          appointmentStateMachine.assertTransition(
-            appt.status,
-            AppointmentStatus.COMPLETED,
-          );
-          appt.status = AppointmentStatus.COMPLETED;
-          await appt.save();
+        if (changedExistingOcular) {
+          await ocularAppointment.save();
         }
       }
+
+      if (appt.status === AppointmentStatus.READY_FOR_OCULAR) {
+        appointmentStateMachine.assertTransition(
+          appt.status,
+          AppointmentStatus.COMPLETED,
+        );
+        appt.status = AppointmentStatus.COMPLETED;
+        await appt.save();
+      }
+
+      const hasOcularLocation = Boolean(
+        ocularAppointment.customerLocation
+        || typeof ocularAppointment.latitude === 'number'
+      );
+
+      if (!hasOcularLocation && ocularAppointment.status === AppointmentStatus.REQUESTED) {
+        const readableSlot = formatOcularSlot(recommendedOcularSlot!);
+
+        await createAndSendNotification(
+          report.customerId,
+          NotificationCategory.APPOINTMENT,
+          'Ocular Visit Needs Your Location Confirmation',
+          `An ocular visit is ready for ${recommendedOcularDate} at ${readableSlot}. Open the appointment and submit your site map pin/address to continue.`,
+          `/appointments/${ocularAppointment._id}`,
+        );
+
+        await createAndSendNotification(
+          report.customerId,
+          NotificationCategory.SYSTEM,
+          'Action Required: Submit Ocular Map Address',
+          `Please confirm your ocular appointment by submitting your map pin/address for ${recommendedOcularDate} at ${readableSlot}.`,
+          `/appointments/${ocularAppointment._id}`,
+        );
+      }
+
+      if (appt.status !== AppointmentStatus.COMPLETED) {
+        appointmentStateMachine.assertTransition(
+          appt.status,
+          AppointmentStatus.COMPLETED,
+        );
+        appt.status = AppointmentStatus.COMPLETED;
+        await appt.save();
+      }
+    } else {
+      project.contractStatus = project.contractStatus || ContractStatus.MISSING;
+      if (project.status !== ProjectStatus.DRAFT) {
+        project.status = ProjectStatus.DRAFT;
+      }
+      await project.save();
+
+      const item = await upsertProjectItemFromVisitReport(project, report);
+      item.status = ProjectStatus.DRAFT;
+      await item.save();
+
+      await notifySalesContractUploadRequired(project, serviceLabel, 'Sales marked ocular as not needed.');
+
+      appt.consultationReportSubmitted = true;
+      if (appt.status !== AppointmentStatus.COMPLETED) {
+        appointmentStateMachine.assertTransition(
+          appt.status,
+          AppointmentStatus.COMPLETED,
+        );
+        appt.status = AppointmentStatus.COMPLETED;
+        await appt.save();
+      } else {
+        await appt.save();
+      }
+    }
 
     await submitSiblingConsultationReports(report, appt, salesStaffId, ip, ua);
   } else {
@@ -1124,14 +1414,11 @@ export async function submitReport(
       // Point the project's visitReportId to the ocular report so the project page shows on-site data
       linkedProject.visitReportId = report._id;
 
-      // Transition DRAFT → SUBMITTED
-      if (linkedProject.status === ProjectStatus.DRAFT) {
-        linkedProject.status = ProjectStatus.SUBMITTED;
-      }
+      linkedProject.contractStatus = linkedProject.contractStatus || ContractStatus.MISSING;
 
       await linkedProject.save();
       const item = await upsertProjectItemFromVisitReport(linkedProject, report);
-      item.status = linkedProject.status;
+      item.status = linkedProject.status === ProjectStatus.DRAFT ? ProjectStatus.DRAFT : linkedProject.status;
       await item.save();
 
       await AuditLog.create({
@@ -1144,33 +1431,13 @@ export async function submitReport(
         userAgent: ua,
       });
 
-      // Notify admin/engineers
-      await notifyRole(
-        Role.ADMIN,
-        NotificationCategory.PROJECT,
-        'Project Updated from Ocular',
-        `Project "${linkedProject.serviceType || linkedProject.title}" has been updated with ocular measurements and is now SUBMITTED. Assign an engineer.`,
-        `/projects/${linkedProject._id}`,
-      );
-
-      await notifyRole(
-        Role.ENGINEER,
-        NotificationCategory.PROJECT,
-        'New Project Submitted',
-        `Project "${linkedProject.serviceType || linkedProject.title}" has been submitted with site measurements and is ready for blueprint work.`,
-        `/projects/${linkedProject._id}`,
-      );
-
-      // Notify customer
-      await createAndSendNotification(
-        report.customerId,
-        NotificationCategory.PROJECT,
-        'Ocular Visit Complete',
-        `Your ocular visit report has been submitted and your project "${linkedProject.serviceType || linkedProject.title}" is now being processed.`,
-        `/projects/${linkedProject._id}`,
+      await notifySalesContractUploadRequired(
+        linkedProject,
+        linkedProject.serviceType || linkedProject.title,
+        'Ocular measurements have been submitted.',
       );
     } else {
-      // Fallback: no linked project found — create one as SUBMITTED (legacy behavior)
+      // Fallback: no linked project found — create one as draft pending signed contract upload.
       const existingProject = await Project.findOne({ visitReportId: report._id });
       if (!existingProject) {
         const serviceLabel = report.serviceTypeCustom || report.serviceType || 'General Fabrication';
@@ -1198,7 +1465,8 @@ export async function submitReport(
           initialDesignKeys: report.initialDesignKeys || [],
           initialDesignNotes: report.initialDesignNotes,
           designReviewStatus: (report.initialDesignKeys?.length || report.initialDesignNotes) ? 'pending' : 'not_required',
-          status: ProjectStatus.SUBMITTED,
+          status: ProjectStatus.DRAFT,
+          contractStatus: ContractStatus.MISSING,
           mediaKeys: [...report.photoKeys, ...report.sketchKeys, ...report.referenceImageKeys],
         });
 
@@ -1212,33 +1480,10 @@ export async function submitReport(
           userAgent: ua,
         });
 
-        await notifyRole(
-          Role.ADMIN,
-          NotificationCategory.PROJECT,
-          'New Project from Visit Report',
-          `A new project "${serviceLabel}" has been created from a visit report. Assign an engineer.`,
-          `/projects/${project._id}`,
-        );
-
-        await createAndSendNotification(
-          report.customerId,
-          NotificationCategory.PROJECT,
-          'Project Created',
-          `Your project "${serviceLabel}" has been created from the visit report. An engineer will be assigned shortly.`,
-          `/projects/${project._id}`,
-        );
+        await notifySalesContractUploadRequired(project, serviceLabel, 'The ocular visit report created a project.');
       }
     }
   }
-
-  // Notify engineers about submitted report
-  await notifyRole(
-    Role.ENGINEER,
-    NotificationCategory.PROJECT,
-    'New Visit Report Submitted',
-    `A sales visit report has been submitted and is ready for review.`,
-    `/visit-reports/${report._id}`,
-  );
 
   return report;
 }
@@ -1438,3 +1683,7 @@ export async function markCompleted(
 
   return report;
 }
+
+export const __visitReportServiceInternals = {
+  getIncompleteNoOcularFields,
+};

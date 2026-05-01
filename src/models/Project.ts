@@ -1,5 +1,5 @@
 import mongoose, { Schema, Document, Types } from 'mongoose';
-import { ProjectStatus } from '../utils/constants.js';
+import { ContractStatus, ProjectStatus } from '../utils/constants.js';
 
 export interface IProject extends Document {
   _id: Types.ObjectId;
@@ -56,6 +56,13 @@ export interface IProject extends Document {
   cancelReason?: string;
 
   mediaKeys: string[]; // R2 keys for reference photos/files
+  contractStatus: ContractStatus;
+  contractFileKey?: string;
+  contractFileName?: string;
+  contractContentType?: string;
+  contractFileSize?: number;
+  contractUploadedAt?: Date;
+  contractUploadedBy?: Types.ObjectId;
   contractKey?: string; // R2 key for generated contract PDF
   contractGeneratedAt?: Date;
   contractSignedAt?: Date;
@@ -144,6 +151,17 @@ const projectSchema = new Schema<IProject>(
     cancelReason: { type: String },
 
     mediaKeys: [{ type: String }],
+    contractStatus: {
+      type: String,
+      enum: Object.values(ContractStatus),
+      default: ContractStatus.MISSING,
+    },
+    contractFileKey: { type: String },
+    contractFileName: { type: String },
+    contractContentType: { type: String },
+    contractFileSize: { type: Number },
+    contractUploadedAt: { type: Date },
+    contractUploadedBy: { type: Schema.Types.ObjectId, ref: 'User' },
     contractKey: { type: String },
     contractGeneratedAt: { type: Date },
     contractSignedAt: { type: Date },
@@ -172,6 +190,7 @@ projectSchema.index({ customerId: 1, status: 1 });
 projectSchema.index({ salesStaffId: 1 });
 projectSchema.index({ engineerIds: 1 });
 projectSchema.index({ status: 1 });
+projectSchema.index({ contractStatus: 1 });
 projectSchema.index({ appointmentId: 1 }); // no longer unique — multiple projects per appointment
 projectSchema.index({ visitReportId: 1 });
 

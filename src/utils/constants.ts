@@ -21,6 +21,8 @@ export enum AppointmentStatus {
   CONFIRMED = 'confirmed',
   PREPARING = 'preparing',
   ON_THE_WAY = 'on_the_way',
+  ARRIVED_AT_SITE = 'arrived_at_site',
+  IN_PROGRESS = 'in_progress',
   READY_FOR_OCULAR = 'ready_for_ocular',
   COMPLETED = 'completed',
   NO_SHOW = 'no_show',
@@ -32,6 +34,16 @@ export enum AppointmentStatus {
 export enum AppointmentType {
   OFFICE = 'office',
   OCULAR = 'ocular',
+}
+
+export enum AppointmentAttendanceStatus {
+  SCHEDULED = 'scheduled',
+  ON_TIME = 'on_time',
+  LATE_ARRIVAL = 'late_arrival',
+  IN_PROGRESS = 'in_progress',
+  COMPLETED = 'completed',
+  RESCHEDULED = 'rescheduled',
+  NO_SHOW = 'no_show',
 }
 
 // ── Slot Codes ──
@@ -49,6 +61,12 @@ export enum ProjectStatus {
   FABRICATION = 'fabrication',
   COMPLETED = 'completed',
   CANCELLED = 'cancelled',
+}
+
+// ── Manual Signed Contract Status ──
+export enum ContractStatus {
+  MISSING = 'missing',
+  UPLOADED = 'uploaded',
 }
 
 // ── Blueprint Status ──
@@ -202,6 +220,9 @@ export enum AuditAction {
   APPOINTMENT_LOCATION_SUBMITTED = 'appointment_location_submitted',
   APPOINTMENT_PREPARING = 'appointment_preparing',
   APPOINTMENT_ON_THE_WAY = 'appointment_on_the_way',
+  APPOINTMENT_ARRIVED_AT_SITE = 'appointment_arrived_at_site',
+  APPOINTMENT_IN_PROGRESS = 'appointment_in_progress',
+  APPOINTMENT_ATTENDANCE_UPDATED = 'appointment_attendance_updated',
   SALES_ASSIGNED = 'sales_assigned',
 
   // Project

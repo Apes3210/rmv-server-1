@@ -118,13 +118,22 @@ export async function createFabricationUpdate(
   }
 
   // Prevent a terminal fabrication update from being recorded until the
-  // customer has confirmed the installation schedule.
-  if (input.status === FabricationStatus.DONE && !(project as any).installationConfirmedAt) {
-    throw AppError.badRequest(
-      'Customer must confirm the installation schedule before marking the project as Done',
-      ErrorCode.FABRICATION_INSTALLATION_NOT_CONFIRMED,
-      { helpPath: '/help/projects-fabrication/fabrication-lifecycle#checklist' },
-    );
+  // customer has confirmed the installation schedule for this item.
+  if (input.status === FabricationStatus.DONE) {
+    const projectItem = input.projectItemId
+      ? await ProjectItem.findOne({ _id: input.projectItemId, projectId: input.projectId })
+      : null;
+    const installationConfirmed = projectItem
+      ? Boolean((projectItem as any).installationConfirmedAt)
+      : Boolean((project as any).installationConfirmedAt);
+
+    if (!installationConfirmed) {
+      throw AppError.badRequest(
+        'Customer must confirm the installation schedule before marking the project as Done',
+        ErrorCode.FABRICATION_INSTALLATION_NOT_CONFIRMED,
+        { helpPath: '/help/projects-fabrication/fabrication-lifecycle#checklist' },
+      );
+    }
   }
 
   const update = await FabricationUpdate.create({

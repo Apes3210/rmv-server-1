@@ -5,7 +5,7 @@ import { PaymentStageStatus, PaymentMethod } from '../utils/constants.js';
 export interface IPaymentStage {
   stageId: string; // auto-generated UUID
   label: string; // Auto: "Stage 1", "Stage 2", etc.
-  description?: string; // Milestone trigger e.g. "Due upon contract signing"
+  description?: string; // Milestone trigger e.g. "Due before fabrication starts"
   percentage: number;
   amount: number; // Calculated from total * percentage
   status: PaymentStageStatus;

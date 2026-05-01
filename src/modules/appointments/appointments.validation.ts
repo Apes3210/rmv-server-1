@@ -66,6 +66,13 @@ export const noShowSchema = z.object({
   internalNotes: z.string().max(1000).trim().optional(),
 });
 
+export const consultationAttendanceSchema = z.object({
+  action: z.enum(['check_in', 'start', 'complete', 'no_show', 'reschedule']),
+  actualArrivalAt: z.string().datetime().optional(),
+  notes: z.string().max(1000).trim().optional(),
+  overrideReason: z.string().max(1000).trim().optional(),
+});
+
 export const recordOcularFeeSchema = z.object({
   paymentMethod: z.nativeEnum(PaymentMethod),
 });
@@ -97,6 +104,7 @@ export type ReassignAppointmentSalesInput = z.infer<typeof reassignAppointmentSa
 export type RescheduleRequestInput = z.infer<typeof rescheduleRequestSchema>;
 export type RescheduleCompleteInput = z.infer<typeof rescheduleCompleteSchema>;
 export type CancelAppointmentInput = z.infer<typeof cancelAppointmentSchema>;
+export type ConsultationAttendanceInput = z.infer<typeof consultationAttendanceSchema>;
 export type RecordOcularFeeInput = z.infer<typeof recordOcularFeeSchema>;
 export type SubmitOcularFeeProofInput = z.infer<typeof submitOcularFeeProofSchema>;
 export type DeclineOcularFeeInput = z.infer<typeof declineOcularFeeSchema>;

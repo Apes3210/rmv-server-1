@@ -25,12 +25,61 @@ describe('appointmentStateMachine', () => {
         AppointmentStatus.COMPLETED,
       ),
     ).toBe(true);
+
+    expect(
+      appointmentStateMachine.canTransition(
+        AppointmentStatus.CONFIRMED,
+        AppointmentStatus.ON_THE_WAY,
+      ),
+    ).toBe(true);
+
+    expect(
+      appointmentStateMachine.canTransition(
+        AppointmentStatus.ON_THE_WAY,
+        AppointmentStatus.ARRIVED_AT_SITE,
+      ),
+    ).toBe(true);
+
+    expect(
+      appointmentStateMachine.canTransition(
+        AppointmentStatus.ARRIVED_AT_SITE,
+        AppointmentStatus.IN_PROGRESS,
+      ),
+    ).toBe(true);
+
+    expect(
+      appointmentStateMachine.canTransition(
+        AppointmentStatus.IN_PROGRESS,
+        AppointmentStatus.COMPLETED,
+      ),
+    ).toBe(true);
   });
 
   it('rejects invalid transitions', () => {
     expect(
       appointmentStateMachine.canTransition(
         AppointmentStatus.REQUESTED,
+        AppointmentStatus.COMPLETED,
+      ),
+    ).toBe(false);
+
+    expect(
+      appointmentStateMachine.canTransition(
+        AppointmentStatus.CONFIRMED,
+        AppointmentStatus.IN_PROGRESS,
+      ),
+    ).toBe(false);
+
+    expect(
+      appointmentStateMachine.canTransition(
+        AppointmentStatus.ON_THE_WAY,
+        AppointmentStatus.COMPLETED,
+      ),
+    ).toBe(false);
+
+    expect(
+      appointmentStateMachine.canTransition(
+        AppointmentStatus.ARRIVED_AT_SITE,
         AppointmentStatus.COMPLETED,
       ),
     ).toBe(false);

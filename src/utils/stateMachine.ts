@@ -59,6 +59,16 @@ export const appointmentStateMachine = createStateMachine<AppointmentStatus>({
     AppointmentStatus.NO_SHOW,
   ],
   [AppointmentStatus.ON_THE_WAY]: [
+    AppointmentStatus.ARRIVED_AT_SITE,
+    AppointmentStatus.CANCELLED,
+    AppointmentStatus.NO_SHOW,
+  ],
+  [AppointmentStatus.ARRIVED_AT_SITE]: [
+    AppointmentStatus.IN_PROGRESS,
+    AppointmentStatus.CANCELLED,
+    AppointmentStatus.NO_SHOW,
+  ],
+  [AppointmentStatus.IN_PROGRESS]: [
     AppointmentStatus.COMPLETED,
     AppointmentStatus.CANCELLED,
     AppointmentStatus.NO_SHOW,

@@ -61,9 +61,10 @@ export const getBlueprintDraft = asyncHandler(async (req: Request, res: Response
 });
 
 export const upsertBlueprintDraft = asyncHandler(async (req: Request, res: Response) => {
+  const projectItemId = req.query.projectItemId as string | undefined;
   const draft = await blueprintsService.upsertBlueprintDraft(
     (req.params.projectId as string),
-    req.body,
+    { ...req.body, projectItemId: projectItemId ?? req.body.projectItemId },
     req.userId!,
   );
   res.json({ success: true, data: draft });

@@ -72,6 +72,8 @@ export interface IVisitReport extends Document {
 
   // ── Consultation-specific fields ──
   discussionNotes?: string;
+  consultationOutcome?: 'schedule_ocular' | 'no_ocular';
+  noOcularReason?: string;
   initialDesignKeys?: string[];
   initialDesignNotes?: string;
   recommendedOcularDate?: Date;
@@ -179,6 +181,8 @@ const visitReportSchema = new Schema<IVisitReport>(
 
     // Consultation-specific fields
     discussionNotes: { type: String, maxlength: 4000 },
+    consultationOutcome: { type: String, enum: ['schedule_ocular', 'no_ocular'] },
+    noOcularReason: { type: String, maxlength: 1000 },
     initialDesignKeys: [{ type: String }],
     initialDesignNotes: { type: String, maxlength: 2000 },
     recommendedOcularDate: { type: Date },

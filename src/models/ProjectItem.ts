@@ -42,6 +42,7 @@ export interface IProjectItem extends Document {
   designReviewedBy?: Types.ObjectId;
   designReviewedAt?: Date;
   designReviewNotes?: string;
+  installationConfirmedAt?: Date;
   mediaKeys: string[];
   deletedAt?: Date;
   createdAt: Date;
@@ -102,6 +103,7 @@ const projectItemSchema = new Schema<IProjectItem>(
     designReviewedBy: { type: Schema.Types.ObjectId, ref: 'User' },
     designReviewedAt: Date,
     designReviewNotes: String,
+    installationConfirmedAt: { type: Date, default: null },
     mediaKeys: [{ type: String }],
     deletedAt: { type: Date, default: null },
   },

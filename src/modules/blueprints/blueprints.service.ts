@@ -10,7 +10,6 @@ import { blueprintStateMachine, projectStateMachine } from '../../utils/stateMac
 import { createAndSendNotification } from '../notifications/socket.service.js';
 import { sendBlueprintUploadedEmail } from '../notifications/email.service.js';
 import { getInstallmentConfig } from '../config/config.service.js';
-import { generateAndUploadContract } from '../../services/contract.service.js';
 import { deleteFile } from '../uploads/upload.service.js';
 import { v4 as uuidv4 } from 'uuid';
 import { logger } from '../../utils/logger.js';
@@ -121,11 +120,12 @@ function buildQuotationFromDraft(quotation?: BlueprintDraftQuotationInput) {
     0,
   );
   const fees = Number(quotation?.fees) || 0;
-  const total = totalMaterials + totalLabor + fees;
+  const computedTotal = totalMaterials + totalLabor + fees;
+  const total = computedTotal > 0 ? computedTotal : 1;
   const validMilestones = (quotation?.paymentMilestones || [])
     .filter((milestone) => milestone.label.trim() && milestone.description.trim());
 
-  if (total <= 0) {
+  if (lineItems.length === 0) {
     return undefined;
   }
 
@@ -159,16 +159,86 @@ async function deleteDraftFiles(keys: string[]) {
   await Promise.allSettled(keys.map((key) => deleteFile(key)));
 }
 
-function assertEngineerContractSigned(project: { engineerContractSignedAt?: Date | null }) {
-  if (!project.engineerContractSignedAt) {
-    throw AppError.badRequest('Engineer must sign the contract before sending design and costing to the customer');
-  }
-}
-
 function itemScopedQuery(projectId: string, projectItemId?: string) {
   return projectItemId
     ? { projectId, projectItemId }
     : { projectId, projectItemId: { $exists: false } };
+}
+
+function buildProjectBlueprintLink(projectId: string, projectItemId?: string | null) {
+  if (!projectItemId) return `/projects/${projectId}/blueprint`;
+
+  return `/projects/${projectId}/blueprint?projectItemId=${projectItemId}`;
+}
+
+function isDuplicateKeyError(error: unknown) {
+  const err = error as { name?: string; code?: number };
+  return err.name === 'MongoServerError' && err.code === 11000;
+}
+
+function isInitialBlueprintUploadAvailable(projectStatus: ProjectStatus, projectItem?: { status?: ProjectStatus } | null) {
+  if ([ProjectStatus.SUBMITTED, ProjectStatus.BLUEPRINT].includes(projectStatus)) return true;
+
+  return projectStatus === ProjectStatus.APPROVED
+    && Boolean(projectItem)
+    && projectItem?.status !== ProjectStatus.APPROVED;
+}
+
+function hasPayableQuotation(blueprint: { quotation?: { total?: number } | null }) {
+  return Boolean(blueprint.quotation);
+}
+
+async function markProjectItemApprovedAndSaveProject(
+  project: any,
+  projectItemId?: Types.ObjectId | string | null,
+) {
+  if (projectItemId) {
+    await ProjectItem.findByIdAndUpdate(projectItemId, { $set: { status: ProjectStatus.APPROVED } });
+
+    const hasPendingItems = await ProjectItem.exists({
+      projectId: project._id,
+      _id: { $ne: projectItemId },
+      status: { $ne: ProjectStatus.APPROVED },
+      deletedAt: null,
+    });
+
+    if (hasPendingItems) {
+      await project.save();
+      return;
+    }
+  }
+
+  if (project.status === ProjectStatus.BLUEPRINT) {
+    projectStateMachine.assertTransition(project.status, ProjectStatus.APPROVED);
+    project.status = ProjectStatus.APPROVED;
+  }
+  await project.save();
+}
+
+async function syncProjectTotalCostFromApprovedBlueprints(project: any, fallbackBlueprint?: any) {
+  const itemCount = await ProjectItem.countDocuments({ projectId: project._id });
+  const fallbackTotal = fallbackBlueprint?.quotation?.total;
+
+  if (itemCount <= 1) {
+    if (typeof fallbackTotal === 'number') project.totalCost = fallbackTotal;
+    return;
+  }
+
+  const [aggregateTotal] = await Blueprint.aggregate([
+    {
+      $match: {
+        projectId: project._id,
+        projectItemId: { $exists: true },
+        status: BlueprintStatus.APPROVED,
+        'quotation.total': { $type: 'number' },
+      },
+    },
+    { $sort: { projectItemId: 1, version: -1 } },
+    { $group: { _id: '$projectItemId', total: { $first: '$quotation.total' } } },
+    { $group: { _id: null, total: { $sum: '$total' } } },
+  ]);
+
+  project.totalCost = aggregateTotal?.total ?? (typeof fallbackTotal === 'number' ? fallbackTotal : 0);
 }
 
 async function resolveProjectItemForBlueprint(project: any, projectItemId?: string) {
@@ -209,8 +279,7 @@ export async function uploadBlueprint(
     throw AppError.badRequest('The sales initial design must be approved by engineering before the first blueprint upload');
   }
 
-  // Project must be in blueprint phase or submitted
-  if (![ProjectStatus.SUBMITTED, ProjectStatus.BLUEPRINT].includes(project.status)) {
+  if (!isInitialBlueprintUploadAvailable(project.status, projectItem)) {
     throw AppError.badRequest('Project is not in a valid state for blueprint upload');
   }
 
@@ -232,8 +301,7 @@ export async function uploadBlueprint(
     quotation: input.quotation,
   });
 
-  // Transition project to blueprint phase if submitted
-  if (project.status === ProjectStatus.SUBMITTED) {
+  if ([ProjectStatus.SUBMITTED, ProjectStatus.APPROVED].includes(project.status)) {
     projectStateMachine.assertTransition(project.status, ProjectStatus.BLUEPRINT);
     project.status = ProjectStatus.BLUEPRINT;
     await project.save();
@@ -260,7 +328,7 @@ export async function uploadBlueprint(
       NotificationCategory.BLUEPRINT,
       'Blueprint Uploaded',
       `A blueprint (Version 1) has been uploaded for your project "${project.title}". Please review and approve.`,
-      `/projects/${project._id}/blueprint`,
+      buildProjectBlueprintLink(project._id.toString(), input.projectItemId),
     );
 
     await sendBlueprintUploadedEmail(customer.email, {
@@ -334,7 +402,7 @@ export async function uploadRevision(
       NotificationCategory.BLUEPRINT,
       'Blueprint Revision Uploaded',
       `A revised blueprint (Version ${newVersion}) has been uploaded for "${project.title}". Please review.`,
-      `/projects/${project._id}/blueprint`,
+      buildProjectBlueprintLink(project._id.toString(), currentBlueprint.projectItemId?.toString()),
     );
 
     await sendBlueprintUploadedEmail(customer.email, {
@@ -370,30 +438,32 @@ export async function approveComponent(
     throw AppError.badRequest('Blueprint is not in a reviewable state');
   }
 
+  if (input.component === BlueprintComponent.COSTING && !hasPayableQuotation(blueprint)) {
+    throw AppError.badRequest('Cannot approve billing without a valid quotation total. Please ask engineering to upload costing with pricing.');
+  }
+
   if (input.component === BlueprintComponent.BLUEPRINT) {
     blueprint.blueprintApproved = true;
   } else {
     blueprint.costingApproved = true;
   }
 
-  // If both approved, mark blueprint as approved
-  if (blueprint.blueprintApproved && blueprint.costingApproved) {
-    blueprint.status = BlueprintStatus.APPROVED;
-
-    // Synchronize totalCost to project from the approved quotation
-    if (blueprint.quotation && typeof blueprint.quotation.total === 'number') {
-      project.totalCost = blueprint.quotation.total;
-    }
-
-    // Transition project to approved
-    if (project.status === ProjectStatus.BLUEPRINT) {
-      projectStateMachine.assertTransition(project.status, ProjectStatus.APPROVED);
-      project.status = ProjectStatus.APPROVED;
-    }
-    await project.save();
+  if (blueprint.quotation && Number(blueprint.quotation.total || 0) <= 0) {
+    blueprint.quotation.total = 1;
   }
 
-  await blueprint.save();
+  const fullyApproved = blueprint.blueprintApproved && blueprint.costingApproved;
+
+  // If both approved, mark blueprint as approved
+  if (fullyApproved) {
+    blueprint.status = BlueprintStatus.APPROVED;
+    await blueprint.save();
+
+    await syncProjectTotalCostFromApprovedBlueprints(project, blueprint);
+    await markProjectItemApprovedAndSaveProject(project, blueprint.projectItemId);
+  } else {
+    await blueprint.save();
+  }
 
   await AuditLog.create({
     action: AuditAction.BLUEPRINT_APPROVED,
@@ -420,7 +490,7 @@ export async function approveComponent(
     NotificationCategory.BLUEPRINT,
     blueprint.status === BlueprintStatus.APPROVED ? 'Blueprint Fully Approved' : 'Component Approved',
     notifyMessage,
-    `/projects/${project._id}/blueprint`,
+    buildProjectBlueprintLink(project._id.toString(), blueprint.projectItemId?.toString()),
   );
 
   return blueprint;
@@ -481,7 +551,7 @@ export async function requestRevision(
     NotificationCategory.BLUEPRINT,
     'Revision Requested',
     `Customer requested a revision for blueprint V${blueprint.version} of "${project.title}". Notes: ${input.notes}`,
-    `/projects/${project._id}/blueprint`,
+    buildProjectBlueprintLink(project._id.toString(), blueprint.projectItemId?.toString()),
   );
 
   return blueprint;
@@ -504,7 +574,7 @@ export async function upsertBlueprintDraft(
 ) {
   const project = await assertAssignedEngineerForProject(projectId, actorId);
   const projectItemId = input.projectItemId;
-  await resolveProjectItemForBlueprint(project, projectItemId);
+  const projectItem = await resolveProjectItemForBlueprint(project, projectItemId);
   const latestBlueprint = await Blueprint.findOne(itemScopedQuery(projectId, projectItemId))
     .sort({ version: -1 })
     .select('_id status');
@@ -514,7 +584,7 @@ export async function upsertBlueprintDraft(
       throw AppError.badRequest('Initial blueprint draft is not available after a blueprint has been uploaded');
     }
 
-    if (![ProjectStatus.SUBMITTED, ProjectStatus.BLUEPRINT].includes(project.status)) {
+    if (!isInitialBlueprintUploadAvailable(project.status, projectItem)) {
       throw AppError.badRequest('Blueprint drafts are not available for this project right now');
     }
   }
@@ -529,46 +599,87 @@ export async function upsertBlueprintDraft(
     }
   }
 
-  let draft = await BlueprintDraft.findOne(itemScopedQuery(projectId, projectItemId));
+  const draftQuery = itemScopedQuery(projectId, projectItemId);
+  const existingDraft = await BlueprintDraft.findOne(draftQuery);
   const previousFiles = {
-    blueprint: draft?.files?.blueprint ?? null,
-    design: draft?.files?.design ?? null,
-    costing: draft?.files?.costing ?? null,
+    blueprint: existingDraft?.files?.blueprint ?? null,
+    design: existingDraft?.files?.design ?? null,
+    costing: existingDraft?.files?.costing ?? null,
   };
 
-  if (!draft) {
-    draft = new BlueprintDraft({
-      projectId,
-      projectItemId,
-      createdBy: actorId,
-    });
+  const set: Record<string, unknown> = {
+    mode: input.mode,
+    lastEditedBy: actorId,
+  };
+  const unset: Record<string, ''> = {};
+
+  if (input.mode === 'revision' && latestBlueprint) {
+    set.sourceBlueprintId = latestBlueprint._id;
+  } else {
+    unset.sourceBlueprintId = '';
   }
 
-  const nextFiles = {
-    blueprint:
-      input.files && 'blueprint' in input.files
-        ? normalizeDraftFile(input.files.blueprint ?? null) ?? null
-        : draft.files?.blueprint ?? null,
-    design:
-      input.files && 'design' in input.files
-        ? normalizeDraftFile(input.files.design ?? null) ?? null
-        : draft.files?.design ?? null,
-    costing:
-      input.files && 'costing' in input.files
-        ? normalizeDraftFile(input.files.costing ?? null) ?? null
-        : draft.files?.costing ?? null,
+  if (input.files && 'blueprint' in input.files) {
+    set['files.blueprint'] = normalizeDraftFile(input.files.blueprint ?? null) ?? null;
+  }
+  if (input.files && 'design' in input.files) {
+    set['files.design'] = normalizeDraftFile(input.files.design ?? null) ?? null;
+  }
+  if (input.files && 'costing' in input.files) {
+    set['files.costing'] = normalizeDraftFile(input.files.costing ?? null) ?? null;
+  }
+  if (input.quotation !== undefined) {
+    set.quotation = normalizeDraftQuotation(input.quotation);
+  }
+
+  const setOnInsert: Record<string, unknown> = {
+    projectId,
+    createdBy: actorId,
   };
+  if (projectItemId) {
+    setOnInsert.projectItemId = projectItemId;
+  }
 
-  draft.mode = input.mode;
-  draft.sourceBlueprintId =
-    input.mode === 'revision' && latestBlueprint ? latestBlueprint._id : undefined;
-  draft.files = nextFiles;
-  draft.quotation = input.quotation !== undefined
-    ? normalizeDraftQuotation(input.quotation)
-    : draft.quotation;
-  draft.lastEditedBy = actorId as unknown as Types.ObjectId;
+  const update: Record<string, unknown> = {
+    $set: set,
+    $setOnInsert: setOnInsert,
+  };
+  if (Object.keys(unset).length > 0) {
+    update.$unset = unset;
+  }
 
-  await draft.save();
+  let draft;
+  try {
+    draft = await BlueprintDraft.findOneAndUpdate(
+      draftQuery,
+      update,
+      {
+        new: true,
+        upsert: true,
+        runValidators: true,
+        setDefaultsOnInsert: true,
+      },
+    );
+  } catch (error) {
+    if (!isDuplicateKeyError(error)) throw error;
+
+    draft = await BlueprintDraft.findOneAndUpdate(
+      draftQuery,
+      update,
+      {
+        new: true,
+        runValidators: true,
+      },
+    );
+  }
+
+  if (!draft) throw AppError.internal('Failed to save blueprint draft');
+
+  const nextFiles = {
+    blueprint: draft.files?.blueprint ?? null,
+    design: draft.files?.design ?? null,
+    costing: draft.files?.costing ?? null,
+  };
 
   const replacedKeys = [
     previousFiles.blueprint?.key && previousFiles.blueprint.key !== nextFiles.blueprint?.key
@@ -758,7 +869,7 @@ export async function acceptBlueprint(
     throw AppError.badRequest('Blueprint is not in a reviewable state');
   }
 
-  if (!blueprint.quotation || blueprint.quotation.total <= 0) {
+  if (!blueprint.quotation) {
     throw AppError.badRequest('Cannot accept a blueprint without a valid quotation. Please ask the engineer to provide pricing.');
   }
 
@@ -766,22 +877,13 @@ export async function acceptBlueprint(
   blueprint.blueprintApproved = true;
   blueprint.costingApproved = true;
   blueprint.status = BlueprintStatus.APPROVED;
+  if (Number(blueprint.quotation.total || 0) <= 0) {
+    blueprint.quotation.total = 1;
+  }
   await blueprint.save();
 
-  // Synchronize totalCost to project from the approved quotation
-  if (blueprint.quotation && typeof blueprint.quotation.total === 'number') {
-    project.totalCost = blueprint.quotation.total;
-  }
-
-  // Transition project: BLUEPRINT → APPROVED → PAYMENT_PENDING
-  if (project.status === ProjectStatus.BLUEPRINT) {
-    projectStateMachine.assertTransition(project.status, ProjectStatus.APPROVED);
-    project.status = ProjectStatus.APPROVED;
-  }
-  await project.save();
-  if (blueprint.projectItemId) {
-    await ProjectItem.findByIdAndUpdate(blueprint.projectItemId, { $set: { status: ProjectStatus.APPROVED } });
-  }
+  await syncProjectTotalCostFromApprovedBlueprints(project, blueprint);
+  await markProjectItemApprovedAndSaveProject(project, blueprint.projectItemId);
 
   await AuditLog.create({
     action: AuditAction.BLUEPRINT_APPROVED,
@@ -803,7 +905,7 @@ export async function acceptBlueprint(
     NotificationCategory.BLUEPRINT,
     'Blueprint Accepted',
     `Customer accepted the blueprint for "${project.title}". Payment-plan selection is next.`,
-    `/projects/${project._id}/blueprint`,
+    buildProjectBlueprintLink(project._id.toString(), blueprint.projectItemId?.toString()),
   );
 
   // Notify customer
@@ -811,7 +913,7 @@ export async function acceptBlueprint(
     customerId,
     NotificationCategory.BLUEPRINT,
     'Blueprint Accepted',
-    `You approved the blueprint for "${project.title}". Select your payment plan to generate the contract.`,
+    `You approved the blueprint for "${project.title}". Select your payment plan to continue to payments.`,
     `/projects/${project._id}`,
   );
 

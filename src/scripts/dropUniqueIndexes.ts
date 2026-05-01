@@ -1,9 +1,9 @@
 /**
- * Migration script: Drop old unique indexes on appointmentId
- * from VisitReport and Project collections.
+ * Migration script: Drop old unique indexes that were replaced
+ * by item-scoped or many-per-parent records.
  *
- * This is needed because we now support multiple visit reports (and projects)
- * per appointment.
+ * This is needed because we now support multiple visit reports, projects,
+ * blueprints, payment plans, and blueprint drafts per parent record/item.
  *
  * Run once after deploying the schema change:
  *   npx tsx src/scripts/dropUniqueIndexes.ts
@@ -90,6 +90,24 @@ async function dropUniqueIndexes(): Promise<void> {
       logger.info(`Dropped unique index "${paymentPlanProjectUnique.name}" from paymentplans`);
     } else {
       logger.info('No old unique projectId index found on paymentplans — already clean.');
+    }
+
+    // ── BlueprintDraft: drop old unique projectId-only index ──
+    const blueprintDraftCollection = db.collection('blueprintdrafts');
+    const blueprintDraftIndexes = await blueprintDraftCollection.indexes();
+    const blueprintDraftProjectUnique = blueprintDraftIndexes.find(
+      (idx) =>
+        idx.unique &&
+        idx.key &&
+        Object.keys(idx.key).length === 1 &&
+        idx.key.projectId === 1,
+    );
+
+    if (blueprintDraftProjectUnique) {
+      await blueprintDraftCollection.dropIndex(blueprintDraftProjectUnique.name!);
+      logger.info(`Dropped unique index "${blueprintDraftProjectUnique.name}" from blueprintdrafts`);
+    } else {
+      logger.info('No old unique projectId index found on blueprintdrafts — already clean.');
     }
 
     logger.info('Migration complete.');

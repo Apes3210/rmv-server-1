@@ -1,5 +1,5 @@
 import mongoose, { Schema, Document, Types } from 'mongoose';
-import { AppointmentStatus, AppointmentType, SlotCode, PaymentMethod, OcularFeePaymentChoice, ServiceType, MeasurementUnit, Environment } from '../utils/constants.js';
+import { AppointmentStatus, AppointmentType, AppointmentAttendanceStatus, SlotCode, PaymentMethod, OcularFeePaymentChoice, ServiceType, MeasurementUnit, Environment } from '../utils/constants.js';
 import type { ILineItem, ISiteConditions } from './VisitReport.js';
 
 // ── Customer Site Details (pre-visit info from customer) ──
@@ -30,6 +30,14 @@ export interface IAppointment extends Document {
   date: string; // YYYY-MM-DD Asia/Manila
   slotCode: SlotCode;
   status: AppointmentStatus;
+  attendanceStatus?: AppointmentAttendanceStatus;
+  actualArrivalAt?: Date;
+  consultationStartedAt?: Date;
+  consultationCompletedAt?: Date;
+  attendanceNotes?: string;
+  attendanceUpdatedBy?: Types.ObjectId;
+  attendanceUpdatedAt?: Date;
+  attendanceOverrideReason?: string;
 
   // Ocular-specific
   salesStaffId?: Types.ObjectId;
@@ -122,6 +130,18 @@ const appointmentSchema = new Schema<IAppointment>(
       enum: Object.values(AppointmentStatus),
       default: AppointmentStatus.REQUESTED,
     },
+    attendanceStatus: {
+      type: String,
+      enum: Object.values(AppointmentAttendanceStatus),
+      default: AppointmentAttendanceStatus.SCHEDULED,
+    },
+    actualArrivalAt: { type: Date },
+    consultationStartedAt: { type: Date },
+    consultationCompletedAt: { type: Date },
+    attendanceNotes: { type: String },
+    attendanceUpdatedBy: { type: Schema.Types.ObjectId, ref: 'User' },
+    attendanceUpdatedAt: { type: Date },
+    attendanceOverrideReason: { type: String },
 
     salesStaffId: { type: Schema.Types.ObjectId, ref: 'User' },
     latitude: { type: Number },

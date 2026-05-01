@@ -77,6 +77,12 @@ function itemScopedQuery(projectId: string, projectItemId?: string) {
     : { projectId, projectItemId: { $exists: false } };
 }
 
+function buildProjectPaymentsLink(projectId: string, projectItemId?: string | null) {
+  return projectItemId
+    ? `/projects/${projectId}/payments?projectItemId=${projectItemId}`
+    : `/projects/${projectId}/payments`;
+}
+
 async function allProjectItemsHaveFirstPaymentVerified(projectId: string) {
   const items = await ProjectItem.find({ projectId }).select('_id');
   if (!items.length) return true;
@@ -196,7 +202,7 @@ export async function createPaymentPlan(
     NotificationCategory.PAYMENT,
     'Payment Plan Created',
     `A payment plan of ${formatCurrency(input.totalAmount)} has been set up for "${project.title}".`,
-    `/projects/${project._id}/payments`,
+    buildProjectPaymentsLink(project._id.toString(), input.projectItemId),
   );
 
   return plan;
@@ -400,7 +406,7 @@ export async function verifyPayment(
       NotificationCategory.PAYMENT,
       'Payment Verified',
       `Your payment of ${formatCurrency(payment.amountPaid)} for "${project.title}" - ${stage.label} has been verified. Receipt: ${receiptNumber}`,
-      `/projects/${project._id}/payments`,
+      buildProjectPaymentsLink(project._id.toString(), payment.projectItemId?.toString()),
     );
 
     await sendPaymentVerifiedEmail(customer.email, {
@@ -499,7 +505,7 @@ export async function declinePayment(
       NotificationCategory.PAYMENT,
       'Payment Declined',
       `Your payment for "${project.title}" - ${stage.label} has been declined. Reason: ${input.reason}`,
-      `/projects/${project._id}/payments`,
+      buildProjectPaymentsLink(project._id.toString(), payment.projectItemId?.toString()),
     );
 
     await sendPaymentDeclinedEmail(customer.email, {
@@ -865,7 +871,7 @@ export async function requestStageCashPayment(
     NotificationCategory.PAYMENT,
     'Cash Payment Request Submitted',
     `Your cash payment request for ${formatCurrency(remaining)} on "${project.title}" — ${stage.label} is awaiting cashier verification.`,
-    `/projects/${project._id}/payments`,
+    buildProjectPaymentsLink(project._id.toString(), plan.projectItemId?.toString()),
   );
 
   await notifyRole(
@@ -953,7 +959,7 @@ export async function handleStagePaymongoPayment(checkoutSessionId: string) {
     NotificationCategory.PAYMENT,
     'Payment Received — Awaiting Verification',
     `Your QRPH payment of ${formatCurrency(amountPaid)} for "${project.title}" — ${stage.label} has been received and is awaiting cashier verification.`,
-    `/projects/${project._id}/payments`,
+    buildProjectPaymentsLink(project._id.toString(), plan.projectItemId?.toString()),
   );
 
   // Notify cashiers to review
@@ -1170,7 +1176,7 @@ export async function recordCashPayment(
     NotificationCategory.PAYMENT,
     'Cash Payment Recorded',
     `A cash payment of ${formatCurrency(amountPaid)} for "${project.title}" — ${stage.label} has been recorded. Receipt: ${receiptNumber}`,
-    `/projects/${project._id}/payments`,
+    buildProjectPaymentsLink(project._id.toString(), plan.projectItemId?.toString()),
   );
 
   if (cashCustomer) {
