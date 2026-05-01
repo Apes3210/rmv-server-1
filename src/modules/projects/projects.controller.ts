@@ -65,13 +65,10 @@ export const removeMediaKey = asyncHandler(async (req: Request, res: Response) =
 });
 
 export const generateContract = asyncHandler(async (req: Request, res: Response) => {
-  const result = await projectsService.generateContract(
-    req.params.id as string,
-    req.userId!,
-    req.ip,
-    req.get('user-agent'),
-  );
-  res.json({ success: true, data: { originalKey: result.originalKey, copyKey: result.copyKey } });
+  res.status(410).json({
+    success: false,
+    message: 'Generated contract PDFs are disabled. Upload the manually signed contract instead.',
+  });
 });
 
 export const uploadSignedContract = asyncHandler(async (req: Request, res: Response) => {
@@ -98,26 +95,17 @@ export const getContractDownloadUrl = asyncHandler(async (req: Request, res: Res
 });
 
 export const signContract = asyncHandler(async (req: Request, res: Response) => {
-  const project = await projectsService.signContract(
-    req.params.id as string,
-    req.body,
-    req.userId!,
-    req.ip,
-    req.get('user-agent'),
-  );
-  res.json({ success: true, data: project });
+  res.status(410).json({
+    success: false,
+    message: 'Customer e-sign contract flow is disabled. Use the uploaded manually signed contract.',
+  });
 });
 
 export const signEngineerContract = asyncHandler(async (req: Request, res: Response) => {
-  const project = await projectsService.signEngineerContract(
-    req.params.id as string,
-    req.body,
-    req.userId!,
-    req.userRoles!,
-    req.ip,
-    req.get('user-agent'),
-  );
-  res.json({ success: true, data: project });
+  res.status(410).json({
+    success: false,
+    message: 'Engineer e-sign contract flow is disabled. Use the uploaded manually signed contract.',
+  });
 });
 
 export const reviewInitialDesign = asyncHandler(async (req: Request, res: Response) => {

@@ -87,7 +87,7 @@ export const appointmentStateMachine = createStateMachine<AppointmentStatus>({
 export const projectStateMachine = createStateMachine<ProjectStatus>({
   [ProjectStatus.DRAFT]: [ProjectStatus.SUBMITTED, ProjectStatus.CANCELLED],
   [ProjectStatus.SUBMITTED]: [ProjectStatus.BLUEPRINT, ProjectStatus.CANCELLED],
-  [ProjectStatus.BLUEPRINT]: [ProjectStatus.APPROVED, ProjectStatus.CANCELLED],
+  [ProjectStatus.BLUEPRINT]: [ProjectStatus.APPROVED, ProjectStatus.PAYMENT_PENDING, ProjectStatus.CANCELLED],
   [ProjectStatus.APPROVED]: [ProjectStatus.PAYMENT_PENDING, ProjectStatus.BLUEPRINT, ProjectStatus.CANCELLED],
   [ProjectStatus.PAYMENT_PENDING]: [ProjectStatus.FABRICATION, ProjectStatus.CANCELLED],
   [ProjectStatus.READY_FOR_OCULAR]: [ProjectStatus.FABRICATION, ProjectStatus.CANCELLED],

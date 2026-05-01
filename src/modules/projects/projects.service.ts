@@ -35,6 +35,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { PaymentStageStatus } from '../../utils/constants.js';
 import { getInstallmentConfig } from '../config/config.service.js';
 import { generateProjectNumber } from '../../utils/projectNumber.js';
+import { seedFabricationItems } from '../fabrication/fabrication.service.js';
 
 function readableServiceTitle(serviceType?: string, custom?: string) {
   if (serviceType === 'custom' && custom?.trim()) return custom.trim();
@@ -1011,7 +1012,12 @@ export async function selectPaymentPlan(
     ? [{ item: selectedItem, projectItemId: selectedItem._id.toString() }]
     : [{ item: undefined, projectItemId: input.projectItemId }];
 
-  if (![ProjectStatus.APPROVED, ProjectStatus.PAYMENT_PENDING].includes(project.status)) {
+  const selectedItemAllowsPayment = selectedItem
+    ? [ProjectStatus.APPROVED, ProjectStatus.PAYMENT_PENDING].includes(selectedItem.status)
+    : false;
+  const projectAllowsPayment = [ProjectStatus.APPROVED, ProjectStatus.PAYMENT_PENDING].includes(project.status);
+
+  if (!projectAllowsPayment && !selectedItemAllowsPayment) {
     throw AppError.badRequest('Payment plan selection is only available after blueprint approval');
   }
 
@@ -1048,6 +1054,23 @@ export async function selectPaymentPlan(
     .filter((projectItemId): projectItemId is string => Boolean(projectItemId));
   if (itemIds.length) {
     await ProjectItem.updateMany({ _id: { $in: itemIds } }, { $set: { status: ProjectStatus.PAYMENT_PENDING } });
+  }
+
+  if ([ProjectStatus.BLUEPRINT, ProjectStatus.APPROVED].includes(project.status)) {
+    const activeItems = await getActiveProjectItems(projectId);
+    const paymentReadyStatuses = new Set([
+      ProjectStatus.PAYMENT_PENDING,
+      ProjectStatus.FABRICATION,
+      ProjectStatus.COMPLETED,
+    ]);
+    const allItemsPaymentReady = activeItems.length > 0
+      && activeItems.every((item) => paymentReadyStatuses.has(item.status));
+
+    if (allItemsPaymentReady && project.status !== ProjectStatus.PAYMENT_PENDING) {
+      projectStateMachine.assertTransition(project.status, ProjectStatus.PAYMENT_PENDING);
+      project.status = ProjectStatus.PAYMENT_PENDING;
+      await project.save();
+    }
   }
 
   await AuditLog.create({
@@ -1089,7 +1112,7 @@ export async function assignFabricationStaff(
   const project = await Project.findById(projectId);
   if (!project) throw AppError.notFound('Project not found');
 
-  if (![ProjectStatus.APPROVED, ProjectStatus.PAYMENT_PENDING, ProjectStatus.FABRICATION, ProjectStatus.COMPLETED].includes(project.status)) {
+  if (![ProjectStatus.BLUEPRINT, ProjectStatus.APPROVED, ProjectStatus.PAYMENT_PENDING, ProjectStatus.FABRICATION, ProjectStatus.COMPLETED].includes(project.status)) {
     throw AppError.badRequest('Fabrication team can only be assigned after the blueprint has been approved');
   }
 
@@ -1129,7 +1152,29 @@ export async function assignFabricationStaff(
 
   project.fabricationLeadId = input.fabricationLeadId as unknown as Types.ObjectId;
   project.fabricationAssistantIds = input.fabricationAssistantIds as unknown as Types.ObjectId[];
+
+  if ([ProjectStatus.BLUEPRINT, ProjectStatus.APPROVED].includes(project.status)) {
+    projectStateMachine.assertTransition(project.status, ProjectStatus.PAYMENT_PENDING);
+    project.status = ProjectStatus.PAYMENT_PENDING;
+  }
+
+  if (project.status === ProjectStatus.PAYMENT_PENDING) {
+    projectStateMachine.assertTransition(project.status, ProjectStatus.FABRICATION);
+    project.status = ProjectStatus.FABRICATION;
+  }
+
   await project.save();
+
+  await ProjectItem.updateMany(
+    { projectId: project._id, status: ProjectStatus.PAYMENT_PENDING },
+    { $set: { status: ProjectStatus.FABRICATION } },
+  );
+
+  try {
+    await seedFabricationItems(project._id.toString());
+  } catch (err) {
+    logger.error(`Failed to seed fabrication items for project ${project._id}`, err);
+  }
 
   await AuditLog.create({
     action: AuditAction.FABRICATION_ASSIGNED,
@@ -1147,6 +1192,14 @@ export async function assignFabricationStaff(
     NotificationCategory.FABRICATION,
     'Fabrication Assignment',
     `You have been assigned as lead for project "${project.title}".`,
+    `/projects/${project._id}`,
+  );
+
+  await createAndSendNotification(
+    project.customerId.toString(),
+    NotificationCategory.FABRICATION,
+    'Fabrication Started',
+    `The fabrication team has been assigned for "${project.title}". Fabrication can now begin.`,
     `/projects/${project._id}`,
   );
 
