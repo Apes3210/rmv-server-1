@@ -2588,7 +2588,7 @@ export async function listAppointmentQueue(
   const appointments = await Appointment.find(queueFilter)
     .populate('customerId', 'firstName lastName email phone')
     .populate('salesStaffId', 'firstName lastName availabilityStatus availabilityNote')
-    .sort({ updatedAt: -1, date: 1, slotCode: 1 })
+    .sort({ date: 1, slotCode: 1, createdAt: 1 })
     .limit(fetchLimit);
 
   const appointmentIds = appointments.map((appointment) => appointment._id);
@@ -2744,10 +2744,6 @@ export async function listAppointmentQueue(
   };
 
   const sortUpcoming = (a: AppointmentQueueItem, b: AppointmentQueueItem) => {
-    const aUpdate = a.appointment?.updatedAt ? new Date(a.appointment.updatedAt).getTime() : 0;
-    const bUpdate = b.appointment?.updatedAt ? new Date(b.appointment.updatedAt).getTime() : 0;
-    if (aUpdate !== bUpdate) return bUpdate - aUpdate; // Descending (most recent first)
-
     const aDate = normalizeUpcomingDate(a);
     const bDate = normalizeUpcomingDate(b);
     if (aDate !== bDate) return aDate < bDate ? -1 : 1;
@@ -2755,6 +2751,10 @@ export async function listAppointmentQueue(
     const aSlot = a.appointment?.slotCode || '';
     const bSlot = b.appointment?.slotCode || '';
     if (aSlot !== bSlot) return aSlot < bSlot ? -1 : 1;
+
+    const aCreated = a.appointment?.createdAt ? new Date(a.appointment.createdAt).getTime() : 0;
+    const bCreated = b.appointment?.createdAt ? new Date(b.appointment.createdAt).getTime() : 0;
+    if (aCreated !== bCreated) return aCreated - bCreated;
 
     return String(a.appointment?._id).localeCompare(String(b.appointment?._id));
   };

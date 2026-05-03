@@ -64,6 +64,43 @@ async function attachAvailabilitySummaries<T extends {
   });
 }
 
+function escapeRegex(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function buildUserSearchFilter(search: string, includePhone = false) {
+  const trimmed = search.trim();
+  const escaped = escapeRegex(trimmed);
+  const tokens = trimmed
+    .split(/\s+/)
+    .map((token) => token.trim())
+    .filter(Boolean);
+  const baseFields = [
+    { firstName: { $regex: escaped, $options: 'i' } },
+    { lastName: { $regex: escaped, $options: 'i' } },
+    { email: { $regex: escaped, $options: 'i' } },
+    ...(includePhone ? [{ phone: { $regex: escaped, $options: 'i' } }] : []),
+  ];
+
+  if (tokens.length <= 1) return { $or: baseFields };
+
+  return {
+    $or: [
+      ...baseFields,
+      {
+        $and: tokens.map((token) => ({
+          $or: [
+            { firstName: { $regex: escapeRegex(token), $options: 'i' } },
+            { lastName: { $regex: escapeRegex(token), $options: 'i' } },
+            { email: { $regex: escapeRegex(token), $options: 'i' } },
+            ...(includePhone ? [{ phone: { $regex: escapeRegex(token), $options: 'i' } }] : []),
+          ],
+        })),
+      },
+    ],
+  };
+}
+
 // Admin: Create user
 export async function createUser(input: CreateUserInput, adminId: string, ip?: string, ua?: string) {
   const existing = await User.findOne({ email: input.email });
@@ -120,11 +157,7 @@ export async function listUsers(query: {
   if (query.role) filter.roles = query.role;
   if (query.isActive !== undefined) filter.isActive = query.isActive === 'true';
   if (query.search) {
-    filter.$or = [
-      { firstName: { $regex: query.search, $options: 'i' } },
-      { lastName: { $regex: query.search, $options: 'i' } },
-      { email: { $regex: query.search, $options: 'i' } },
-    ];
+    Object.assign(filter, buildUserSearchFilter(query.search));
   }
 
   const sortField = query.sortBy || 'createdAt';
@@ -464,12 +497,7 @@ export async function listByRole(
 ) {
   const filter: Record<string, unknown> = { roles: role, isActive: true };
   if (search) {
-    filter.$or = [
-      { firstName: { $regex: search, $options: 'i' } },
-      { lastName: { $regex: search, $options: 'i' } },
-      { email: { $regex: search, $options: 'i' } },
-      { phone: { $regex: search, $options: 'i' } },
-    ];
+    Object.assign(filter, buildUserSearchFilter(search, true));
   }
 
   const users = await User.find(filter)

@@ -39,6 +39,7 @@ function formatAppointment(appt: any) {
     ...obj,
     customerId: toIdString(obj.customerId) || obj.customerId,
     customerName: obj.customerName || fullName(cust),
+    customerPhone: obj.customerPhone || cust?.phone,
     salesStaffId: toIdString(obj.salesStaffId) || obj.salesStaffId || undefined,
     salesStaffName: obj.salesStaffName || fullName(sales),
     address: obj.formattedAddress || obj.customerAddress,

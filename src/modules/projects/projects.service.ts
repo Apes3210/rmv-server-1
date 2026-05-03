@@ -5,7 +5,7 @@ import { PaymentPlan } from '../../models/Payment.js';
 import { Blueprint } from '../../models/Blueprint.js';
 import { AppError, ErrorCode } from '../../utils/appError.js';
 import {
-  ContractStatus, ProjectStatus, AppointmentStatus, Role, AuditAction, NotificationCategory, StaffAvailabilityStatus,
+  ContractStatus, ProjectStatus, AppointmentStatus, Role, AuditAction, NotificationCategory, StaffAvailabilityStatus, ServiceType,
 } from '../../utils/constants.js';
 import { VisitReportStatus } from '../../models/VisitReport.js';
 import { projectStateMachine } from '../../utils/stateMachine.js';
@@ -44,6 +44,141 @@ function readableServiceTitle(serviceType?: string, custom?: string) {
     .filter(Boolean)
     .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
     .join(' ');
+}
+
+function escapeRegex(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function normalizeSearchValue(value?: string) {
+  return (value || '')
+    .toLowerCase()
+    .replace(/[_\W]+/g, ' ')
+    .trim()
+    .replace(/\s+/g, ' ');
+}
+
+function buildPersonSearchFilter(search: string) {
+  const trimmed = search.trim();
+  const escaped = escapeRegex(trimmed);
+  const tokens = trimmed
+    .split(/\s+/)
+    .map((token) => token.trim())
+    .filter(Boolean);
+  const exactFields = [
+    { firstName: { $regex: escaped, $options: 'i' } },
+    { lastName: { $regex: escaped, $options: 'i' } },
+    { email: { $regex: escaped, $options: 'i' } },
+  ];
+
+  if (tokens.length <= 1) return { $or: exactFields };
+
+  return {
+    $or: [
+      ...exactFields,
+      {
+        $and: tokens.map((token) => ({
+          $or: [
+            { firstName: { $regex: escapeRegex(token), $options: 'i' } },
+            { lastName: { $regex: escapeRegex(token), $options: 'i' } },
+            { email: { $regex: escapeRegex(token), $options: 'i' } },
+          ],
+        })),
+      },
+    ],
+  };
+}
+
+function serviceTypesMatchingSearch(search: string) {
+  const normalized = normalizeSearchValue(search);
+  if (!normalized) return [];
+
+  return Object.values(ServiceType).filter((serviceType) => {
+    const normalizedValue = normalizeSearchValue(serviceType);
+    const normalizedLabel = normalizeSearchValue(readableServiceTitle(serviceType));
+    return normalizedValue.includes(normalized)
+      || normalizedLabel.includes(normalized)
+      || normalized.includes(normalizedValue)
+      || normalized.includes(normalizedLabel);
+  });
+}
+
+function appendSearchCondition(
+  filter: Record<string, unknown>,
+  searchOr: Record<string, unknown>[],
+) {
+  if (!searchOr.length) return;
+
+  if (filter.$or || filter.$and) {
+    const andFilters = Array.isArray(filter.$and)
+      ? [...(filter.$and as Record<string, unknown>[])]
+      : [];
+
+    if (filter.$or) {
+      andFilters.push({ $or: filter.$or as Record<string, unknown>[] });
+      delete filter.$or;
+    }
+
+    andFilters.push({ $or: searchOr });
+    filter.$and = andFilters;
+    return;
+  }
+
+  filter.$or = searchOr;
+}
+
+async function buildProjectSearchConditions(search: string) {
+  const trimmed = search.trim();
+  const escaped = escapeRegex(trimmed);
+  const normalized = normalizeSearchValue(trimmed);
+  const normalizedRegex = normalized ? escapeRegex(normalized).replace(/\s+/g, '[_\\W]+') : '';
+  const serviceTypeMatches = serviceTypesMatchingSearch(trimmed);
+
+  const [matchingUsers, matchingItems] = await Promise.all([
+    User.find(buildPersonSearchFilter(trimmed)).select('_id').lean(),
+    ProjectItem.find({
+      $or: [
+        { title: { $regex: escaped, $options: 'i' } },
+        { serviceType: { $regex: escaped, $options: 'i' } },
+        { serviceTypeCustom: { $regex: escaped, $options: 'i' } },
+        ...(normalizedRegex
+          ? [
+            { title: { $regex: normalizedRegex, $options: 'i' } },
+            { serviceType: { $regex: normalizedRegex, $options: 'i' } },
+            { serviceTypeCustom: { $regex: normalizedRegex, $options: 'i' } },
+          ]
+          : []),
+        ...(serviceTypeMatches.length ? [{ serviceType: { $in: serviceTypeMatches } }] : []),
+      ],
+    }).select('projectId').lean(),
+  ]);
+
+  const userIds = matchingUsers.map((user) => user._id);
+  const itemProjectIds = matchingItems.map((item) => item.projectId).filter(Boolean);
+
+  return [
+    { projectNumber: { $regex: escaped, $options: 'i' } },
+    { title: { $regex: escaped, $options: 'i' } },
+    { serviceType: { $regex: escaped, $options: 'i' } },
+    { description: { $regex: escaped, $options: 'i' } },
+    ...(normalizedRegex
+      ? [
+        { projectNumber: { $regex: normalizedRegex, $options: 'i' } },
+        { title: { $regex: normalizedRegex, $options: 'i' } },
+        { serviceType: { $regex: normalizedRegex, $options: 'i' } },
+        { description: { $regex: normalizedRegex, $options: 'i' } },
+      ]
+      : []),
+    ...(serviceTypeMatches.length ? [{ serviceType: { $in: serviceTypeMatches } }] : []),
+    ...(userIds.length
+      ? [
+        { customerId: { $in: userIds } },
+        { salesStaffId: { $in: userIds } },
+        { engineerIds: { $in: userIds } },
+      ]
+      : []),
+    ...(itemProjectIds.length ? [{ _id: { $in: itemProjectIds } }] : []),
+  ];
 }
 
 function buildProjectItemLink(projectId: string, path = '', projectItemId?: string) {
@@ -1405,18 +1540,9 @@ export async function listProjects(
   if (query.customerId && !filter.customerId) filter.customerId = query.customerId;
   if (query.salesStaffId && !filter.salesStaffId) filter.salesStaffId = query.salesStaffId;
   if (query.engineerId && !filter.engineerIds) filter.engineerIds = query.engineerId;
-  if (query.search) {
-    const searchOr = [
-      { title: { $regex: query.search, $options: 'i' } },
-      { serviceType: { $regex: query.search, $options: 'i' } },
-      { description: { $regex: query.search, $options: 'i' } },
-    ];
-    if (filter.$or) {
-      filter.$and = [{ $or: filter.$or }, { $or: searchOr }];
-      delete filter.$or;
-    } else {
-      filter.$or = searchOr;
-    }
+  if (query.search?.trim()) {
+    const searchOr = await buildProjectSearchConditions(query.search);
+    appendSearchCondition(filter, searchOr);
   }
 
   const sortField = query.sortBy || 'createdAt';
