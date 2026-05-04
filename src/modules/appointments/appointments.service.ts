@@ -2744,20 +2744,34 @@ export async function listAppointmentQueue(
     return itemDate;
   };
 
+  const queueItemTimestamp = (value?: string | Date | null) => {
+    if (!value) return 0;
+    const parsed = new Date(value).getTime();
+    return Number.isNaN(parsed) ? 0 : parsed;
+  };
+
+  const prioritizeRecentQueueChanges = query.status === undefined && !normalizedSearch;
+
   const sortUpcoming = (a: AppointmentQueueItem, b: AppointmentQueueItem) => {
+    if (prioritizeRecentQueueChanges) {
+      const aUpdated = queueItemTimestamp(a.appointment?.updatedAt) || queueItemTimestamp(a.appointment?.createdAt);
+      const bUpdated = queueItemTimestamp(b.appointment?.updatedAt) || queueItemTimestamp(b.appointment?.createdAt);
+      if (aUpdated !== bUpdated) return bUpdated - aUpdated;
+    }
+
     const aDate = normalizeUpcomingDate(a);
     const bDate = normalizeUpcomingDate(b);
-    if (aDate !== bDate) return aDate < bDate ? -1 : 1;
+    if (aDate !== bDate) return aDate < bDate ? 1 : -1;
 
     const aSlot = a.appointment?.slotCode || '';
     const bSlot = b.appointment?.slotCode || '';
-    if (aSlot !== bSlot) return aSlot < bSlot ? -1 : 1;
+    if (aSlot !== bSlot) return aSlot < bSlot ? 1 : -1;
 
     const aCreated = a.appointment?.createdAt ? new Date(a.appointment.createdAt).getTime() : 0;
     const bCreated = b.appointment?.createdAt ? new Date(b.appointment.createdAt).getTime() : 0;
-    if (aCreated !== bCreated) return aCreated - bCreated;
+    if (aCreated !== bCreated) return bCreated - aCreated;
 
-    return String(a.appointment?._id).localeCompare(String(b.appointment?._id));
+    return String(b.appointment?._id).localeCompare(String(a.appointment?._id));
   };
 
   const sortDescendingByDateSlot = (a: AppointmentQueueItem, b: AppointmentQueueItem) => {
