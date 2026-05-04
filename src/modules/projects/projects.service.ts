@@ -103,6 +103,38 @@ function serviceTypesMatchingSearch(search: string) {
   });
 }
 
+export function activeProjectStatusesForRoles(actorRoles: Role[]) {
+  const isAdmin = actorRoles.includes(Role.ADMIN);
+  const isCustomerOnly = actorRoles.includes(Role.CUSTOMER)
+    && !actorRoles.some((role) => [Role.ADMIN, Role.SALES_STAFF, Role.ENGINEER].includes(role));
+  const isSalesOnly = actorRoles.includes(Role.SALES_STAFF)
+    && !actorRoles.includes(Role.ADMIN);
+  const isEngineerOnly = actorRoles.includes(Role.ENGINEER)
+    && !actorRoles.some((role) => [Role.ADMIN, Role.SALES_STAFF].includes(role));
+  const isFabricationOnly = actorRoles.includes(Role.FABRICATION_STAFF)
+    && !actorRoles.some((role) => [Role.ADMIN, Role.ENGINEER].includes(role));
+
+  if (isFabricationOnly) return [ProjectStatus.FABRICATION];
+  if (isEngineerOnly) return [ProjectStatus.SUBMITTED, ProjectStatus.BLUEPRINT, ProjectStatus.FABRICATION];
+  if (isSalesOnly) return [ProjectStatus.SUBMITTED, ProjectStatus.BLUEPRINT, ProjectStatus.APPROVED, ProjectStatus.FABRICATION];
+  if (isCustomerOnly || isAdmin) {
+    return [
+      ProjectStatus.SUBMITTED,
+      ProjectStatus.BLUEPRINT,
+      ProjectStatus.APPROVED,
+      ProjectStatus.PAYMENT_PENDING,
+      ProjectStatus.FABRICATION,
+    ];
+  }
+
+  return [
+    ProjectStatus.SUBMITTED,
+    ProjectStatus.BLUEPRINT,
+    ProjectStatus.APPROVED,
+    ProjectStatus.FABRICATION,
+  ];
+}
+
 function appendSearchCondition(
   filter: Record<string, unknown>,
   searchOr: Record<string, unknown>[],
@@ -1532,8 +1564,7 @@ export async function listProjects(
   }
 
   if (query.status === 'active') {
-    // 'active' = all non-terminal statuses
-    filter.status = { $nin: [ProjectStatus.COMPLETED, ProjectStatus.CANCELLED] };
+    filter.status = { $in: activeProjectStatusesForRoles(actorRoles) };
   } else if (query.status) {
     filter.status = query.status;
   }
@@ -1553,6 +1584,7 @@ export async function listProjects(
       .populate('customerId', 'firstName lastName email')
       .populate('salesStaffId', 'firstName lastName')
       .populate('engineerIds', 'firstName lastName phone')
+      .populate('appointmentId', 'date slotCode')
       .sort({ [sortField]: sortOrder })
       .skip((page - 1) * limit)
       .limit(limit)
@@ -1566,6 +1598,32 @@ export async function listProjects(
     hasMore: page * limit < total,
     pagination: { page, limit, total, pages: Math.ceil(total / limit) },
   };
+}
+
+export async function repairMissingProjectNumbers() {
+  const projects = await Project.find({
+    $or: [
+      { projectNumber: { $exists: false } },
+      { projectNumber: null },
+      { projectNumber: '' },
+    ],
+  })
+    .select('_id')
+    .sort({ createdAt: 1 });
+
+  const repaired: Array<{ projectId: string; projectNumber: string }> = [];
+
+  for (const project of projects) {
+    const projectNumber = await generateProjectNumber();
+    await Project.updateOne(
+      { _id: project._id },
+      { $set: { projectNumber } },
+      { runValidators: false },
+    );
+    repaired.push({ projectId: project._id.toString(), projectNumber });
+  }
+
+  return { repairedCount: repaired.length, repaired };
 }
 
 /**

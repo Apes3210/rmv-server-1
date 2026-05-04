@@ -18,6 +18,7 @@ import { createCheckoutSession, retrieveCheckoutSession } from '../../services/p
 import { logger } from '../../utils/logger.js';
 import { formatCurrency } from '../../utils/helpers.js';
 import { matchesAppointmentSearch, normalizeAppointmentSearchTerm } from './appointments.search.js';
+import type { SortOrder } from 'mongoose';
 import {
   evaluateSalesAssignmentEligibility,
   getOpenAvailabilitySession,
@@ -2791,6 +2792,26 @@ export async function listAppointmentQueue(
 
 // ── List Appointments ──
 
+const APPOINTMENT_HISTORY_STATUSES = new Set<string>([
+  AppointmentStatus.COMPLETED,
+  AppointmentStatus.CANCELLED,
+  AppointmentStatus.NO_SHOW,
+]);
+
+export function defaultAppointmentSort(status?: string) {
+  const statuses = status
+    ?.split(',')
+    .map((value) => value.trim())
+    .filter(Boolean) || [];
+
+  const isHistoricalOnly = statuses.length > 0
+    && statuses.every((value) => APPOINTMENT_HISTORY_STATUSES.has(value));
+
+  return isHistoricalOnly
+    ? { date: -1 as SortOrder, slotCode: -1 as SortOrder, createdAt: -1 as SortOrder }
+    : { date: 1 as SortOrder, slotCode: 1 as SortOrder, createdAt: 1 as SortOrder };
+}
+
 export async function listAppointments(query: {
   status?: string;
   type?: string;
@@ -2871,15 +2892,18 @@ export async function listAppointments(query: {
     if (query.dateTo) (filter.date as Record<string, string>).$lte = query.dateTo;
   }
 
-  const sortField = query.sortBy || 'updatedAt';
-  const sortOrder = query.sortOrder === 'desc' ? -1 : (query.sortBy ? 1 : -1);
+  const sortField = query.sortBy;
+  const sortOrder: SortOrder = query.sortOrder === 'desc' ? -1 : 1;
+  const sortSpec: Record<string, SortOrder> = sortField
+    ? { [sortField]: sortOrder }
+    : defaultAppointmentSort(query.status);
 
   if (!normalizedSearch) {
     const [appointments, total] = await Promise.all([
       Appointment.find(filter)
         .populate('customerId', 'firstName lastName email phone')
         .populate('salesStaffId', 'firstName lastName')
-        .sort({ [sortField]: sortOrder })
+        .sort(sortSpec)
         .skip((page - 1) * limit)
         .limit(limit),
       Appointment.countDocuments(filter),
@@ -2895,7 +2919,7 @@ export async function listAppointments(query: {
   const appointments = await Appointment.find(filter)
     .populate('customerId', 'firstName lastName email phone')
     .populate('salesStaffId', 'firstName lastName')
-    .sort({ [sortField]: sortOrder });
+    .sort(sortSpec);
 
   const appointmentIds = appointments.map((appointment) => appointment._id);
   const customerIds = Array.from(

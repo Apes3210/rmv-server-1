@@ -1,5 +1,10 @@
 import { ProjectCounter } from '../models/Config.js';
 
+export function formatProjectNumber(year: number, sequence: number): string {
+  const seqStr = String(sequence).padStart(5, '0');
+  return `RMV-${year}-${seqStr}`;
+}
+
 /**
  * Generates an immutable project number in the format RMV-YYYY-#####
  * where ##### is a zero-padded counter that resets each year.
@@ -14,6 +19,5 @@ export async function generateProjectNumber(): Promise<string> {
     { upsert: true, new: true, setDefaultsOnInsert: true }
   );
 
-  const seqStr = String(counter.lastSeq).padStart(5, '0');
-  return `RMV-${currentYear}-${seqStr}`;
+  return formatProjectNumber(currentYear, counter.lastSeq);
 }

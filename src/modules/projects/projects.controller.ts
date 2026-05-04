@@ -54,6 +54,11 @@ export const listProjects = asyncHandler(async (req: Request, res: Response) => 
   res.json({ success: true, data: result });
 });
 
+export const repairMissingProjectNumbers = asyncHandler(async (_req: Request, res: Response) => {
+  const result = await projectsService.repairMissingProjectNumbers();
+  res.json({ success: true, data: result });
+});
+
 export const addMediaKeys = asyncHandler(async (req: Request, res: Response) => {
   const project = await projectsService.addMediaKeys((req.params.id as string), req.body.keys, req.userId!);
   res.json({ success: true, data: project });

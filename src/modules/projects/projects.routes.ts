@@ -187,6 +187,13 @@ router.get(
   ctrl.getProjectByVisitReportId,
 );
 
+router.post(
+  '/repair-project-numbers',
+  authenticate,
+  authorize(Role.ADMIN),
+  ctrl.repairMissingProjectNumbers,
+);
+
 router.get(
   '/',
   authenticate,
