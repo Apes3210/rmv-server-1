@@ -2556,12 +2556,18 @@ export async function listAppointmentQueue(
     });
   }
 
+  const requestedStatuses = query.status
+    ?.split(',')
+    .map((status) => status.trim())
+    .filter(Boolean) || [];
+  const isHistoricalStatusFilter = requestedStatuses.length > 0
+    && requestedStatuses.every((status) => APPOINTMENT_QUEUE_RECENT_STATUSES.includes(status as AppointmentStatus));
+
   if (query.status) {
-    const statuses = query.status.split(',').map((status) => status.trim()).filter(Boolean);
-    const includesReadyForOcular = statuses.includes(AppointmentStatus.READY_FOR_OCULAR);
+    const includesReadyForOcular = requestedStatuses.includes(AppointmentStatus.READY_FOR_OCULAR);
     const directStatuses = includesReadyForOcular
-      ? statuses.filter((status) => status !== AppointmentStatus.READY_FOR_OCULAR)
-      : statuses;
+      ? requestedStatuses.filter((status) => status !== AppointmentStatus.READY_FOR_OCULAR)
+      : requestedStatuses;
 
     if (includesReadyForOcular) {
       const statusFilters: Record<string, unknown>[] = [
@@ -2659,10 +2665,13 @@ export async function listAppointmentQueue(
     );
     const currentReport = linkedReports.find((r: any) => String(r.appointmentId) === appointmentId);
 
-    const isReadyForOcular = isReadyForOcularQueueItem(appointment);
-    const isActionable = APPOINTMENT_QUEUE_ACTIONABLE_STATUSES.includes(appointment.status)
-      || isReadyForOcular
-      || hasPendingReport;
+    const isReadyForOcular = !isHistoricalStatusFilter && isReadyForOcularQueueItem(appointment);
+    const isActionable = !isHistoricalStatusFilter
+      && (
+        APPOINTMENT_QUEUE_ACTIONABLE_STATUSES.includes(appointment.status)
+        || isReadyForOcular
+        || hasPendingReport
+      );
 
     // Segment: Upcoming (Actionable) vs Recent/History (Everything else)
     const segment = isActionable ? 'upcoming' : 'recent';
@@ -2733,45 +2742,34 @@ export async function listAppointmentQueue(
     });
   }
 
-  const normalizeUpcomingDate = (item: AppointmentQueueItem) => {
-    const itemDate = item.appointment?.date || '';
-    if (
-      isReadyForOcularQueueItem(item.appointment)
-      && itemDate < todayStr
-    ) {
-      return todayStr;
-    }
-    return itemDate;
-  };
-
   const queueItemTimestamp = (value?: string | Date | null) => {
     if (!value) return 0;
     const parsed = new Date(value).getTime();
     return Number.isNaN(parsed) ? 0 : parsed;
   };
 
-  const prioritizeRecentQueueChanges = query.status === undefined && !normalizedSearch;
+  const prioritizeLatestActivity = query.status === undefined && !normalizedSearch;
 
   const sortUpcoming = (a: AppointmentQueueItem, b: AppointmentQueueItem) => {
-    if (prioritizeRecentQueueChanges) {
-      const aUpdated = queueItemTimestamp(a.appointment?.updatedAt) || queueItemTimestamp(a.appointment?.createdAt);
-      const bUpdated = queueItemTimestamp(b.appointment?.updatedAt) || queueItemTimestamp(b.appointment?.createdAt);
-      if (aUpdated !== bUpdated) return bUpdated - aUpdated;
+    if (prioritizeLatestActivity) {
+      const aTimestamp = queueItemTimestamp(a.appointment?.updatedAt) || queueItemTimestamp(a.appointment?.createdAt);
+      const bTimestamp = queueItemTimestamp(b.appointment?.updatedAt) || queueItemTimestamp(b.appointment?.createdAt);
+      if (aTimestamp !== bTimestamp) return bTimestamp - aTimestamp;
     }
 
-    const aDate = normalizeUpcomingDate(a);
-    const bDate = normalizeUpcomingDate(b);
-    if (aDate !== bDate) return aDate < bDate ? 1 : -1;
+    const aDate = a.appointment?.date || '';
+    const bDate = b.appointment?.date || '';
+    if (aDate !== bDate) return aDate < bDate ? -1 : 1;
 
     const aSlot = a.appointment?.slotCode || '';
     const bSlot = b.appointment?.slotCode || '';
-    if (aSlot !== bSlot) return aSlot < bSlot ? 1 : -1;
+    if (aSlot !== bSlot) return aSlot < bSlot ? -1 : 1;
 
     const aCreated = a.appointment?.createdAt ? new Date(a.appointment.createdAt).getTime() : 0;
     const bCreated = b.appointment?.createdAt ? new Date(b.appointment.createdAt).getTime() : 0;
-    if (aCreated !== bCreated) return bCreated - aCreated;
+    if (aCreated !== bCreated) return aCreated - bCreated;
 
-    return String(b.appointment?._id).localeCompare(String(a.appointment?._id));
+    return String(a.appointment?._id).localeCompare(String(b.appointment?._id));
   };
 
   const sortDescendingByDateSlot = (a: AppointmentQueueItem, b: AppointmentQueueItem) => {
