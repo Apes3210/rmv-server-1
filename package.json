@@ -12,6 +12,7 @@
     "smoke:api": "node scripts/smoke-api.mjs",
     "smoke:phase3": "node scripts/smoke-phase3.mjs",
     "smoke:pipeline": "node test-pipeline.mjs",
+    "repair:ocular-reports": "tsx src/scripts/repairOcularReportContamination.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest"
   },

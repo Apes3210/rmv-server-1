@@ -101,6 +101,8 @@ export interface IAppointment extends Document {
 
   // Set to true when the consultation visit report has been submitted
   consultationReportSubmitted?: boolean;
+  sourceConsultationAppointmentId?: Types.ObjectId;
+  sourceConsultationReportId?: Types.ObjectId;
 
   // Customer-provided site details (for office appointments, mandatory before confirmation)
   customerSiteDetails?: ICustomerSiteDetails;
@@ -248,6 +250,8 @@ const appointmentSchema = new Schema<IAppointment>(
     },
 
     consultationReportSubmitted: { type: Boolean, default: false },
+    sourceConsultationAppointmentId: { type: Schema.Types.ObjectId, ref: 'Appointment' },
+    sourceConsultationReportId: { type: Schema.Types.ObjectId, ref: 'VisitReport' },
 
     bookedBy: { type: Schema.Types.ObjectId, ref: 'User', required: true },
     confirmedBy: { type: Schema.Types.ObjectId, ref: 'User' },
@@ -259,5 +263,6 @@ appointmentSchema.index({ customerId: 1, status: 1 });
 appointmentSchema.index({ salesStaffId: 1, date: 1 });
 appointmentSchema.index({ date: 1, slotCode: 1 });
 appointmentSchema.index({ status: 1 });
+appointmentSchema.index({ sourceConsultationAppointmentId: 1, type: 1 });
 
 export const Appointment = mongoose.model<IAppointment>('Appointment', appointmentSchema);

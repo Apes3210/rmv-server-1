@@ -19,6 +19,7 @@ import type {
   UpdateOwnAvailabilityInput,
 } from './users.validation.js';
 import type { Types } from 'mongoose';
+import { getDefaultSavedAddress, normalizeSavedAddresses } from '../../utils/userAddresses.js';
 import {
   buildAvailabilityStateSummary,
   evaluateSalesAssignmentEligibility,
@@ -55,7 +56,13 @@ async function attachAvailabilitySummaries<T extends {
     const base = user.toObject() as Record<string, unknown> & {
       _id: string | Types.ObjectId;
       availabilityStatus?: StaffAvailabilityStatus;
+      savedAddresses?: any[];
+      addressData?: any;
+      roles?: Array<Role | string>;
     };
+    if (base.roles?.includes(Role.CUSTOMER)) {
+      base.savedAddresses = normalizeSavedAddresses(base.savedAddresses, base.addressData);
+    }
 
     return {
       ...base,
@@ -355,7 +362,16 @@ export async function updateProfile(userId: string, input: UpdateProfileInput) {
   if (input.lastName) user.lastName = input.lastName;
   if (input.phone) user.phone = input.phone;
   if (input.address !== undefined) user.address = input.address;
-  if (input.addressData !== undefined) (user as any).addressData = input.addressData;
+  if (input.savedAddresses !== undefined || input.addressData !== undefined) {
+    const savedAddresses = normalizeSavedAddresses(input.savedAddresses, input.addressData || (user as any).addressData);
+    if (user.roles.includes(Role.CUSTOMER) && savedAddresses.length === 0) {
+      throw AppError.badRequest('Customer profile must keep at least one pinned saved address.', ErrorCode.VALIDATION_ERROR);
+    }
+    (user as any).savedAddresses = savedAddresses;
+    const defaultAddress = getDefaultSavedAddress(savedAddresses, input.addressData || (user as any).addressData);
+    (user as any).addressData = defaultAddress;
+    if (defaultAddress?.formattedAddress) user.address = defaultAddress.formattedAddress;
+  }
   if (input.notificationPreferences) {
     user.notificationPreferences = {
       ...user.notificationPreferences,
@@ -501,7 +517,7 @@ export async function listByRole(
   }
 
   const users = await User.find(filter)
-    .select('firstName lastName email phone roles isActive availabilityStatus availabilityNote availabilityUpdatedAt')
+    .select('firstName lastName email phone roles isActive availabilityStatus availabilityNote availabilityUpdatedAt addressData savedAddresses')
     .sort({ firstName: 1 })
     .limit(50);
 
@@ -544,9 +560,15 @@ export async function listByRole(
 
 export async function getCustomerById(userId: string) {
   const user = await User.findOne({ _id: userId, roles: 'customer', isActive: true })
-    .select('firstName lastName email phone');
+    .select('firstName lastName email phone addressData savedAddresses')
+    .lean();
   if (!user) throw AppError.notFound('Customer not found');
-  return user;
+  const savedAddresses = normalizeSavedAddresses((user as any).savedAddresses, (user as any).addressData);
+  return {
+    ...user,
+    savedAddresses,
+    addressData: getDefaultSavedAddress(savedAddresses, (user as any).addressData) || (user as any).addressData,
+  };
 }
 
 // ── Save E-Signature ──

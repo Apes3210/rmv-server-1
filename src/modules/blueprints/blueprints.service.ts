@@ -7,7 +7,7 @@ import {
   AuditAction, NotificationCategory, Role, PaymentStageStatus,
 } from '../../utils/constants.js';
 import { blueprintStateMachine, projectStateMachine } from '../../utils/stateMachine.js';
-import { createAndSendNotification } from '../notifications/socket.service.js';
+import { createAndSendNotification, notifyRole } from '../notifications/socket.service.js';
 import { sendBlueprintUploadedEmail } from '../notifications/email.service.js';
 import { getInstallmentConfig } from '../config/config.service.js';
 import { deleteFile } from '../uploads/upload.service.js';
@@ -33,7 +33,32 @@ interface BlueprintDraftFileInput {
   uploadedAt: Date;
 }
 
+type BlueprintDraftInternalCostsInput = {
+  estimatedMaterials?: string;
+  fabricationWork?: string;
+  finishingPolishing?: string;
+  installation?: string;
+  deliveryMobilization?: string;
+  overheadMisc?: string;
+  markupProfit?: string;
+};
+
 interface BlueprintDraftQuotationInput {
+  internalCosts?: BlueprintDraftInternalCostsInput;
+  costPreset?: {
+    serviceType?: string;
+    complexity?: 'simple' | 'standard' | 'complex';
+    suggestedAt?: Date | string;
+    suggestedValues?: BlueprintDraftInternalCostsInput;
+  };
+  discount?: string;
+  subtotal?: string;
+  total?: string;
+  paymentOption?: 'full' | 'milestone';
+  systemEstimatedDuration?: string;
+  adjustedEstimatedDuration?: string;
+  inclusions?: string;
+  exclusions?: string;
   lineItems?: Array<{
     label: string;
     quantity: number;
@@ -45,7 +70,74 @@ interface BlueprintDraftQuotationInput {
   breakdown?: string;
   estimatedDuration?: string;
   engineerNotes?: string;
-  paymentMilestones?: Array<{ label: string; description: string }>;
+  paymentMilestones?: Array<{
+    label: string;
+    description?: string;
+    percentage?: number;
+    amount?: number;
+    trigger?: string;
+  }>;
+}
+
+const INTERNAL_COST_KEYS = [
+  'estimatedMaterials',
+  'fabricationWork',
+  'finishingPolishing',
+  'installation',
+  'deliveryMobilization',
+  'overheadMisc',
+  'markupProfit',
+] as const;
+
+function asMoney(value: unknown) {
+  const parsed = typeof value === 'number' ? value : Number(String(value ?? '').replace(/,/g, ''));
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+}
+
+function normalizeInternalCostStrings(
+  values?: Partial<Record<typeof INTERNAL_COST_KEYS[number], string>>,
+) {
+  if (!values) return undefined;
+  return INTERNAL_COST_KEYS.reduce((acc, key) => {
+    acc[key] = values[key] ?? '';
+    return acc;
+  }, {} as Record<typeof INTERNAL_COST_KEYS[number], string>);
+}
+
+function buildDefaultPaymentMilestones(total: number, paymentOption: 'full' | 'milestone') {
+  if (paymentOption === 'full') {
+    return [{
+      label: 'Full Payment',
+      description: '100% payable once the quotation is approved and selected.',
+      percentage: 100,
+      amount: total,
+      trigger: 'quotation approved / payment plan selected',
+    }];
+  }
+
+  return [
+    {
+      label: 'Down Payment',
+      description: '30% payable once the quotation is approved and payment plan is selected.',
+      percentage: 30,
+      amount: Math.round(total * 0.30 * 100) / 100,
+      trigger: 'quotation approved / payment plan selected',
+    },
+    {
+      label: 'During Fabrication',
+      description: '40% payable when fabrication starts.',
+      percentage: 40,
+      amount: Math.round(total * 0.40 * 100) / 100,
+      trigger: 'fabrication started',
+    },
+    {
+      label: 'Upon Completion',
+      description: '30% payable when fabrication is completed.',
+      percentage: 30,
+      amount: Math.round(total * 0.30 * 100) / 100,
+      trigger: 'fabrication completed',
+    },
+  ];
 }
 
 function normalizeDraftFile(
@@ -69,6 +161,21 @@ function normalizeDraftQuotation(
   if (!quotation) return undefined;
 
   return {
+    internalCosts: normalizeInternalCostStrings(quotation.internalCosts),
+    costPreset: quotation.costPreset ? {
+      serviceType: quotation.costPreset.serviceType ?? '',
+      complexity: quotation.costPreset.complexity ?? 'standard',
+      suggestedAt: quotation.costPreset.suggestedAt,
+      suggestedValues: normalizeInternalCostStrings(quotation.costPreset.suggestedValues),
+    } : undefined,
+    discount: quotation.discount ?? '',
+    subtotal: quotation.subtotal ?? '',
+    total: quotation.total ?? '',
+    paymentOption: quotation.paymentOption ?? 'milestone',
+    systemEstimatedDuration: quotation.systemEstimatedDuration ?? '',
+    adjustedEstimatedDuration: quotation.adjustedEstimatedDuration ?? '',
+    inclusions: quotation.inclusions ?? '',
+    exclusions: quotation.exclusions ?? '',
     lineItems: quotation.lineItems?.map((lineItem) => ({
       label: lineItem.label,
       quantity: lineItem.quantity,
@@ -82,7 +189,10 @@ function normalizeDraftQuotation(
     engineerNotes: quotation.engineerNotes ?? '',
     paymentMilestones: quotation.paymentMilestones?.map((milestone) => ({
       label: milestone.label,
-      description: milestone.description,
+      description: milestone.description ?? '',
+      percentage: milestone.percentage,
+      amount: milestone.amount,
+      trigger: milestone.trigger ?? '',
     })),
   };
 }
@@ -97,6 +207,55 @@ function getDraftFileKeys(files?: {
 }
 
 function buildQuotationFromDraft(quotation?: BlueprintDraftQuotationInput) {
+  const internalCostValues = normalizeInternalCostStrings(quotation?.internalCosts);
+  const hasInternalCostValues = Boolean(internalCostValues)
+    && INTERNAL_COST_KEYS.some((key) => asMoney(internalCostValues?.[key]) > 0);
+
+  if (hasInternalCostValues && internalCostValues) {
+    const internalCosts = INTERNAL_COST_KEYS.reduce((acc, key) => {
+      acc[key] = asMoney(internalCostValues[key]);
+      return acc;
+    }, {} as Record<typeof INTERNAL_COST_KEYS[number], number>);
+    const subtotal = INTERNAL_COST_KEYS.reduce((sum, key) => sum + internalCosts[key], 0);
+    const discount = Math.min(asMoney(quotation?.discount), subtotal);
+    const total = Math.max(subtotal - discount, subtotal > 0 ? 1 : 0);
+    if (subtotal <= 0) return undefined;
+
+    const paymentOption: 'full' | 'milestone' = quotation?.paymentOption === 'full' ? 'full' : 'milestone';
+    const paymentMilestones = buildDefaultPaymentMilestones(total, paymentOption);
+    const estimatedDuration = quotation?.adjustedEstimatedDuration?.trim()
+      || quotation?.estimatedDuration?.trim()
+      || quotation?.systemEstimatedDuration?.trim()
+      || undefined;
+
+    return {
+      internalCosts,
+      costPreset: quotation?.costPreset ? {
+        serviceType: quotation.costPreset.serviceType?.trim() || undefined,
+        complexity: quotation.costPreset.complexity || 'standard',
+        suggestedAt: quotation.costPreset.suggestedAt ? new Date(quotation.costPreset.suggestedAt) : undefined,
+        suggestedValues: quotation.costPreset.suggestedValues
+          ? INTERNAL_COST_KEYS.reduce((acc, key) => {
+              acc[key] = asMoney(quotation.costPreset?.suggestedValues?.[key]);
+              return acc;
+            }, {} as Record<typeof INTERNAL_COST_KEYS[number], number>)
+          : undefined,
+      } : undefined,
+      discount,
+      subtotal,
+      total,
+      paymentOption,
+      paymentMilestones,
+      validityDays: Number(quotation?.validityDays) || 30,
+      systemEstimatedDuration: quotation?.systemEstimatedDuration?.trim() || undefined,
+      adjustedEstimatedDuration: quotation?.adjustedEstimatedDuration?.trim() || undefined,
+      estimatedDuration,
+      inclusions: quotation?.inclusions?.trim() || undefined,
+      exclusions: quotation?.exclusions?.trim() || undefined,
+      engineerNotes: quotation?.engineerNotes?.trim() || undefined,
+    };
+  }
+
   const lineItems = (quotation?.lineItems || [])
     .filter((lineItem) => lineItem.label.trim())
     .map((lineItem) => {
@@ -123,7 +282,7 @@ function buildQuotationFromDraft(quotation?: BlueprintDraftQuotationInput) {
   const computedTotal = totalMaterials + totalLabor + fees;
   const total = computedTotal > 0 ? computedTotal : 1;
   const validMilestones = (quotation?.paymentMilestones || [])
-    .filter((milestone) => milestone.label.trim() && milestone.description.trim());
+    .filter((milestone) => milestone.label.trim() && (milestone.description?.trim() || milestone.trigger?.trim()));
 
   if (lineItems.length === 0) {
     return undefined;
@@ -133,13 +292,28 @@ function buildQuotationFromDraft(quotation?: BlueprintDraftQuotationInput) {
     materials: totalMaterials,
     labor: totalLabor,
     fees,
+    subtotal: computedTotal,
+    discount: 0,
     total,
+    internalCosts: {
+      estimatedMaterials: totalMaterials,
+      fabricationWork: totalLabor,
+      finishingPolishing: 0,
+      installation: 0,
+      deliveryMobilization: fees,
+      overheadMisc: 0,
+      markupProfit: 0,
+    },
+    paymentOption: 'milestone' as const,
     lineItems: lineItems.length > 0 ? lineItems : undefined,
     validityDays: Number(quotation?.validityDays) || 30,
     breakdown: quotation?.breakdown?.trim() || undefined,
+    inclusions: quotation?.breakdown?.trim() || undefined,
     estimatedDuration: quotation?.estimatedDuration?.trim() || undefined,
     engineerNotes: quotation?.engineerNotes?.trim() || undefined,
-    paymentMilestones: validMilestones.length > 0 ? validMilestones : undefined,
+    paymentMilestones: validMilestones.length > 0
+      ? validMilestones
+      : buildDefaultPaymentMilestones(total, 'milestone'),
   };
 }
 
@@ -186,6 +360,33 @@ function isInitialBlueprintUploadAvailable(projectStatus: ProjectStatus, project
 
 function hasPayableQuotation(blueprint: { quotation?: { total?: number } | null }) {
   return Boolean(blueprint.quotation);
+}
+
+function isQuotationSentToCustomer(blueprint: { quotationReviewStatus?: string; quotation?: { total?: number } | null }) {
+  return hasPayableQuotation(blueprint) && blueprint.quotationReviewStatus === 'sent_to_customer';
+}
+
+async function notifyCustomerAndCashierQuotationReady(
+  project: { _id: Types.ObjectId; title: string; customerId: Types.ObjectId | string },
+  projectItemId?: Types.ObjectId | string | null,
+) {
+  const link = buildProjectBlueprintLink(project._id.toString(), projectItemId?.toString());
+
+  await createAndSendNotification(
+    project.customerId,
+    NotificationCategory.BLUEPRINT,
+    'Quotation Ready',
+    `The quotation for "${project.title}" is ready for review.`,
+    link,
+  );
+
+  await notifyRole(
+    Role.CASHIER,
+    NotificationCategory.BLUEPRINT,
+    'Quotation Issued',
+    `A customer-facing quotation for "${project.title}" has been issued for finance records.`,
+    link,
+  );
 }
 
 async function markProjectItemApprovedAndSaveProject(
@@ -299,6 +500,7 @@ export async function uploadBlueprint(
     costingKey: input.costingKey,
     uploadedBy,
     quotation: input.quotation,
+    quotationReviewStatus: input.quotation ? 'sent_to_customer' : 'draft',
   });
 
   if ([ProjectStatus.SUBMITTED, ProjectStatus.APPROVED].includes(project.status)) {
@@ -320,6 +522,23 @@ export async function uploadBlueprint(
     userAgent: ua,
   });
 
+  if (input.quotation) {
+    await AuditLog.create({
+      action: AuditAction.QUOTATION_SENT_TO_CUSTOMER,
+      actorId: uploadedBy,
+      targetType: 'blueprint',
+      targetId: blueprint._id,
+      details: {
+        projectId: input.projectId,
+        projectItemId: input.projectItemId || null,
+        reviewStatus: 'sent_to_customer',
+        total: input.quotation.total,
+      },
+      ipAddress: ip,
+      userAgent: ua,
+    });
+  }
+
   // Notify customer
   const customer = await User.findById(project.customerId);
   if (customer) {
@@ -336,6 +555,10 @@ export async function uploadBlueprint(
       projectTitle: project.title,
       projectId: project._id.toString(),
     });
+  }
+
+  if (input.quotation) {
+    await notifyCustomerAndCashierQuotationReady(project, blueprint.projectItemId);
   }
 
   return blueprint;
@@ -382,6 +605,7 @@ export async function uploadRevision(
     costingKey: input.costingKey,
     uploadedBy,
     quotation: input.quotation ?? currentBlueprint.quotation,
+    quotationReviewStatus: input.quotation ? 'sent_to_customer' : currentBlueprint.quotationReviewStatus,
   });
 
   await AuditLog.create({
@@ -393,6 +617,23 @@ export async function uploadRevision(
     ipAddress: ip,
     userAgent: ua,
   });
+
+  if (input.quotation) {
+    await AuditLog.create({
+      action: AuditAction.QUOTATION_SENT_TO_CUSTOMER,
+      actorId: uploadedBy,
+      targetType: 'blueprint',
+      targetId: blueprint._id,
+      details: {
+        projectId: currentBlueprint.projectId.toString(),
+        previousId: blueprintId,
+        reviewStatus: 'sent_to_customer',
+        total: input.quotation.total,
+      },
+      ipAddress: ip,
+      userAgent: ua,
+    });
+  }
 
   // Notify customer
   const customer = await User.findById(project.customerId);
@@ -410,6 +651,10 @@ export async function uploadRevision(
       projectTitle: project.title,
       projectId: project._id.toString(),
     });
+  }
+
+  if (input.quotation) {
+    await notifyCustomerAndCashierQuotationReady(project, blueprint.projectItemId);
   }
 
   return blueprint;
@@ -440,6 +685,10 @@ export async function approveComponent(
 
   if (input.component === BlueprintComponent.COSTING && !hasPayableQuotation(blueprint)) {
     throw AppError.badRequest('Cannot approve billing without a valid quotation total. Please ask engineering to upload costing with pricing.');
+  }
+
+  if (input.component === BlueprintComponent.COSTING && !isQuotationSentToCustomer(blueprint)) {
+    throw AppError.badRequest('Customer billing approval is available only after the quotation has been sent to the customer.');
   }
 
   if (input.component === BlueprintComponent.BLUEPRINT) {
@@ -531,6 +780,7 @@ export async function requestRevision(
   blueprint.status = BlueprintStatus.REVISION_REQUESTED;
   blueprint.blueprintApproved = false;
   blueprint.costingApproved = false;
+  blueprint.quotationReviewStatus = blueprint.quotation ? 'draft' : blueprint.quotationReviewStatus;
   blueprint.revisionNotes = input.notes;
   blueprint.revisionRefKeys = input.refKeys;
   await blueprint.save();
@@ -718,8 +968,8 @@ export async function finalizeBlueprintDraft(
   const designKey = draft.files?.design?.key;
   const costingKey = draft.files?.costing?.key;
 
-  if (!blueprintKey || !designKey || !costingKey) {
-    throw AppError.badRequest('Blueprint, design, and costing files are required before finalizing the draft');
+  if (!blueprintKey || !designKey) {
+    throw AppError.badRequest('Blueprint and design files are required before finalizing the draft');
   }
 
   const quotation = buildQuotationFromDraft(draft.quotation);
@@ -734,7 +984,7 @@ export async function finalizeBlueprintDraft(
         {
           blueprintKey,
           designKey,
-          costingKey,
+          costingKey: costingKey || '',
           quotation,
         },
         actorId,
@@ -747,7 +997,7 @@ export async function finalizeBlueprintDraft(
           projectItemId: draft.projectItemId?.toString() || projectItemId,
           blueprintKey,
           designKey,
-          costingKey,
+          costingKey: costingKey || '',
           quotation,
         },
         actorId,
@@ -847,6 +1097,89 @@ export async function getLatestBlueprint(
   return blueprint;
 }
 
+export async function approveAndSendQuotation(
+  blueprintId: string,
+  adminId: string,
+  ip?: string,
+  ua?: string,
+) {
+  const blueprint = await Blueprint.findById(blueprintId);
+  if (!blueprint) throw AppError.notFound('Blueprint not found');
+  if (!blueprint.quotation || Number(blueprint.quotation.total || 0) <= 0) {
+    throw AppError.badRequest('Cannot approve a quotation without a valid final amount.');
+  }
+
+  const project = await Project.findById(blueprint.projectId);
+  if (!project) throw AppError.notFound('Project not found');
+
+  blueprint.quotationReviewStatus = 'sent_to_customer';
+  blueprint.quotationReviewedBy = adminId as any;
+  blueprint.quotationReviewedAt = new Date();
+  blueprint.quotationSentAt = new Date();
+  await blueprint.save();
+
+  await AuditLog.create([
+    {
+      action: AuditAction.QUOTATION_APPROVED,
+      actorId: adminId,
+      targetType: 'blueprint',
+      targetId: blueprint._id,
+      details: {
+        projectId: blueprint.projectId.toString(),
+        projectItemId: blueprint.projectItemId?.toString() || null,
+        reviewStatus: 'approved',
+        total: blueprint.quotation.total,
+      },
+      ipAddress: ip,
+      userAgent: ua,
+    },
+    {
+      action: AuditAction.QUOTATION_SENT_TO_CUSTOMER,
+      actorId: adminId,
+      targetType: 'blueprint',
+      targetId: blueprint._id,
+      details: {
+        projectId: blueprint.projectId.toString(),
+        projectItemId: blueprint.projectItemId?.toString() || null,
+        reviewStatus: 'sent_to_customer',
+        total: blueprint.quotation.total,
+      },
+      ipAddress: ip,
+      userAgent: ua,
+    },
+  ]);
+
+  await notifyCustomerAndCashierQuotationReady(project, blueprint.projectItemId);
+
+  return blueprint;
+}
+
+export async function getQuotationHistory(
+  blueprintId: string,
+  actorId: string,
+  actorRoles: Role[],
+) {
+  const blueprint = await Blueprint.findById(blueprintId).select('projectId');
+  if (!blueprint) throw AppError.notFound('Blueprint not found');
+  await assertBlueprintProjectAccess(blueprint.projectId.toString(), actorId, actorRoles);
+
+  return AuditLog.find({
+    targetType: 'blueprint',
+    targetId: blueprint._id,
+    action: {
+      $in: [
+        AuditAction.QUOTATION_SUBMITTED_FOR_REVIEW,
+        AuditAction.QUOTATION_APPROVED,
+        AuditAction.QUOTATION_SENT_TO_CUSTOMER,
+        AuditAction.QUOTATION_REVISED,
+      ],
+    },
+  })
+    .sort({ createdAt: -1 })
+    .limit(10)
+    .populate('actorId', 'firstName lastName role');
+}
+
 // ── Customer: Accept Blueprint (approve both components only) ──
 
 export async function acceptBlueprint(
@@ -871,6 +1204,10 @@ export async function acceptBlueprint(
 
   if (!blueprint.quotation) {
     throw AppError.badRequest('Cannot accept a blueprint without a valid quotation. Please ask the engineer to provide pricing.');
+  }
+
+  if (!isQuotationSentToCustomer(blueprint)) {
+    throw AppError.badRequest('Cannot accept billing until the quotation has been sent to the customer.');
   }
 
   // Mark both components as approved

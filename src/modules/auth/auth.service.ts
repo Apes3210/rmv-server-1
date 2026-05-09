@@ -27,6 +27,7 @@ import type {
 import type { Types } from 'mongoose';
 import { verifyFirebaseIdToken } from '../../config/firebase.js';
 import { hasLocalPassword, isGoogleOnlyAccount, isInternalManagedAccount } from './auth.account-policy.js';
+import { normalizeSavedAddresses, normalizeUserAddress, requirePinnedAddress } from '../../utils/userAddresses.js';
 
 // ── Token Generation ──
 function generateAccessToken(userId: string, roles: Role[]): string {
@@ -155,7 +156,10 @@ async function verifyOtp(email: string, otp: string, purpose: OtpPurpose): Promi
 // ── Service Methods ──
 
 export async function register(input: RegisterInput, ip?: string, ua?: string) {
-  const { email, password, firstName, lastName, phone } = input;
+  const { email, password, firstName, lastName, phone, addressData } = input;
+  requirePinnedAddress(addressData);
+  const defaultAddress = normalizeUserAddress({ ...addressData, isDefault: true }, 'Primary address');
+  const savedAddresses = normalizeSavedAddresses([defaultAddress], defaultAddress);
 
   // Check existing
   const existing = await User.findOne({ email });
@@ -176,6 +180,9 @@ export async function register(input: RegisterInput, ip?: string, ua?: string) {
     firstName,
     lastName,
     phone,
+    address: defaultAddress.formattedAddress,
+    addressData: defaultAddress,
+    savedAddresses,
     roles: [Role.CUSTOMER],
     isEmailVerified: false,
   });
@@ -828,7 +835,10 @@ export async function googleAuth(input: GoogleAuthInput, ip?: string, ua?: strin
 }
 
 export async function googleComplete(input: GoogleCompleteInput, ip?: string, ua?: string, hints?: ClientHints) {
-  const { idToken, firstName, lastName, phone } = input;
+  const { idToken, firstName, lastName, phone, addressData } = input;
+  requirePinnedAddress(addressData);
+  const defaultAddress = normalizeUserAddress({ ...addressData, isDefault: true }, 'Primary address');
+  const savedAddresses = normalizeSavedAddresses([defaultAddress], defaultAddress);
 
   // Re-verify Firebase ID token
   const decoded = await verifyFirebaseIdToken(idToken).catch(() => {
@@ -861,6 +871,9 @@ export async function googleComplete(input: GoogleCompleteInput, ip?: string, ua
     firstName,
     lastName,
     phone,
+    address: defaultAddress.formattedAddress,
+    addressData: defaultAddress,
+    savedAddresses,
     provider: 'google',
     firebaseUid,
     photoURL: decoded.picture || undefined,

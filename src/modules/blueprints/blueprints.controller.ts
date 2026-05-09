@@ -17,6 +17,25 @@ export const approveComponent = asyncHandler(async (req: Request, res: Response)
   res.json({ success: true, data: blueprint });
 });
 
+export const approveAndSendQuotation = asyncHandler(async (req: Request, res: Response) => {
+  const blueprint = await blueprintsService.approveAndSendQuotation(
+    (req.params.id as string),
+    req.userId!,
+    req.ip,
+    req.get('user-agent'),
+  );
+  res.json({ success: true, data: blueprint });
+});
+
+export const getQuotationHistory = asyncHandler(async (req: Request, res: Response) => {
+  const history = await blueprintsService.getQuotationHistory(
+    (req.params.id as string),
+    req.userId!,
+    req.userRoles!,
+  );
+  res.json({ success: true, data: history });
+});
+
 export const requestRevision = asyncHandler(async (req: Request, res: Response) => {
   const blueprint = await blueprintsService.requestRevision((req.params.id as string), req.body, req.userId!, req.ip, req.get('user-agent'));
   res.json({ success: true, data: blueprint });

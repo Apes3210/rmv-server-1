@@ -316,8 +316,6 @@ async function syncProjectItemFromReport(project: any, report: any) {
         preferredDesign: report.preferredDesign,
         customerRequirements: report.customerRequirements,
         notes: report.notes,
-        initialDesignKeys: report.initialDesignKeys || [],
-        initialDesignNotes: report.initialDesignNotes,
         mediaKeys,
         ...(report.visitType === 'ocular'
           ? { ocularVisitReportId: report._id }
@@ -325,6 +323,8 @@ async function syncProjectItemFromReport(project: any, report: any) {
       },
       $setOnInsert: {
         status: project.status || ProjectStatus.DRAFT,
+        initialDesignKeys: report.initialDesignKeys || [],
+        initialDesignNotes: report.initialDesignNotes,
         designReviewStatus: hasInitialDesign ? 'pending' : 'not_required',
       },
     },
@@ -742,9 +742,9 @@ function buildContractData(
       labor: lineItem.labor,
       amount: lineItem.amount,
     })),
-    quotationFees: blueprint.quotation?.fees,
+    quotationFees: blueprint.quotation?.fees || blueprint.quotation?.discount,
     quotationValidityDays: blueprint.quotation?.validityDays,
-    scopeOfWork: blueprint.quotation?.breakdown,
+    scopeOfWork: blueprint.quotation?.inclusions || blueprint.quotation?.breakdown,
   } satisfies ContractData;
 }
 
@@ -781,6 +781,9 @@ export async function reviewInitialDesign(
 
   if (reviewTarget.designReviewStatus === 'approved' && input.decision === 'approved') {
     return attachProjectItems(project);
+  }
+  if (input.decision === 'declined' && !input.notes?.trim()) {
+    throw AppError.badRequest('Internal review notes are required when declining the initial design');
   }
 
   reviewTarget.designReviewStatus = input.decision;
@@ -869,6 +872,8 @@ export async function resubmitInitialDesign(
     projectItem.designReviewedAt = undefined;
     projectItem.designReviewNotes = undefined;
     await projectItem.save();
+    project.initialDesignKeys = input.initialDesignKeys || [];
+    project.initialDesignNotes = input.initialDesignNotes || undefined;
     await syncProjectDesignReviewRollup(project);
   } else {
     project.initialDesignKeys = input.initialDesignKeys || [];
@@ -1000,6 +1005,9 @@ async function buildPaymentStages(projectId: string, paymentType: 'full' | 'inst
   if (!blueprint?.quotation || blueprint.status !== 'approved') {
     throw AppError.badRequest('Customer payment selection is only available after the approved quotation is ready');
   }
+  if (blueprint.quotationReviewStatus !== 'sent_to_customer') {
+    throw AppError.badRequest('Customer payment selection is available only after the approved quotation is sent to the customer');
+  }
 
   const quotedTotal = Number(blueprint.quotation.total);
   const baseTotal = Number.isFinite(quotedTotal) && quotedTotal > 0 ? quotedTotal : 1;
@@ -1028,7 +1036,7 @@ async function buildPaymentStages(projectId: string, paymentType: 'full' | 'inst
       return {
         stageId: uuidv4(),
         label: milestone?.label || installmentConfig.stageLabels[idx] || `Stage ${idx + 1}`,
-        description: milestone?.description || installmentConfig.stageDescriptions[idx] || '',
+        description: milestone?.description || milestone?.trigger || installmentConfig.stageDescriptions[idx] || '',
         percentage: pct,
         amount,
         status: PaymentStageStatus.PENDING,
@@ -1136,11 +1144,11 @@ function buildAggregateContractData(
     scopeOfWork: itemBuilds
       .map(({ item, built }) => {
         const title = item?.title || project.title;
-        const scope = built.blueprint.quotation?.breakdown;
+        const scope = built.blueprint.quotation?.inclusions || built.blueprint.quotation?.breakdown;
         return scope ? `${title}: ${scope}` : null;
       })
       .filter(Boolean)
-      .join('\n\n') || firstBuilt.blueprint.quotation?.breakdown,
+      .join('\n\n') || firstBuilt.blueprint.quotation?.inclusions || firstBuilt.blueprint.quotation?.breakdown,
   };
 }
 
@@ -1510,12 +1518,12 @@ export async function getProjectById(
 
 export async function getProjectByVisitReportId(visitReportId: string) {
   // Direct match: project was created from this visit report
-  const project = await Project.findOne({ visitReportId }).select('_id title serviceType status').lean();
+  const project = await Project.findOne({ visitReportId }).select('_id title serviceType status contractStatus').lean();
   if (project) return project;
   // Indirect match: ocular visit report linked to the consultation's project
   const report = await VisitReport.findById(visitReportId).select('linkedProjectId').lean();
   if (report?.linkedProjectId) {
-    return Project.findById(report.linkedProjectId).select('_id title serviceType status').lean();
+    return Project.findById(report.linkedProjectId).select('_id title serviceType status contractStatus').lean();
   }
 
   return null;

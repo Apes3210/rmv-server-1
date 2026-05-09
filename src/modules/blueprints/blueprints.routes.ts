@@ -57,6 +57,19 @@ router.post(
   ctrl.acceptBlueprint,
 );
 
+router.post(
+  '/:id/quotation/approve-send',
+  authenticate,
+  authorize(Role.ADMIN),
+  ctrl.approveAndSendQuotation,
+);
+
+router.get(
+  '/:id/quotation/history',
+  authenticate,
+  ctrl.getQuotationHistory,
+);
+
 router.get(
   '/project/:projectId/draft',
   authenticate,

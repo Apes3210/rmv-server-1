@@ -32,6 +32,29 @@ export interface ISiteConditions {
   obstaclesOrConstraints?: string;
 }
 
+export interface IServiceSpecifications {
+  measurements?: Record<string, string | number | boolean>;
+  siteConditions?: Record<string, string | number | boolean>;
+  materialsDesign?: Record<string, string | number | boolean>;
+  additional?: Record<string, string | number | boolean>;
+}
+
+export interface IOcularAddressSnapshot {
+  id?: string;
+  label?: string;
+  street?: string;
+  barangay?: string;
+  city?: string;
+  province?: string;
+  zip?: string;
+  country?: string;
+  addressType?: 'personal' | 'business';
+  lat?: number;
+  lng?: number;
+  formattedAddress?: string;
+  isDefault?: boolean;
+}
+
 export interface IVisitReport extends Document {
   _id: Types.ObjectId;
   appointmentId: Types.ObjectId;
@@ -69,6 +92,7 @@ export interface IVisitReport extends Document {
   preferredDesign?: string;
   customerRequirements?: string;
   notes?: string;
+  specifications?: IServiceSpecifications;
 
   // ── Consultation-specific fields ──
   discussionNotes?: string;
@@ -76,8 +100,13 @@ export interface IVisitReport extends Document {
   noOcularReason?: string;
   initialDesignKeys?: string[];
   initialDesignNotes?: string;
+  selectedDesignTemplateId?: string;
+  selectedDesignTemplateName?: string;
+  selectedDesignTemplateImageUrl?: string;
   recommendedOcularDate?: Date;
   recommendedOcularSlot?: string;
+  recommendedOcularAddressId?: string;
+  recommendedOcularAddress?: IOcularAddressSnapshot;
   linkedProjectId?: Types.ObjectId;
   projectItemId?: Types.ObjectId;
 
@@ -173,6 +202,7 @@ const visitReportSchema = new Schema<IVisitReport>(
     preferredDesign: { type: String },
     customerRequirements: { type: String },
     notes: { type: String },
+    specifications: { type: Schema.Types.Mixed },
 
     photoKeys: [{ type: String }],
     videoKeys: [{ type: String }],
@@ -185,8 +215,13 @@ const visitReportSchema = new Schema<IVisitReport>(
     noOcularReason: { type: String, maxlength: 1000 },
     initialDesignKeys: [{ type: String }],
     initialDesignNotes: { type: String, maxlength: 2000 },
+    selectedDesignTemplateId: { type: String, trim: true },
+    selectedDesignTemplateName: { type: String, trim: true },
+    selectedDesignTemplateImageUrl: { type: String, trim: true },
     recommendedOcularDate: { type: Date },
     recommendedOcularSlot: { type: String },
+    recommendedOcularAddressId: { type: String, trim: true },
+    recommendedOcularAddress: { type: Schema.Types.Mixed },
     linkedProjectId: { type: Schema.Types.ObjectId, ref: 'Project' },
     projectItemId: { type: Schema.Types.ObjectId, ref: 'ProjectItem' },
 

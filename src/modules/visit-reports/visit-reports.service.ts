@@ -5,18 +5,47 @@ import { VisitReportStatus } from '../../models/VisitReport.js';
 import { AppError, ErrorCode } from '../../utils/appError.js';
 import {
   AppointmentStatus, AppointmentType, AppointmentAttendanceStatus, ContractStatus, ProjectStatus, Role, AuditAction, NotificationCategory,
-  ServiceType, OcularFeePaymentChoice,
+  ServiceType,
 } from '../../utils/constants.js';
 import { visitReportStateMachine, appointmentStateMachine } from '../../utils/stateMachine.js';
 import { generateProjectNumber } from '../../utils/projectNumber.js';
 import { createAndSendNotification, notifyRole } from '../notifications/socket.service.js';
 import type { CreateVisitReportInput, UpdateVisitReportInput, ReturnVisitReportInput, ReopenVisitReportInput } from './visit-reports.validation.js';
 import type { Types } from 'mongoose';
+import { resolveOcularVisitData } from '../appointments/appointments.service.js';
 
 import type { ICustomerSiteDetails } from '../../models/Appointment.js';
+import type { UserAddressInput } from '../../utils/userAddresses.js';
+import { normalizeUserAddress, requirePinnedAddress } from '../../utils/userAddresses.js';
 
 function isNonEmptyString(value?: string | null) {
   return Boolean(value?.trim());
+}
+
+function hasSpecificationData(specifications?: {
+  measurements?: Record<string, string | number | boolean>;
+  siteConditions?: Record<string, string | number | boolean>;
+  materialsDesign?: Record<string, string | number | boolean>;
+  additional?: Record<string, string | number | boolean>;
+}, section?: 'measurements' | 'siteConditions' | 'materialsDesign' | 'additional') {
+  if (!specifications) return false;
+  if (section) {
+    const target = specifications[section];
+    return Boolean(target && Object.values(target).some((value) => {
+      if (typeof value === 'string') return value.trim().length > 0;
+      if (typeof value === 'number') return Number.isFinite(value);
+      return value === true;
+    }));
+  }
+  return ['measurements', 'siteConditions', 'materialsDesign', 'additional']
+    .some((key) => {
+      const target = specifications[key as keyof typeof specifications];
+      return Boolean(target && Object.values(target).some((value) => {
+        if (typeof value === 'string') return value.trim().length > 0;
+        if (typeof value === 'number') return Number.isFinite(value);
+        return value === true;
+      }));
+    });
 }
 
 function readableServiceTitle(serviceType?: string, custom?: string) {
@@ -26,6 +55,46 @@ function readableServiceTitle(serviceType?: string, custom?: string) {
     .filter(Boolean)
     .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
     .join(' ');
+}
+
+function getAddressStructured(address: UserAddressInput) {
+  return {
+    street: address.street || '',
+    barangay: address.barangay || '',
+    city: address.city || '',
+    province: address.province || '',
+    zip: address.zip || '',
+  };
+}
+
+async function applyRecommendedOcularAddress(appointment: any, addressInput: UserAddressInput) {
+  requirePinnedAddress(addressInput);
+  const address = normalizeUserAddress(addressInput, addressInput.label || 'Ocular site');
+  const ocularVisitData = await resolveOcularVisitData(
+    AppointmentType.OCULAR,
+    address.formattedAddress,
+    { lat: address.lat!, lng: address.lng! },
+  );
+  if (!ocularVisitData) throw AppError.badRequest('Could not compute ocular visit data');
+
+  appointment.latitude = ocularVisitData.latitude;
+  appointment.longitude = ocularVisitData.longitude;
+  appointment.formattedAddress = ocularVisitData.formattedAddress;
+  appointment.customerAddress = ocularVisitData.formattedAddress;
+  appointment.customerLocation = ocularVisitData.customerLocation;
+  appointment.distanceKm = ocularVisitData.distanceKm;
+  appointment.ocularFee = ocularVisitData.ocularFee;
+  appointment.ocularFeeBreakdown = ocularVisitData.ocularFeeBreakdown;
+  appointment.addressStructured = getAddressStructured(address);
+
+  if (!ocularVisitData.ocularFeeBreakdown.isWithinNCR && ocularVisitData.ocularFee > 0) {
+    appointment.ocularFeeStatus = 'pending';
+    appointment.ocularFeePaid = false;
+  } else if (!appointment.ocularFeePaid) {
+    appointment.ocularFeeStatus = undefined;
+  }
+
+  return { address, ocularVisitData };
 }
 
 async function getRelatedOcularAppointmentForConsultation(report: any) {
@@ -74,10 +143,14 @@ async function upsertProjectItemFromVisitReport(project: any, report: any) {
         materials: report.materials,
         finishes: report.finishes,
         preferredDesign: report.preferredDesign,
+        specifications: report.specifications,
         customerRequirements: report.customerRequirements,
         notes: report.notes,
         initialDesignKeys: report.initialDesignKeys || [],
         initialDesignNotes: report.initialDesignNotes,
+        selectedDesignTemplateId: report.selectedDesignTemplateId,
+        selectedDesignTemplateName: report.selectedDesignTemplateName,
+        selectedDesignTemplateImageUrl: report.selectedDesignTemplateImageUrl,
         mediaKeys,
         ...(report.visitType === 'ocular'
           ? { ocularVisitReportId: report._id }
@@ -104,18 +177,45 @@ function getInitialReportServiceTypes(
   serviceTypesOverride?: string[],
   serviceTypeOverride?: string,
 ) {
-  const rawServiceTypes = customerSiteDetails?.serviceTypes?.length
-    ? customerSiteDetails.serviceTypes
-    : serviceTypesOverride?.length
+  const rawServiceTypes = serviceTypesOverride?.length
       ? serviceTypesOverride
     : serviceTypeOverride
       ? [serviceTypeOverride]
+    : customerSiteDetails?.serviceTypes?.length
+      ? customerSiteDetails.serviceTypes
       : [ServiceType.CUSTOM];
 
   return [...new Set(rawServiceTypes.filter((value): value is string => isNonEmptyString(value)))];
 }
 
+function serviceTypeSet(values?: string[]) {
+  return new Set((values || []).map((value) => String(value).trim()).filter(Boolean));
+}
+
+function sameServiceTypes(a?: string[], b?: string[]) {
+  const left = serviceTypeSet(a);
+  const right = serviceTypeSet(b);
+  if (left.size !== right.size) return false;
+  for (const value of left) {
+    if (!right.has(value)) return false;
+  }
+  return true;
+}
+
 async function getAppointmentVisitReportServiceTypes(appointmentId: Types.ObjectId | string) {
+  const appointment = await Appointment.findById(appointmentId)
+    .select('serviceTypes serviceType')
+    .lean();
+  const appointmentServiceTypes = getInitialReportServiceTypes(
+    undefined,
+    appointment?.serviceTypes,
+    (appointment as any)?.serviceType,
+  ).filter((serviceType) => serviceType !== ServiceType.CUSTOM);
+
+  if (appointmentServiceTypes.length > 0) {
+    return appointmentServiceTypes;
+  }
+
   const reports = await VisitReport.find({ appointmentId, visitType: 'consultation' })
     .select('serviceType')
     .lean();
@@ -124,6 +224,28 @@ async function getAppointmentVisitReportServiceTypes(appointmentId: Types.Object
       .map((report) => report.serviceType)
       .filter((value): value is string => isNonEmptyString(value)),
   )];
+}
+
+function isEmptyDraftReport(report: any) {
+  return !hasReportValue(report.lineItems)
+    && !hasReportValue(report.measurements)
+    && !hasReportValue(report.siteConditions)
+    && !hasReportValue(report.materials)
+    && !hasReportValue(report.finishes)
+    && !hasReportValue(report.preferredDesign)
+    && !hasReportValue(report.customerRequirements)
+    && !hasReportValue(report.notes)
+    && !hasReportValue(report.specifications)
+    && !hasReportValue(report.discussionNotes)
+    && !hasReportValue(report.initialDesignKeys)
+    && !hasReportValue(report.initialDesignNotes)
+    && !hasReportValue(report.selectedDesignTemplateId)
+    && !hasReportValue(report.selectedDesignTemplateName)
+    && !hasReportValue(report.selectedDesignTemplateImageUrl)
+    && !hasReportValue(report.photoKeys)
+    && !hasReportValue(report.videoKeys)
+    && !hasReportValue(report.sketchKeys)
+    && !hasReportValue(report.referenceImageKeys);
 }
 
 async function ensureAppointmentServiceTypeReports(
@@ -144,6 +266,21 @@ async function ensureAppointmentServiceTypeReports(
   );
   const customServiceTypeLabel = customerSiteDetails?.serviceTypeCustom || serviceTypeCustomOverride;
 
+  if (visitType === 'ocular') {
+    const ocularAppointment = await Appointment.findById(appointmentId)
+      .select('sourceConsultationAppointmentId')
+      .lean();
+    const sourceConsultationAppointmentId = ocularAppointment?.sourceConsultationAppointmentId;
+    await promoteConsultationReportsToOcularAppointment(
+      appointmentId,
+      sourceConsultationAppointmentId || appointmentId,
+      customerId,
+      salesStaffId,
+      requestedServiceTypes,
+      linkedProjectId,
+    );
+  }
+
   const existingReports = await VisitReport.find({ appointmentId }).sort({ createdAt: 1 });
   if (requestedServiceTypes.length > 0 && !requestedServiceTypes.includes(ServiceType.CUSTOM)) {
     const placeholderReport = existingReports.find((report) => report.serviceType === ServiceType.CUSTOM);
@@ -153,6 +290,21 @@ async function ensureAppointmentServiceTypeReports(
       await placeholderReport.save();
     }
   }
+
+  const requestedServiceTypeSet = new Set(requestedServiceTypes);
+  for (let index = existingReports.length - 1; index >= 0; index -= 1) {
+    const report = existingReports[index];
+    if (
+      requestedServiceTypes.length > 0
+      && !requestedServiceTypeSet.has(report.serviceType)
+      && [VisitReportStatus.DRAFT, VisitReportStatus.RETURNED].includes(report.status)
+      && isEmptyDraftReport(report)
+    ) {
+      await VisitReport.deleteOne({ _id: report._id });
+      existingReports.splice(index, 1);
+    }
+  }
+
   const existingServiceTypes = new Set(existingReports.map((report) => report.serviceType));
   const missingServiceTypes = requestedServiceTypes.filter((serviceType) => !existingServiceTypes.has(serviceType));
 
@@ -267,6 +419,285 @@ async function ensureAppointmentServiceTypeReports(
   }
 }
 
+const reportCarryOverFields = [
+  'measurementUnit',
+  'lineItems',
+  'measurements',
+  'siteConditions',
+  'materials',
+  'finishes',
+  'preferredDesign',
+  'customerRequirements',
+  'notes',
+  'specifications',
+  'discussionNotes',
+  'initialDesignKeys',
+  'initialDesignNotes',
+  'selectedDesignTemplateId',
+  'selectedDesignTemplateName',
+  'selectedDesignTemplateImageUrl',
+  'photoKeys',
+  'videoKeys',
+  'sketchKeys',
+  'referenceImageKeys',
+] as const;
+
+function hasReportValue(value: unknown) {
+  if (Array.isArray(value)) return value.length > 0;
+  if (value && typeof value === 'object') return Object.keys(value as Record<string, unknown>).length > 0;
+  if (typeof value === 'string') return value.trim().length > 0;
+  return value !== undefined && value !== null;
+}
+
+function mergeReportContent(target: any, source: any) {
+  for (const field of reportCarryOverFields) {
+    const current = target[field];
+    const incoming = source[field];
+    if (!hasReportValue(current) && hasReportValue(incoming)) {
+      target[field] = incoming;
+    }
+  }
+}
+
+function reportCreatedTime(report: any) {
+  return new Date(report.createdAt || 0).getTime();
+}
+
+function reportUpdatedTime(report: any) {
+  return new Date(report.updatedAt || report.createdAt || 0).getTime();
+}
+
+function reportHasUserData(report: any) {
+  return !isEmptyDraftReport(report);
+}
+
+function getMergeConflictFields(target: any, source: any) {
+  const conflicts: string[] = [];
+  for (const field of reportCarryOverFields) {
+    const current = target[field];
+    const incoming = source[field];
+    if (!hasReportValue(current) || !hasReportValue(incoming)) {
+      continue;
+    }
+    if (JSON.stringify(current) !== JSON.stringify(incoming)) {
+      conflicts.push(field);
+    }
+  }
+  return conflicts;
+}
+
+function pickCanonicalLifecycleReport(reports: any[]) {
+  const sourceWithData = reports
+    .filter((report) => report.visitType === 'consultation' && reportHasUserData(report))
+    .sort((a, b) => reportCreatedTime(a) - reportCreatedTime(b))[0];
+  if (sourceWithData) return sourceWithData;
+
+  const anyWithData = reports
+    .filter(reportHasUserData)
+    .sort((a, b) => reportCreatedTime(a) - reportCreatedTime(b))[0];
+  if (anyWithData) return anyWithData;
+
+  const sourceEmpty = reports
+    .filter((report) => report.visitType === 'consultation')
+    .sort((a, b) => reportCreatedTime(a) - reportCreatedTime(b))[0];
+  if (sourceEmpty) return sourceEmpty;
+
+  return reports.sort((a, b) => reportCreatedTime(a) - reportCreatedTime(b))[0];
+}
+
+async function transitionConsultationReportsToOcularAppointment(
+  ocularAppointmentId: Types.ObjectId | string,
+  sourceConsultationAppointmentId: Types.ObjectId | string,
+  customerId: Types.ObjectId | string,
+  salesStaffId: Types.ObjectId | string,
+  requestedServiceTypes: string[],
+  linkedProjectId?: Types.ObjectId | string,
+) {
+  const serviceTypeFilter = requestedServiceTypes.length > 0
+    ? { serviceType: { $in: requestedServiceTypes } }
+    : {};
+
+  const sourceFilter: Record<string, unknown> = {
+    customerId,
+    salesStaffId,
+    visitType: 'consultation',
+    status: {
+      $in: [
+        VisitReportStatus.DRAFT,
+        VisitReportStatus.RETURNED,
+        VisitReportStatus.SUBMITTED,
+        VisitReportStatus.COMPLETED,
+      ],
+    },
+    appointmentId: sourceConsultationAppointmentId,
+    ...serviceTypeFilter,
+  };
+
+  if (linkedProjectId) {
+    sourceFilter.$or = [
+      { linkedProjectId },
+      { linkedProjectId: { $exists: false } },
+      { linkedProjectId: null },
+    ];
+  }
+
+  const [sourceReports, existingOcularReports] = await Promise.all([
+    VisitReport.find(sourceFilter).sort({ createdAt: 1 }),
+    VisitReport.find({
+    appointmentId: ocularAppointmentId,
+    visitType: 'ocular',
+    ...serviceTypeFilter,
+    }).sort({ createdAt: 1 }),
+  ]);
+
+  if (sourceReports.length === 0 && existingOcularReports.length === 0) return [];
+
+  const requestedSet = requestedServiceTypes.length > 0 ? new Set(requestedServiceTypes) : null;
+  const serviceTypes = [...new Set([...sourceReports, ...existingOcularReports]
+    .map((report) => report.serviceType)
+    .filter((serviceType) => serviceType && (!requestedSet || requestedSet.has(serviceType))))];
+  const canonicalReports: any[] = [];
+
+  for (const serviceType of serviceTypes) {
+    const candidates = [...sourceReports, ...existingOcularReports]
+      .filter((report) => report.serviceType === serviceType);
+    if (candidates.length === 0) continue;
+
+    const canonical = pickCanonicalLifecycleReport(candidates);
+    const duplicates = candidates.filter((report) => report._id.toString() !== canonical._id.toString());
+    const conflictFields = new Set<string>();
+
+    for (const duplicate of duplicates) {
+      for (const field of getMergeConflictFields(canonical, duplicate)) {
+        conflictFields.add(field);
+      }
+      mergeReportContent(canonical, duplicate);
+      await VisitReport.deleteOne({ _id: duplicate._id });
+    }
+
+    canonical.appointmentId = ocularAppointmentId as Types.ObjectId;
+    canonical.visitType = 'ocular';
+    canonical.status = VisitReportStatus.DRAFT;
+    if (linkedProjectId && !canonical.linkedProjectId) {
+      canonical.linkedProjectId = linkedProjectId as Types.ObjectId;
+    }
+    await canonical.save();
+    canonicalReports.push(canonical);
+
+    await AuditLog.create({
+      action: AuditAction.VISIT_REPORT_CREATED,
+      actorId: salesStaffId.toString(),
+      targetType: 'visit_report',
+      targetId: canonical._id,
+      details: {
+        appointmentId: ocularAppointmentId.toString(),
+        transitionedFromConsultation: true,
+        sourceConsultationAppointmentId: sourceConsultationAppointmentId.toString(),
+        serviceType,
+        duplicateIdsRemoved: duplicates.map((duplicate) => duplicate._id.toString()),
+        ...(conflictFields.size > 0 && { mergeConflictFields: [...conflictFields] }),
+      },
+    });
+  }
+
+  return canonicalReports;
+}
+
+async function promoteConsultationReportsToOcularAppointment(
+  ocularAppointmentId: Types.ObjectId | string,
+  sourceConsultationAppointmentId: Types.ObjectId | string,
+  customerId: Types.ObjectId | string,
+  salesStaffId: Types.ObjectId | string,
+  requestedServiceTypes: string[],
+  linkedProjectId?: Types.ObjectId | string,
+) {
+  return transitionConsultationReportsToOcularAppointment(
+    ocularAppointmentId,
+    sourceConsultationAppointmentId,
+    customerId,
+    salesStaffId,
+    requestedServiceTypes,
+    linkedProjectId,
+  );
+}
+
+const ACTIVE_OCULAR_REPORT_APPOINTMENT_STATUSES = [
+  AppointmentStatus.REQUESTED,
+  AppointmentStatus.CONFIRMED,
+  AppointmentStatus.PREPARING,
+  AppointmentStatus.ON_THE_WAY,
+  AppointmentStatus.ARRIVED_AT_SITE,
+  AppointmentStatus.IN_PROGRESS,
+  AppointmentStatus.RESCHEDULE_REQUESTED,
+  AppointmentStatus.READY_FOR_OCULAR,
+] as const;
+
+function serviceSetKey(appointment: any) {
+  const sourceKey = appointment.sourceConsultationAppointmentId
+    ? appointment.sourceConsultationAppointmentId.toString()
+    : 'no-source';
+  const serviceTypes = appointment.serviceTypes?.length
+    ? appointment.serviceTypes
+    : appointment.customerSiteDetails?.serviceTypes || [];
+
+  const itemKey = serviceTypes
+    .map((serviceType: string) => String(serviceType).trim().toLowerCase())
+    .filter(Boolean)
+    .sort()
+    .join('|') || 'custom';
+
+  return `${sourceKey}::${itemKey}`;
+}
+
+async function getCanonicalActiveOcularAppointmentsForSalesStaff(salesStaffId: string) {
+  const activeOcularAppointments = await Appointment.find({
+    salesStaffId,
+    type: AppointmentType.OCULAR,
+    status: { $in: ACTIVE_OCULAR_REPORT_APPOINTMENT_STATUSES },
+  })
+    .select('_id customerId salesStaffId serviceTypes serviceTypeCustom customerSiteDetails sourceConsultationAppointmentId updatedAt createdAt')
+    .sort({ updatedAt: -1, createdAt: -1 });
+
+  const canonicalByCustomerAndItems = new Map<string, any>();
+  const staleIds: Types.ObjectId[] = [];
+
+  for (const appointment of activeOcularAppointments) {
+    const key = `${appointment.customerId.toString()}::${serviceSetKey(appointment)}`;
+    if (canonicalByCustomerAndItems.has(key)) {
+      staleIds.push(appointment._id);
+    } else {
+      canonicalByCustomerAndItems.set(key, appointment);
+    }
+  }
+
+  return {
+    canonicalAppointments: [...canonicalByCustomerAndItems.values()],
+    staleIds,
+  };
+}
+
+async function getCanonicalActiveOcularAppointment(appointment: any) {
+  if (
+    appointment.type !== AppointmentType.OCULAR
+    || !ACTIVE_OCULAR_REPORT_APPOINTMENT_STATUSES.includes(appointment.status)
+    || !appointment.salesStaffId
+  ) {
+    return null;
+  }
+
+  const candidates = await Appointment.find({
+    customerId: appointment.customerId,
+    salesStaffId: appointment.salesStaffId,
+    type: AppointmentType.OCULAR,
+    status: { $in: ACTIVE_OCULAR_REPORT_APPOINTMENT_STATUSES },
+  })
+    .select('_id customerId salesStaffId serviceTypes serviceTypeCustom customerSiteDetails sourceConsultationAppointmentId updatedAt createdAt')
+    .sort({ updatedAt: -1, createdAt: -1 });
+
+  const targetKey = serviceSetKey(appointment);
+  return candidates.find((candidate) => serviceSetKey(candidate) === targetKey) || null;
+}
+
 function hasAnyMeasuredDimensions(report: {
   lineItems?: Array<{
     length?: number;
@@ -344,6 +775,7 @@ function getIncompleteOcularFields(report: {
   photoKeys?: string[];
   initialDesignKeys?: string[];
   initialDesignNotes?: string;
+  selectedDesignTemplateImageUrl?: string;
 }) {
   const missing: string[] = [];
 
@@ -395,7 +827,9 @@ function getIncompleteOcularFields(report: {
   if (!isNonEmptyString(report.finishes)) missing.push('finishes');
   if (!isNonEmptyString(report.preferredDesign)) missing.push('preferred design');
   if ((report.photoKeys?.length || 0) === 0) missing.push('site photos');
-  if ((report.initialDesignKeys?.length || 0) === 0) missing.push('initial design files');
+  const hasInitialDesignReference = (report.initialDesignKeys?.length || 0) > 0
+    || isNonEmptyString(report.selectedDesignTemplateImageUrl);
+  if (!hasInitialDesignReference) missing.push('initial design files');
   return [...new Set(missing)];
 }
 
@@ -426,9 +860,16 @@ function getIncompleteNoOcularFields(report: {
   };
   materials?: string;
   preferredDesign?: string;
+  specifications?: {
+    measurements?: Record<string, string | number | boolean>;
+    siteConditions?: Record<string, string | number | boolean>;
+    materialsDesign?: Record<string, string | number | boolean>;
+    additional?: Record<string, string | number | boolean>;
+  };
   photoKeys?: string[];
   referenceImageKeys?: string[];
   initialDesignKeys?: string[];
+  selectedDesignTemplateImageUrl?: string;
 }) {
   const missing: string[] = [];
 
@@ -442,17 +883,19 @@ function getIncompleteNoOcularFields(report: {
     || isNonEmptyString(report.notes);
   if (!hasDescription) missing.push('project description or requirement notes');
 
-  if (!hasAnyMeasuredDimensions(report)) {
+  if (!hasAnyMeasuredDimensions(report) && !hasSpecificationData(report.specifications, 'measurements')) {
     missing.push('measurements/dimensions');
   }
 
-  if (!isNonEmptyString(report.materials)) {
+  if (!isNonEmptyString(report.materials) && !hasSpecificationData(report.specifications, 'materialsDesign')) {
     missing.push('material preference');
   }
 
   const hasDesignReferences = isNonEmptyString(report.preferredDesign)
     || (report.referenceImageKeys?.length || 0) > 0
-    || (report.initialDesignKeys?.length || 0) > 0;
+    || (report.initialDesignKeys?.length || 0) > 0
+    || isNonEmptyString(report.selectedDesignTemplateImageUrl)
+    || hasSpecificationData(report.specifications, 'materialsDesign');
   if (!hasDesignReferences) {
     missing.push('design/reference details');
   }
@@ -600,12 +1043,20 @@ async function submitSiblingConsultationReports(
     if (sourceReport.consultationOutcome === 'no_ocular') {
       sibling.recommendedOcularDate = undefined;
       sibling.recommendedOcularSlot = undefined;
+      sibling.recommendedOcularAddressId = undefined;
+      sibling.recommendedOcularAddress = undefined;
     } else {
       if (!sibling.recommendedOcularDate && sourceReport.recommendedOcularDate) {
         sibling.recommendedOcularDate = sourceReport.recommendedOcularDate;
       }
       if (!sibling.recommendedOcularSlot && sourceReport.recommendedOcularSlot) {
         sibling.recommendedOcularSlot = sourceReport.recommendedOcularSlot;
+      }
+      if (!sibling.recommendedOcularAddressId && sourceReport.recommendedOcularAddressId) {
+        sibling.recommendedOcularAddressId = sourceReport.recommendedOcularAddressId;
+      }
+      if (!sibling.recommendedOcularAddress && sourceReport.recommendedOcularAddress) {
+        sibling.recommendedOcularAddress = sourceReport.recommendedOcularAddress;
       }
     }
     if (!sibling.actualVisitDateTime && sourceReport.actualVisitDateTime) {
@@ -767,24 +1218,52 @@ export async function createReport(
 // ── Get by ID ──
 
 export async function getVisitReport(reportId: string) {
-  const report = await VisitReport.findById(reportId)
+  let report = await VisitReport.findById(reportId)
     .populate('customerId', 'firstName lastName email phone')
     .populate('salesStaffId', 'firstName lastName email')
-    .populate('appointmentId', 'date slotCode type customerAddress serviceTypes serviceTypeCustom customerSiteDetails salesStaffId attendanceStatus actualArrivalAt consultationStartedAt consultationCompletedAt attendanceNotes attendanceUpdatedAt');
+    .populate('appointmentId', 'customerId date slotCode type status customerAddress serviceTypes serviceTypeCustom customerSiteDetails salesStaffId sourceConsultationAppointmentId sourceConsultationReportId attendanceStatus actualArrivalAt consultationStartedAt consultationCompletedAt attendanceNotes attendanceUpdatedAt updatedAt createdAt');
 
   if (!report) throw AppError.notFound('Visit report not found');
 
   const appointment = report.appointmentId as any;
   if (appointment?._id && appointment?.salesStaffId) {
+    const canonicalAppointment = await getCanonicalActiveOcularAppointment(appointment);
+    if (canonicalAppointment && canonicalAppointment._id.toString() !== appointment._id.toString()) {
+      await ensureAppointmentServiceTypeReports(
+        canonicalAppointment._id,
+        canonicalAppointment.customerId,
+        canonicalAppointment.salesStaffId!,
+        'ocular',
+        canonicalAppointment.customerSiteDetails,
+        canonicalAppointment.serviceTypes,
+        canonicalAppointment.serviceTypes?.[0],
+        canonicalAppointment.serviceTypeCustom,
+        report.linkedProjectId,
+      );
+
+      const canonicalReport = await VisitReport.findOne({
+        appointmentId: canonicalAppointment._id,
+        serviceType: report.serviceType,
+      })
+        .populate('customerId', 'firstName lastName email phone')
+        .populate('salesStaffId', 'firstName lastName email')
+        .populate('appointmentId', 'customerId date slotCode type status customerAddress serviceTypes serviceTypeCustom customerSiteDetails salesStaffId sourceConsultationAppointmentId sourceConsultationReportId attendanceStatus actualArrivalAt consultationStartedAt consultationCompletedAt attendanceNotes attendanceUpdatedAt updatedAt createdAt');
+
+      if (canonicalReport) {
+        report = canonicalReport;
+      }
+    }
+
+    const refreshedAppointment = report.appointmentId as any;
     await ensureAppointmentServiceTypeReports(
-      appointment._id,
+      refreshedAppointment._id,
       report.customerId instanceof Object ? (report.customerId as any)._id : report.customerId,
-      appointment.salesStaffId,
-      appointment.type === AppointmentType.OCULAR ? 'ocular' : 'consultation',
-      appointment.customerSiteDetails,
-      appointment.serviceTypes,
-      appointment.serviceTypes?.[0],
-      appointment.serviceTypeCustom,
+      refreshedAppointment.salesStaffId,
+      refreshedAppointment.type === AppointmentType.OCULAR ? 'ocular' : 'consultation',
+      refreshedAppointment.customerSiteDetails,
+      refreshedAppointment.serviceTypes,
+      refreshedAppointment.serviceTypes?.[0],
+      refreshedAppointment.serviceTypeCustom,
       report.linkedProjectId,
     );
   }
@@ -818,6 +1297,13 @@ export async function getByAppointment(appointmentId: string) {
   const appointment = await Appointment.findById(appointmentId)
     .select('customerId salesStaffId type serviceTypes serviceTypeCustom customerSiteDetails')
     .lean();
+  const requestedServiceTypes = appointment
+    ? getInitialReportServiceTypes(
+      appointment.customerSiteDetails,
+      appointment.serviceTypes,
+      appointment.serviceTypes?.[0],
+    )
+    : [];
 
   if (appointment?.salesStaffId) {
     await ensureAppointmentServiceTypeReports(
@@ -832,7 +1318,12 @@ export async function getByAppointment(appointmentId: string) {
     );
   }
 
-  const reports = await VisitReport.find({ appointmentId })
+  const reportFilter: Record<string, unknown> = { appointmentId };
+  if (requestedServiceTypes.length > 0) {
+    reportFilter.serviceType = { $in: requestedServiceTypes };
+  }
+
+  const reports = await VisitReport.find(reportFilter)
     .populate('customerId', 'firstName lastName email phone')
     .populate('salesStaffId', 'firstName lastName email')
     .populate('appointmentId', 'date slotCode type customerAddress attendanceStatus actualArrivalAt consultationStartedAt consultationCompletedAt attendanceNotes attendanceUpdatedAt')
@@ -849,7 +1340,12 @@ export async function listForSalesStaff(salesStaffId: string, query: {
 }) {
   const page = parseInt(query.page || '1');
   const limit = Math.min(parseInt(query.limit || '20'), 100);
+  const { staleIds } = await getCanonicalActiveOcularAppointmentsForSalesStaff(salesStaffId);
+  await repairPromotableOcularReportsForSalesStaff(salesStaffId);
   const filter: Record<string, unknown> = { salesStaffId, ...(await excludeCancelledDrafts()) };
+  if (staleIds.length > 0) {
+    filter.appointmentId = { $nin: staleIds };
+  }
   if (query.status) filter.status = query.status;
 
   const [reports, total] = await Promise.all([
@@ -863,6 +1359,24 @@ export async function listForSalesStaff(salesStaffId: string, query: {
   ]);
 
   return { items: reports, total, hasMore: page * limit < total };
+}
+
+async function repairPromotableOcularReportsForSalesStaff(salesStaffId: string) {
+  const { canonicalAppointments } = await getCanonicalActiveOcularAppointmentsForSalesStaff(salesStaffId);
+
+  for (const appointment of canonicalAppointments) {
+    const serviceTypes = appointment.serviceTypes?.length
+      ? appointment.serviceTypes
+      : appointment.customerSiteDetails?.serviceTypes || [];
+
+    await promoteConsultationReportsToOcularAppointment(
+      appointment._id,
+      appointment.sourceConsultationAppointmentId || appointment._id,
+      appointment.customerId,
+      appointment.salesStaffId!,
+      serviceTypes,
+    );
+  }
 }
 
 // ── List Submitted (Engineer queue) ──
@@ -946,11 +1460,13 @@ export async function updateReport(
       _id: { $ne: report._id },
       recommendedOcularDate: { $exists: true, $ne: null },
       recommendedOcularSlot: { $exists: true, $ne: null },
-    }).select('recommendedOcularDate recommendedOcularSlot');
+    }).select('recommendedOcularDate recommendedOcularSlot recommendedOcularAddressId recommendedOcularAddress');
 
     if (siblingSchedule) {
       input.recommendedOcularDate = siblingSchedule.recommendedOcularDate as any;
       input.recommendedOcularSlot = siblingSchedule.recommendedOcularSlot;
+      input.recommendedOcularAddressId = (siblingSchedule as any).recommendedOcularAddressId;
+      input.recommendedOcularAddress = (siblingSchedule as any).recommendedOcularAddress;
     }
   }
 
@@ -962,22 +1478,15 @@ export async function updateReport(
     }
   }
 
-  if (report.visitType === 'consultation' && report.consultationOutcome !== 'no_ocular') {
-    report.initialDesignKeys = [];
-    report.initialDesignNotes = undefined;
-    if (input.consultationOutcome === 'no_ocular') {
-      input.recommendedOcularDate = undefined;
-      input.recommendedOcularSlot = undefined;
-    }
-    delete changes.initialDesignKeys;
-    delete changes.initialDesignNotes;
-  }
-
   if (report.visitType === 'consultation' && report.consultationOutcome === 'no_ocular') {
     report.recommendedOcularDate = undefined;
     report.recommendedOcularSlot = undefined;
+    report.recommendedOcularAddressId = undefined;
+    report.recommendedOcularAddress = undefined;
     changes.recommendedOcularDate = undefined;
     changes.recommendedOcularSlot = undefined;
+    changes.recommendedOcularAddressId = undefined;
+    changes.recommendedOcularAddress = undefined;
   }
 
   await report.save();
@@ -1016,7 +1525,15 @@ export async function submitReport(
 
   const isConsultationReport = report.visitType === 'consultation';
   const hasRecommendedOcularSchedule = Boolean(report.recommendedOcularDate && report.recommendedOcularSlot);
+  const hasRecommendedOcularAddress = Boolean(
+    report.recommendedOcularAddress
+    && typeof (report.recommendedOcularAddress as any).lat === 'number'
+    && typeof (report.recommendedOcularAddress as any).lng === 'number'
+    && (report.recommendedOcularAddress as any).formattedAddress,
+  );
   const consultationOutcome = report.consultationOutcome as 'schedule_ocular' | 'no_ocular' | undefined;
+
+  let siblingConsultationReportsSubmitted = false;
 
   if (isConsultationReport) {
     const attendanceStatus = appt.attendanceStatus || AppointmentAttendanceStatus.SCHEDULED;
@@ -1050,6 +1567,12 @@ export async function submitReport(
         ErrorCode.VALIDATION_ERROR,
       );
     }
+    if (consultationOutcome === 'schedule_ocular' && !hasRecommendedOcularAddress) {
+      throw AppError.badRequest(
+        'Select a saved customer address before scheduling the ocular visit.',
+        ErrorCode.VALIDATION_ERROR,
+      );
+    }
     if (consultationOutcome === 'no_ocular' && !report.noOcularReason?.trim()) {
       throw AppError.badRequest(
         'Explain why ocular is not needed before proceeding without ocular.',
@@ -1073,6 +1596,7 @@ export async function submitReport(
         photoKeys: report.photoKeys,
         referenceImageKeys: report.referenceImageKeys,
         initialDesignKeys: report.initialDesignKeys,
+        selectedDesignTemplateImageUrl: report.selectedDesignTemplateImageUrl,
       });
       if (missingFields.length > 0) {
         throw AppError.badRequest(
@@ -1101,15 +1625,15 @@ export async function submitReport(
     );
   }
 
-  // Block submission for ocular visits with unpaid cash fees (outside NCR)
+  // Block submission for ocular visits with unpaid fees when the site is outside NCR.
   if (
     report.visitType === 'ocular' &&
-    appt.ocularFeePaymentChoice === OcularFeePaymentChoice.CASH &&
     !appt.ocularFeeBreakdown?.isWithinNCR &&
+    (appt.ocularFee || 0) > 0 &&
     !appt.ocularFeePaid
   ) {
     throw AppError.badRequest(
-      'The ocular visit fee must be collected and verified by the cashier before submitting this report.',
+      'The ocular visit fee must be paid and verified before submitting this report.',
       ErrorCode.VALIDATION_ERROR,
     );
   }
@@ -1127,12 +1651,14 @@ export async function submitReport(
   if (isConsultationReport && consultationOutcome === 'no_ocular') {
     report.recommendedOcularDate = undefined;
     report.recommendedOcularSlot = undefined;
+    report.recommendedOcularAddressId = undefined;
+    report.recommendedOcularAddress = undefined;
   }
 
-  if (isConsultationReport && report.status === VisitReportStatus.SUBMITTED) {
-    if (consultationOutcome === 'no_ocular') {
-      await report.save();
-    }
+  const alreadySubmittedConsultation = isConsultationReport && report.status === VisitReportStatus.SUBMITTED;
+
+  if (alreadySubmittedConsultation && consultationOutcome === 'no_ocular') {
+    await report.save();
     await ensureConsultationDraftProject(
       report,
       appt,
@@ -1145,19 +1671,23 @@ export async function submitReport(
     return report;
   }
 
-  visitReportStateMachine.assertTransition(report.status, VisitReportStatus.SUBMITTED);
+  if (!alreadySubmittedConsultation) {
+    visitReportStateMachine.assertTransition(report.status, VisitReportStatus.SUBMITTED);
 
-  report.status = VisitReportStatus.SUBMITTED;
-  await report.save();
+    report.status = VisitReportStatus.SUBMITTED;
+    await report.save();
 
-  await AuditLog.create({
-    action: AuditAction.VISIT_REPORT_SUBMITTED,
-    actorId: salesStaffId,
-    targetType: 'visit_report',
-    targetId: report._id,
-    ipAddress: ip,
-    userAgent: ua,
-  });
+    await AuditLog.create({
+      action: AuditAction.VISIT_REPORT_SUBMITTED,
+      actorId: salesStaffId,
+      targetType: 'visit_report',
+      targetId: report._id,
+      ipAddress: ip,
+      userAgent: ua,
+    });
+  } else {
+    await report.save();
+  }
 
   if (isConsultationReport) {
     // ── Consultation: auto-create DRAFT project, then branch by ocular decision ──
@@ -1219,10 +1749,14 @@ export async function submitReport(
         : undefined;
       const recommendedOcularSlot = report.recommendedOcularSlot;
 
+      await submitSiblingConsultationReports(report, appt, salesStaffId, ip, ua);
+      siblingConsultationReportsSubmitted = true;
+
       const consultationServiceTypes = await getAppointmentVisitReportServiceTypes(report.appointmentId);
       const activeOcular = await Appointment.findOne({
         customerId: report.customerId,
         type: AppointmentType.OCULAR,
+        sourceConsultationAppointmentId: appt._id,
         status: {
           $in: [
             AppointmentStatus.REQUESTED,
@@ -1249,6 +1783,8 @@ export async function submitReport(
           status: AppointmentStatus.REQUESTED,
           salesStaffId: report.salesStaffId,
           bookedBy: report.salesStaffId,
+          sourceConsultationAppointmentId: appt._id,
+          sourceConsultationReportId: report._id,
           serviceTypes: consultationServiceTypes,
           serviceTypeCustom: appt.serviceTypeCustom,
           customerSiteDetails: {
@@ -1274,11 +1810,11 @@ export async function submitReport(
       } else {
         let changedExistingOcular = false;
 
-        if (!ocularAppointment.date && recommendedOcularDate) {
+        if (recommendedOcularDate && ocularAppointment.date !== recommendedOcularDate) {
           ocularAppointment.date = recommendedOcularDate;
           changedExistingOcular = true;
         }
-        if (!ocularAppointment.slotCode && recommendedOcularSlot) {
+        if (recommendedOcularSlot && ocularAppointment.slotCode !== recommendedOcularSlot) {
           ocularAppointment.slotCode = recommendedOcularSlot as any;
           changedExistingOcular = true;
         }
@@ -1290,7 +1826,15 @@ export async function submitReport(
           ocularAppointment.bookedBy = report.salesStaffId;
           changedExistingOcular = true;
         }
-        if ((!ocularAppointment.serviceTypes || ocularAppointment.serviceTypes.length === 0) && consultationServiceTypes.length > 0) {
+        if (ocularAppointment.sourceConsultationAppointmentId?.toString() !== appt._id.toString()) {
+          ocularAppointment.sourceConsultationAppointmentId = appt._id;
+          changedExistingOcular = true;
+        }
+        if (ocularAppointment.sourceConsultationReportId?.toString() !== report._id.toString()) {
+          ocularAppointment.sourceConsultationReportId = report._id;
+          changedExistingOcular = true;
+        }
+        if (consultationServiceTypes.length > 0 && !sameServiceTypes(ocularAppointment.serviceTypes, consultationServiceTypes)) {
           ocularAppointment.serviceTypes = consultationServiceTypes;
           changedExistingOcular = true;
         }
@@ -1305,7 +1849,7 @@ export async function submitReport(
           };
           changedExistingOcular = true;
         } else {
-          if ((!ocularAppointment.customerSiteDetails.serviceTypes || ocularAppointment.customerSiteDetails.serviceTypes.length === 0) && consultationServiceTypes.length > 0) {
+          if (consultationServiceTypes.length > 0 && !sameServiceTypes(ocularAppointment.customerSiteDetails.serviceTypes, consultationServiceTypes)) {
             ocularAppointment.customerSiteDetails.serviceTypes = consultationServiceTypes;
             changedExistingOcular = true;
           }
@@ -1320,6 +1864,20 @@ export async function submitReport(
         }
       }
 
+      const { address: selectedOcularAddress, ocularVisitData } = await applyRecommendedOcularAddress(
+        ocularAppointment,
+        report.recommendedOcularAddress as any,
+      );
+      await ocularAppointment.save();
+      await promoteConsultationReportsToOcularAppointment(
+        ocularAppointment._id,
+        appt._id,
+        report.customerId,
+        report.salesStaffId,
+        consultationServiceTypes,
+        project._id,
+      );
+
       if (appt.status === AppointmentStatus.READY_FOR_OCULAR) {
         appointmentStateMachine.assertTransition(
           appt.status,
@@ -1329,27 +1887,36 @@ export async function submitReport(
         await appt.save();
       }
 
-      const hasOcularLocation = Boolean(
-        ocularAppointment.customerLocation
-        || typeof ocularAppointment.latitude === 'number'
-      );
+      const readableSlot = formatOcularSlot(recommendedOcularSlot!);
+      const addressLine = selectedOcularAddress.formattedAddress || ocularAppointment.formattedAddress || 'the selected project address';
+      const requiresOcularFee = !ocularVisitData.ocularFeeBreakdown.isWithinNCR && ocularVisitData.ocularFee > 0;
 
-      if (!hasOcularLocation && ocularAppointment.status === AppointmentStatus.REQUESTED) {
-        const readableSlot = formatOcularSlot(recommendedOcularSlot!);
-
+      if (requiresOcularFee) {
+        await createAndSendNotification(
+          report.customerId,
+          NotificationCategory.PAYMENT,
+          'Ocular Visit Payment Required',
+          `Your ocular visit for ${recommendedOcularDate} at ${readableSlot} uses ${addressLine}. Please pay the ocular fee of ₱${ocularVisitData.ocularFee.toLocaleString()} to proceed.`,
+          `/appointments/${ocularAppointment._id}/pay-ocular-fee`,
+        );
+      } else {
         await createAndSendNotification(
           report.customerId,
           NotificationCategory.APPOINTMENT,
-          'Ocular Visit Needs Your Location Confirmation',
-          `An ocular visit is ready for ${recommendedOcularDate} at ${readableSlot}. Open the appointment and submit your site map pin/address to continue.`,
+          'Ocular Visit Scheduled',
+          `Your ocular visit is scheduled for ${recommendedOcularDate} at ${readableSlot} at ${addressLine}. No ocular fee is required.`,
           `/appointments/${ocularAppointment._id}`,
         );
+      }
 
+      if (ocularAppointment.salesStaffId) {
         await createAndSendNotification(
-          report.customerId,
-          NotificationCategory.SYSTEM,
-          'Action Required: Submit Ocular Map Address',
-          `Please confirm your ocular appointment by submitting your map pin/address for ${recommendedOcularDate} at ${readableSlot}.`,
+          ocularAppointment.salesStaffId.toString(),
+          NotificationCategory.APPOINTMENT,
+          requiresOcularFee ? 'Ocular Address Selected - Payment Pending' : 'Ocular Address Selected',
+          requiresOcularFee
+            ? `The customer address is set for ${recommendedOcularDate} at ${readableSlot}. Waiting for ocular fee payment.`
+            : `The customer address is set for ${recommendedOcularDate} at ${readableSlot}. You can finalize the ocular visit.`,
           `/appointments/${ocularAppointment._id}`,
         );
       }
@@ -1375,6 +1942,14 @@ export async function submitReport(
 
       await notifySalesContractUploadRequired(project, serviceLabel, 'Sales marked ocular as not needed.');
 
+      await createAndSendNotification(
+        report.customerId,
+        NotificationCategory.PROJECT,
+        'Consultation Complete',
+        `Your consultation has been completed for "${serviceLabel}". The project will continue without an ocular visit.`,
+        `/projects/${project._id}`,
+      );
+
       appt.consultationReportSubmitted = true;
       if (appt.status !== AppointmentStatus.COMPLETED) {
         appointmentStateMachine.assertTransition(
@@ -1388,7 +1963,9 @@ export async function submitReport(
       }
     }
 
-    await submitSiblingConsultationReports(report, appt, salesStaffId, ip, ua);
+    if (!siblingConsultationReportsSubmitted) {
+      await submitSiblingConsultationReports(report, appt, salesStaffId, ip, ua);
+    }
   } else {
     // ── Ocular: update existing project with measurements, transition DRAFT → SUBMITTED ──
     const linkedProject = report.linkedProjectId

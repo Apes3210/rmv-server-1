@@ -4,6 +4,22 @@ import { Role, SLOT_CODES, StaffAvailabilityStatus } from '../../utils/constants
 const phoneRegex = /^\+639\d{9}$/;
 const nameRegex = /^[a-zA-Z\s'-]+$/;
 
+const savedAddressSchema = z.object({
+  id: z.string().max(80).trim().optional(),
+  label: z.string().max(80).trim().optional(),
+  street: z.string().max(200).trim().optional().or(z.literal('')),
+  barangay: z.string().max(100).trim().optional().or(z.literal('')),
+  city: z.string().max(100).trim().optional().or(z.literal('')),
+  province: z.string().max(100).trim().optional().or(z.literal('')),
+  zip: z.string().max(10).trim().optional().or(z.literal('')),
+  country: z.string().max(50).trim().optional().or(z.literal('')),
+  addressType: z.enum(['personal', 'business']).optional(),
+  lat: z.number().optional(),
+  lng: z.number().optional(),
+  formattedAddress: z.string().max(500).trim().optional().or(z.literal('')),
+  isDefault: z.boolean().optional(),
+});
+
 export const createUserSchema = z.object({
   email: z.string().email().toLowerCase().trim(),
   firstName: z.string().min(1).max(50).regex(nameRegex, 'Name contains invalid characters').trim(),
@@ -72,18 +88,8 @@ export const updateProfileSchema = z.object({
   lastName: z.string().min(1).max(50).regex(nameRegex, 'Name contains invalid characters').trim().optional(),
   phone: z.string().regex(phoneRegex).optional(),
   address: z.string().max(500).trim().optional(),
-  addressData: z.object({
-    street: z.string().max(200).trim().optional().or(z.literal('')),
-    barangay: z.string().max(100).trim().optional().or(z.literal('')),
-    city: z.string().max(100).trim().optional().or(z.literal('')),
-    province: z.string().max(100).trim().optional().or(z.literal('')),
-    zip: z.string().max(10).trim().optional().or(z.literal('')),
-    country: z.string().max(50).trim().optional().or(z.literal('')),
-    lat: z.number().optional(),
-    lng: z.number().optional(),
-    formattedAddress: z.string().max(500).trim().optional().or(z.literal('')),
-    addressType: z.literal('business').optional(),
-  }).optional(),
+  addressData: savedAddressSchema.optional(),
+  savedAddresses: z.array(savedAddressSchema).max(10).optional(),
   notificationPreferences: z.object({
     appointment: z.boolean().optional(),
     payment: z.boolean().optional(),

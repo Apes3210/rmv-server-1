@@ -36,8 +36,17 @@ export interface IProjectItem extends Document {
   preferredDesign?: string;
   customerRequirements?: string;
   notes?: string;
+  specifications?: {
+    measurements?: Record<string, string | number | boolean>;
+    siteConditions?: Record<string, string | number | boolean>;
+    materialsDesign?: Record<string, string | number | boolean>;
+    additional?: Record<string, string | number | boolean>;
+  };
   initialDesignKeys: string[];
   initialDesignNotes?: string;
+  selectedDesignTemplateId?: string;
+  selectedDesignTemplateName?: string;
+  selectedDesignTemplateImageUrl?: string;
   designReviewStatus: 'pending' | 'approved' | 'declined' | 'not_required';
   designReviewedBy?: Types.ObjectId;
   designReviewedAt?: Date;
@@ -93,8 +102,12 @@ const projectItemSchema = new Schema<IProjectItem>(
     preferredDesign: String,
     customerRequirements: String,
     notes: String,
+    specifications: { type: Schema.Types.Mixed },
     initialDesignKeys: [{ type: String }],
     initialDesignNotes: String,
+    selectedDesignTemplateId: { type: String, trim: true },
+    selectedDesignTemplateName: { type: String, trim: true },
+    selectedDesignTemplateImageUrl: { type: String, trim: true },
     designReviewStatus: {
       type: String,
       enum: ['pending', 'approved', 'declined', 'not_required'],

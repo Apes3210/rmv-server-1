@@ -2,6 +2,8 @@ import mongoose, { Schema, Document, Types } from 'mongoose';
 import { Role, StaffAvailabilityStatus } from '../utils/constants.js';
 
 export interface IUserAddress {
+  id?: string;
+  label?: string;
   street?: string;
   barangay?: string;
   city?: string;
@@ -12,6 +14,7 @@ export interface IUserAddress {
   lat?: number;
   lng?: number;
   formattedAddress?: string;
+  isDefault?: boolean;
 }
 
 export interface IUser extends Document {
@@ -23,6 +26,7 @@ export interface IUser extends Document {
   phone: string;
   address?: string;          // Legacy plain-text address (kept for backwards compat)
   addressData?: IUserAddress; // Structured address with map pin
+  savedAddresses?: IUserAddress[];
   roles: Role[];
   isEmailVerified: boolean;
   isActive: boolean;
@@ -70,6 +74,8 @@ const userSchema = new Schema<IUser>(
     addressData: {
       type: new Schema(
         {
+          id: { type: String, trim: true },
+          label: { type: String, trim: true },
           street: { type: String, trim: true },
           barangay: { type: String, trim: true },
           city: { type: String, trim: true },
@@ -80,10 +86,34 @@ const userSchema = new Schema<IUser>(
           lat: { type: Number },
           lng: { type: Number },
           formattedAddress: { type: String, trim: true },
+          isDefault: { type: Boolean },
         },
         { _id: false },
       ),
       default: undefined,
+    },
+    savedAddresses: {
+      type: [
+        new Schema(
+          {
+            id: { type: String, trim: true },
+            label: { type: String, trim: true },
+            street: { type: String, trim: true },
+            barangay: { type: String, trim: true },
+            city: { type: String, trim: true },
+            province: { type: String, trim: true },
+            zip: { type: String, trim: true },
+            country: { type: String, trim: true, default: 'Philippines' },
+            addressType: { type: String, enum: ['personal', 'business'], default: 'business' },
+            lat: { type: Number },
+            lng: { type: Number },
+            formattedAddress: { type: String, trim: true },
+            isDefault: { type: Boolean, default: false },
+          },
+          { _id: false },
+        ),
+      ],
+      default: [],
     },
     roles: {
       type: [{ type: String, enum: Object.values(Role) }],

@@ -237,6 +237,11 @@ export enum AuditAction {
   BLUEPRINT_APPROVED = 'blueprint_approved',
   BLUEPRINT_REVISION_REQUESTED = 'blueprint_revision_requested',
   BLUEPRINT_REVISION_UPLOADED = 'blueprint_revision_uploaded',
+  QUOTATION_DRAFT_UPDATED = 'quotation_draft_updated',
+  QUOTATION_SUBMITTED_FOR_REVIEW = 'quotation_submitted_for_review',
+  QUOTATION_APPROVED = 'quotation_approved',
+  QUOTATION_SENT_TO_CUSTOMER = 'quotation_sent_to_customer',
+  QUOTATION_REVISED = 'quotation_revised',
 
   // Payment
   PAYMENT_PLAN_CREATED = 'payment_plan_created',

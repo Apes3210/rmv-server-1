@@ -3,6 +3,22 @@ import { z } from 'zod';
 const phoneRegex = /^(09|\+639)\d{9}$/;
 const nameRegex = /^[a-zA-Z\s'-]+$/;
 
+const pinnedAddressSchema = z.object({
+  id: z.string().max(80).trim().optional(),
+  label: z.string().max(80).trim().optional(),
+  street: z.string().max(200).trim().optional().or(z.literal('')),
+  barangay: z.string().max(100).trim().optional().or(z.literal('')),
+  city: z.string().min(1, 'City / municipality is required').max(100).trim(),
+  province: z.string().max(100).trim().optional().or(z.literal('')),
+  zip: z.string().max(10).trim().optional().or(z.literal('')),
+  country: z.string().max(50).trim().optional().or(z.literal('')),
+  addressType: z.enum(['personal', 'business']).optional(),
+  lat: z.number(),
+  lng: z.number(),
+  formattedAddress: z.string().min(1, 'Pinned map address is required').max(500).trim(),
+  isDefault: z.boolean().optional(),
+});
+
 export const registerSchema = z.object({
   email: z.string().email('Invalid email address').toLowerCase().trim(),
   password: z
@@ -15,6 +31,7 @@ export const registerSchema = z.object({
   firstName: z.string().min(1).max(50).regex(nameRegex, 'Name contains invalid characters').trim(),
   lastName: z.string().min(1).max(50).regex(nameRegex, 'Name contains invalid characters').trim(),
   phone: z.string().regex(phoneRegex, 'Must be a valid PH mobile number (09XXXXXXXXX)').transform(v => v.startsWith('09') ? '+63' + v.slice(1) : v),
+  addressData: pinnedAddressSchema,
 });
 
 export const verifyEmailSchema = z.object({
@@ -82,6 +99,7 @@ export const googleCompleteSchema = z.object({
   firstName: z.string().min(1).max(50).regex(nameRegex, 'Name contains invalid characters').trim(),
   lastName: z.string().min(1).max(50).regex(nameRegex, 'Name contains invalid characters').trim(),
   phone: z.string().regex(phoneRegex, 'Must be a valid PH mobile number (09XXXXXXXXX)').transform(v => v.startsWith('09') ? '+63' + v.slice(1) : v),
+  addressData: pinnedAddressSchema,
 });
 
 export type RegisterInput = z.infer<typeof registerSchema>;

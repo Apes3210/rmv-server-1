@@ -17,7 +17,20 @@ export interface IBlueprintDraftQuotationLineItem {
 
 export interface IBlueprintDraftQuotationMilestone {
   label: string;
-  description: string;
+  description?: string;
+  percentage?: number;
+  amount?: number;
+  trigger?: string;
+}
+
+export interface IBlueprintDraftInternalCosts {
+  estimatedMaterials: string;
+  fabricationWork: string;
+  finishingPolishing: string;
+  installation: string;
+  deliveryMobilization: string;
+  overheadMisc: string;
+  markupProfit: string;
 }
 
 export interface IBlueprintDraft extends Document {
@@ -32,6 +45,21 @@ export interface IBlueprintDraft extends Document {
     costing?: IBlueprintDraftFile | null;
   };
   quotation?: {
+    internalCosts?: IBlueprintDraftInternalCosts;
+    costPreset?: {
+      serviceType?: string;
+      complexity?: 'simple' | 'standard' | 'complex';
+      suggestedAt?: Date | string;
+      suggestedValues?: Partial<IBlueprintDraftInternalCosts>;
+    };
+    discount?: string;
+    subtotal?: string;
+    total?: string;
+    paymentOption?: 'full' | 'milestone';
+    systemEstimatedDuration?: string;
+    adjustedEstimatedDuration?: string;
+    inclusions?: string;
+    exclusions?: string;
     lineItems?: IBlueprintDraftQuotationLineItem[];
     fees?: string;
     validityDays?: string;
@@ -71,6 +99,22 @@ const blueprintDraftMilestoneSchema = new Schema<IBlueprintDraftQuotationMilesto
   {
     label: { type: String, default: '' },
     description: { type: String, default: '' },
+    percentage: { type: Number, min: 0, max: 100 },
+    amount: { type: Number, min: 0 },
+    trigger: { type: String, default: '' },
+  },
+  { _id: false },
+);
+
+const blueprintDraftInternalCostsSchema = new Schema<IBlueprintDraftInternalCosts>(
+  {
+    estimatedMaterials: { type: String, default: '' },
+    fabricationWork: { type: String, default: '' },
+    finishingPolishing: { type: String, default: '' },
+    installation: { type: String, default: '' },
+    deliveryMobilization: { type: String, default: '' },
+    overheadMisc: { type: String, default: '' },
+    markupProfit: { type: String, default: '' },
   },
   { _id: false },
 );
@@ -91,6 +135,21 @@ const blueprintDraftSchema = new Schema<IBlueprintDraft>(
       costing: { type: blueprintDraftFileSchema, default: null },
     },
     quotation: {
+      internalCosts: { type: blueprintDraftInternalCostsSchema, default: undefined },
+      costPreset: {
+        serviceType: { type: String, default: '' },
+        complexity: { type: String, enum: ['simple', 'standard', 'complex'], default: 'standard' },
+        suggestedAt: { type: Date },
+        suggestedValues: { type: blueprintDraftInternalCostsSchema, default: undefined },
+      },
+      discount: { type: String, default: '' },
+      subtotal: { type: String, default: '' },
+      total: { type: String, default: '' },
+      paymentOption: { type: String, enum: ['full', 'milestone'], default: 'milestone' },
+      systemEstimatedDuration: { type: String, default: '' },
+      adjustedEstimatedDuration: { type: String, default: '' },
+      inclusions: { type: String, default: '' },
+      exclusions: { type: String, default: '' },
       lineItems: { type: [blueprintDraftLineItemSchema], default: undefined },
       fees: { type: String, default: '' },
       validityDays: { type: String, default: '30' },

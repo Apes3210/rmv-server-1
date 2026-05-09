@@ -87,7 +87,13 @@ export const reviewInitialDesignSchema = z.object({
   decision: z.enum(['approved', 'declined']),
   notes: z.string().max(2000).trim().optional(),
   projectItemId: z.string().min(1).optional(),
-});
+}).refine(
+  (data) => data.decision !== 'declined' || Boolean(data.notes?.trim()),
+  {
+    message: 'Internal review notes are required when declining',
+    path: ['notes'],
+  },
+);
 
 export const resubmitInitialDesignSchema = z.object({
   initialDesignKeys: z.array(z.string()).max(10).optional(),

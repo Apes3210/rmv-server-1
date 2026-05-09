@@ -35,6 +35,38 @@ const legacyMeasurementsSchema = z.object({
   raw: z.string().max(2000).optional(),
 });
 
+const specPrimitiveSchema = z.union([
+  z.string().max(2000),
+  z.number(),
+  z.boolean(),
+]);
+
+const specSectionSchema = z.record(z.string().max(120), specPrimitiveSchema)
+  .refine((value) => Object.keys(value).length <= 80, 'Too many specification fields in one section');
+
+const specificationsSchema = z.object({
+  measurements: specSectionSchema.optional(),
+  siteConditions: specSectionSchema.optional(),
+  materialsDesign: specSectionSchema.optional(),
+  additional: specSectionSchema.optional(),
+}).optional();
+
+const ocularAddressSnapshotSchema = z.object({
+  id: z.string().max(80).trim().optional(),
+  label: z.string().max(80).trim().optional(),
+  street: z.string().max(200).trim().optional().or(z.literal('')),
+  barangay: z.string().max(100).trim().optional().or(z.literal('')),
+  city: z.string().max(100).trim().optional().or(z.literal('')),
+  province: z.string().max(100).trim().optional().or(z.literal('')),
+  zip: z.string().max(10).trim().optional().or(z.literal('')),
+  country: z.string().max(50).trim().optional().or(z.literal('')),
+  addressType: z.enum(['personal', 'business']).optional(),
+  lat: z.number().optional(),
+  lng: z.number().optional(),
+  formattedAddress: z.string().max(500).trim().optional().or(z.literal('')),
+  isDefault: z.boolean().optional(),
+}).optional();
+
 // ── Create (new report for an existing appointment) ──
 export const createVisitReportSchema = z.object({
   appointmentId: z.string().min(1),
@@ -62,6 +94,7 @@ export const updateVisitReportSchema = z.object({
   materials: z.string().max(1000).trim().optional(),
   finishes: z.string().max(500).trim().optional(),
   preferredDesign: z.string().max(1000).trim().optional(),
+  specifications: specificationsSchema,
   customerRequirements: z.string().max(2000).trim().optional(),
   notes: z.string().max(3000).trim().optional(),
   photoKeys: z.array(z.string()).max(20).optional(),
@@ -79,8 +112,13 @@ export const updateVisitReportSchema = z.object({
   projectScope: z.string().max(2000).trim().optional(),
   initialDesignKeys: z.array(z.string()).max(10).optional(),
   initialDesignNotes: z.string().max(2000).trim().optional(),
+  selectedDesignTemplateId: z.string().max(100).trim().optional(),
+  selectedDesignTemplateName: z.string().max(200).trim().optional(),
+  selectedDesignTemplateImageUrl: z.string().max(1000).trim().optional(),
   recommendedOcularDate: z.string().datetime().optional(),
   recommendedOcularSlot: z.string().max(20).trim().optional(),
+  recommendedOcularAddressId: z.string().max(80).trim().optional(),
+  recommendedOcularAddress: ocularAddressSnapshotSchema,
   linkedProjectId: z.string().optional(),
 });
 

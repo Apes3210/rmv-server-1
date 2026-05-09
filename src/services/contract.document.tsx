@@ -175,7 +175,7 @@ export const ContractDocument: React.FC<ContractDocumentProps> = ({
         <SectionTitle>2. SCOPE OF WORK</SectionTitle>
         <P>The Service Provider agrees to perform the following fabrication services:</P>
         <Field label="Project Title" value={data.projectTitle} />
-        <Field label="Service Type" value={data.serviceType.replace(/_/g, ' ').toUpperCase()} />
+        <Field label="Items" value={data.serviceType.replace(/_/g, ' ').toUpperCase()} />
         <Field label="Description" value={data.projectDescription} />
         <Field label="Site / Delivery Address" value={data.siteAddress} />
         <Field label="Quantity" value={String(data.quantity)} />

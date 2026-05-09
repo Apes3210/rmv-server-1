@@ -425,7 +425,7 @@ interface OcularVisitComputation {
   };
 }
 
-async function resolveOcularVisitData(
+export async function resolveOcularVisitData(
   type: AppointmentType,
   formattedAddress: string | undefined,
   location: { lat: number; lng: number } | undefined,
@@ -1117,10 +1117,25 @@ export async function customerSubmitOcularLocation(
     let ocularAppointment = await Appointment.findOne({
       customerId: appointment.customerId,
       type: AppointmentType.OCULAR,
+      sourceConsultationAppointmentId: appointment._id,
       date: recommendedOcularDate,
       slotCode: consultationReport.recommendedOcularSlot,
       status: { $in: activeOcularStatuses },
     }).sort({ updatedAt: -1, createdAt: -1 });
+
+    if (!ocularAppointment) {
+      ocularAppointment = await Appointment.findOne({
+        customerId: appointment.customerId,
+        type: AppointmentType.OCULAR,
+        sourceConsultationAppointmentId: appointment._id,
+        status: { $in: activeOcularStatuses },
+      }).sort({ updatedAt: -1, createdAt: -1 });
+
+      if (ocularAppointment) {
+        ocularAppointment.date = recommendedOcularDate;
+        ocularAppointment.slotCode = consultationReport.recommendedOcularSlot as any;
+      }
+    }
 
     if (!ocularAppointment) {
       const serviceTypes = [
@@ -1139,6 +1154,8 @@ export async function customerSubmitOcularLocation(
         status: AppointmentStatus.REQUESTED,
         salesStaffId,
         bookedBy: salesStaffId,
+        sourceConsultationAppointmentId: appointment._id,
+        sourceConsultationReportId: consultationReport._id,
         serviceTypes,
         serviceTypeCustom: consultationReport.serviceTypeCustom || appointment.serviceTypeCustom,
         customerSiteDetails: {
@@ -1164,11 +1181,42 @@ export async function customerSubmitOcularLocation(
       });
     }
 
+    if (ocularAppointment) {
+      const serviceTypes = [
+        ...new Set([
+          ...(appointment.serviceTypes || []),
+          ...(consultationReport.serviceType ? [consultationReport.serviceType] : []),
+        ]),
+      ].filter(Boolean);
+      ocularAppointment.sourceConsultationAppointmentId = appointment._id;
+      ocularAppointment.sourceConsultationReportId = consultationReport._id;
+      if (serviceTypes.length > 0) {
+        ocularAppointment.serviceTypes = serviceTypes;
+        ocularAppointment.customerSiteDetails = {
+          ...(ocularAppointment.customerSiteDetails || {}),
+          serviceTypes,
+          serviceTypeCustom: consultationReport.serviceTypeCustom || appointment.serviceTypeCustom,
+        };
+      }
+      await ocularAppointment.save();
+    }
+
     appointment = ocularAppointment;
   }
 
   if (appointment.type !== AppointmentType.OCULAR) {
     throw AppError.badRequest('This is not an ocular appointment');
+  }
+
+  const latestRecommendedSchedule = await getRecommendedOcularScheduleForAppointment(appointment);
+  if (latestRecommendedSchedule?.recommendedOcularDate && latestRecommendedSchedule.recommendedOcularSlot) {
+    const recommendedOcularDate = latestRecommendedSchedule.recommendedOcularDate.toISOString().split('T')[0];
+    if (appointment.date !== recommendedOcularDate) {
+      appointment.date = recommendedOcularDate;
+    }
+    if (appointment.slotCode !== latestRecommendedSchedule.recommendedOcularSlot) {
+      appointment.slotCode = latestRecommendedSchedule.recommendedOcularSlot as any;
+    }
   }
 
   const locationSubmissionStatuses = [
@@ -1363,17 +1411,22 @@ export async function agentFinalizeOcular(
     `/appointments/${appointment._id}`,
   );
 
-  // Find existing project from consultation to link the ocular visit report
-  const consultationProject = await Project.findOne({
-    customerId: appointment.customerId,
-    status: { $in: [ProjectStatus.DRAFT, ProjectStatus.SUBMITTED] },
-  }).sort({ createdAt: -1 });
+  const sourceConsultationAppointmentId = appointment.sourceConsultationAppointmentId;
+
+  // Find the project from the exact source consultation, not any latest customer project.
+  const consultationProject = sourceConsultationAppointmentId
+    ? await Project.findOne({
+      appointmentId: sourceConsultationAppointmentId,
+      customerId: appointment.customerId,
+      status: { $in: [ProjectStatus.DRAFT, ProjectStatus.SUBMITTED] },
+    }).sort({ createdAt: -1 })
+    : null;
 
   // Pre-populate ocular report with data from the consultation visit report
   let consultationSiteDetails: import('../../models/Appointment.js').ICustomerSiteDetails | undefined;
-  if (consultationProject) {
+  if (sourceConsultationAppointmentId) {
     const consultationReports = await VisitReport.find({
-      customerId: appointment.customerId,
+      appointmentId: sourceConsultationAppointmentId,
       visitType: 'consultation',
       status: { $in: [VisitReportStatus.SUBMITTED, VisitReportStatus.COMPLETED] },
     }).sort({ createdAt: 1 }).lean();
@@ -2500,7 +2553,155 @@ export async function getAppointmentById(appointmentId: string, actorId: string,
     }
   }
 
-  return appointment;
+  const appointmentObject: any = appointment.toObject();
+  const consultationReport = await getRecommendedOcularScheduleForAppointment(appointment);
+  const canonicalOcularAppointment = await getCanonicalUnpaidOcularAppointment(appointment);
+
+  if (consultationReport?.recommendedOcularDate && consultationReport.recommendedOcularSlot) {
+    appointmentObject.recommendedOcularDate = consultationReport.recommendedOcularDate;
+    appointmentObject.recommendedOcularSlot = consultationReport.recommendedOcularSlot;
+  }
+  if (canonicalOcularAppointment?._id) {
+    appointmentObject.canonicalAppointmentId = canonicalOcularAppointment._id;
+  }
+
+  return appointmentObject;
+}
+
+async function getRecommendedOcularScheduleForAppointment(appointment: any) {
+  if (appointment.type === AppointmentType.OFFICE) {
+    const activeOcular = await Appointment.findOne({
+      customerId: appointment.customerId?._id || appointment.customerId,
+      type: AppointmentType.OCULAR,
+      sourceConsultationAppointmentId: appointment._id,
+      status: {
+        $in: [
+          AppointmentStatus.REQUESTED,
+          AppointmentStatus.CONFIRMED,
+          AppointmentStatus.PREPARING,
+          AppointmentStatus.ON_THE_WAY,
+          AppointmentStatus.ARRIVED_AT_SITE,
+          AppointmentStatus.IN_PROGRESS,
+          AppointmentStatus.RESCHEDULE_REQUESTED,
+          AppointmentStatus.READY_FOR_OCULAR,
+        ],
+      },
+    })
+      .sort({ updatedAt: -1, createdAt: -1 })
+      .select('date slotCode')
+      .lean();
+
+    if (activeOcular?.date && activeOcular.slotCode) {
+      return {
+        recommendedOcularDate: new Date(`${activeOcular.date}T12:00:00.000Z`),
+        recommendedOcularSlot: activeOcular.slotCode,
+      };
+    }
+
+    return VisitReport.findOne({
+      appointmentId: appointment._id,
+      visitType: 'consultation',
+      status: { $in: [VisitReportStatus.SUBMITTED, VisitReportStatus.COMPLETED] },
+      recommendedOcularDate: { $exists: true, $ne: null },
+      recommendedOcularSlot: { $exists: true, $ne: null },
+    })
+      .sort({ updatedAt: -1, createdAt: -1 })
+      .select('recommendedOcularDate recommendedOcularSlot')
+      .lean();
+  }
+
+  if (appointment.type === AppointmentType.OCULAR) {
+    if (appointment.date && appointment.slotCode) {
+      return {
+        recommendedOcularDate: new Date(`${appointment.date}T12:00:00.000Z`),
+        recommendedOcularSlot: appointment.slotCode,
+      };
+    }
+
+    const sourceConsultationAppointmentId = appointment.sourceConsultationAppointmentId;
+    if (sourceConsultationAppointmentId) {
+      return VisitReport.findOne({
+        appointmentId: sourceConsultationAppointmentId,
+        visitType: 'consultation',
+        consultationOutcome: 'schedule_ocular',
+        status: { $in: [VisitReportStatus.SUBMITTED, VisitReportStatus.COMPLETED] },
+        recommendedOcularDate: { $exists: true, $ne: null },
+        recommendedOcularSlot: { $exists: true, $ne: null },
+      })
+        .sort({ updatedAt: -1, createdAt: -1 })
+        .select('recommendedOcularDate recommendedOcularSlot')
+        .lean();
+    }
+
+    return VisitReport.findOne({
+      customerId: appointment.customerId?._id || appointment.customerId,
+      visitType: 'consultation',
+      consultationOutcome: 'schedule_ocular',
+      status: { $in: [VisitReportStatus.SUBMITTED, VisitReportStatus.COMPLETED] },
+      recommendedOcularDate: { $exists: true, $ne: null },
+      recommendedOcularSlot: { $exists: true, $ne: null },
+    })
+      .sort({ updatedAt: -1, createdAt: -1 })
+      .select('recommendedOcularDate recommendedOcularSlot')
+      .lean();
+  }
+
+  return null;
+}
+
+async function getCanonicalUnpaidOcularAppointment(appointment: any) {
+  if (appointment.type !== AppointmentType.OCULAR) return null;
+  if (appointment.ocularFeePaid || !['pending', 'cash_pending', 'proof_submitted'].includes(String(appointment.ocularFeeStatus || ''))) {
+    return null;
+  }
+
+  const currentId = String(appointment._id);
+  const serviceTypes = [...(appointment.serviceTypes || [])].sort();
+  const baseFilter: Record<string, unknown> = {
+    customerId: appointment.customerId?._id || appointment.customerId,
+    type: AppointmentType.OCULAR,
+    _id: { $ne: appointment._id },
+    status: { $nin: [AppointmentStatus.COMPLETED, AppointmentStatus.CANCELLED, AppointmentStatus.NO_SHOW] },
+    ocularFeePaid: { $ne: true },
+    ocularFeeStatus: { $in: ['pending', 'cash_pending', 'proof_submitted'] },
+  };
+
+  const possibleDuplicates = await Appointment.find(baseFilter)
+    .sort({ updatedAt: -1, createdAt: -1 })
+    .select('_id date slotCode serviceTypes formattedAddress customerAddress customerLocation updatedAt createdAt')
+    .lean();
+
+  const normalizeAddress = (value?: string) => (value || '').trim().toLowerCase();
+  const appointmentAddress = normalizeAddress(appointment.formattedAddress || appointment.customerAddress);
+  const appointmentLocation = appointment.customerLocation
+    ? `${Number(appointment.customerLocation.lat).toFixed(4)},${Number(appointment.customerLocation.lng).toFixed(4)}`
+    : '';
+
+  const matches = possibleDuplicates.filter((candidate: any) => {
+    const candidateServices = [...(candidate.serviceTypes || [])].sort();
+    const servicesMatch = serviceTypes.length === 0
+      || candidateServices.length === 0
+      || serviceTypes.join('|') === candidateServices.join('|');
+    const candidateAddress = normalizeAddress(candidate.formattedAddress || candidate.customerAddress);
+    const candidateLocation = candidate.customerLocation
+      ? `${Number(candidate.customerLocation.lat).toFixed(4)},${Number(candidate.customerLocation.lng).toFixed(4)}`
+      : '';
+    const locationMatch = Boolean(
+      (appointmentAddress && candidateAddress && appointmentAddress === candidateAddress)
+      || (appointmentLocation && candidateLocation && appointmentLocation === candidateLocation),
+    );
+
+    return servicesMatch && locationMatch;
+  });
+
+  const canonical = [appointment, ...matches].sort((a: any, b: any) => {
+    const aTime = new Date(a.updatedAt || a.createdAt || 0).getTime();
+    const bTime = new Date(b.updatedAt || b.createdAt || 0).getTime();
+    if (aTime !== bTime) return bTime - aTime;
+    return String(b._id).localeCompare(String(a._id));
+  })[0];
+
+  return String(canonical?._id || '') !== currentId ? canonical : null;
 }
 
 // ── Appointment Queue (Appointment Agent/Admin) ──
