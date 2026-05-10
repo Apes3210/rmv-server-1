@@ -99,6 +99,9 @@ export const updateProfileSchema = z.object({
     emailNotifications: z.boolean().optional(),
   }).optional(),
   themePreference: z.enum(['light', 'dark', 'system']).optional(),
+}).superRefine((data, ctx) => {
+  // Note: Address fields are stripped server-side for non-customer roles.
+  // This validation passes them through but the service layer handles role-based access.
 });
 
 export const updateOwnAvailabilitySchema = z.object({

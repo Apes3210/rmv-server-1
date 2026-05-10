@@ -1549,6 +1549,12 @@ export async function submitReport(
         ErrorCode.VALIDATION_ERROR,
       );
     }
+    if (attendanceStatus === AppointmentAttendanceStatus.CUSTOMER_DECLINED) {
+      throw AppError.badRequest(
+        'Consultation report cannot be submitted because the customer declined to proceed. Save notes only.',
+        ErrorCode.VALIDATION_ERROR,
+      );
+    }
     if (attendanceStatus !== AppointmentAttendanceStatus.COMPLETED) {
       throw AppError.badRequest(
         'Complete the consultation attendance before submitting the consultation report.',

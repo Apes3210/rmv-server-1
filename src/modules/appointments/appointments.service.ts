@@ -257,19 +257,23 @@ function assertAttendanceTransition(
     [AppointmentAttendanceStatus.ON_TIME]: [
       AppointmentAttendanceStatus.IN_PROGRESS,
       AppointmentAttendanceStatus.RESCHEDULED,
+      AppointmentAttendanceStatus.CUSTOMER_DECLINED,
     ],
     [AppointmentAttendanceStatus.LATE_ARRIVAL]: [
       AppointmentAttendanceStatus.IN_PROGRESS,
       AppointmentAttendanceStatus.RESCHEDULED,
+      AppointmentAttendanceStatus.CUSTOMER_DECLINED,
     ],
     [AppointmentAttendanceStatus.IN_PROGRESS]: [
       AppointmentAttendanceStatus.COMPLETED,
+      AppointmentAttendanceStatus.CUSTOMER_DECLINED,
     ],
     [AppointmentAttendanceStatus.COMPLETED]: [],
     [AppointmentAttendanceStatus.NO_SHOW]: [
       AppointmentAttendanceStatus.RESCHEDULED,
     ],
     [AppointmentAttendanceStatus.RESCHEDULED]: [],
+    [AppointmentAttendanceStatus.CUSTOMER_DECLINED]: [],
   };
 
   if (!allowed[currentStatus]?.includes(nextStatus)) {
@@ -1751,6 +1755,20 @@ export async function updateConsultationAttendance(
     appointment.status = AppointmentStatus.RESCHEDULE_REQUESTED;
     appointment.rescheduleReason = input.notes.trim();
     changes.appointmentStatus = AppointmentStatus.RESCHEDULE_REQUESTED;
+  } else if (input.action === 'customer_declined') {
+    if (!input.notes?.trim()) {
+      throw AppError.badRequest('Customer declined attendance requires notes', ErrorCode.VALIDATION_ERROR);
+    }
+    nextStatus = AppointmentAttendanceStatus.CUSTOMER_DECLINED;
+    appointmentStateMachine.assertTransition(appointment.status, AppointmentStatus.CANCELLED);
+    appointment.status = AppointmentStatus.CANCELLED;
+    appointment.cancellationReason = input.notes.trim();
+    appointment.cancelledBy = actorId as unknown as Types.ObjectId;
+    appointment.internalNotes = input.notes.trim();
+    appointment.consultationCompletedAt = now;
+    changes.appointmentStatus = AppointmentStatus.CANCELLED;
+    changes.cancellationReason = input.notes.trim();
+    changes.consultationCompletedAt = now;
   }
 
   const isOverride = currentStatus !== AppointmentAttendanceStatus.SCHEDULED

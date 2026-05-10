@@ -361,16 +361,23 @@ export async function updateProfile(userId: string, input: UpdateProfileInput) {
   if (input.firstName) user.firstName = input.firstName;
   if (input.lastName) user.lastName = input.lastName;
   if (input.phone) user.phone = input.phone;
-  if (input.address !== undefined) user.address = input.address;
-  if (input.savedAddresses !== undefined || input.addressData !== undefined) {
-    const savedAddresses = normalizeSavedAddresses(input.savedAddresses, input.addressData || (user as any).addressData);
-    if (user.roles.includes(Role.CUSTOMER) && savedAddresses.length === 0) {
-      throw AppError.badRequest('Customer profile must keep at least one pinned saved address.', ErrorCode.VALIDATION_ERROR);
+  
+  // Only allow address updates for CUSTOMER role
+  if (user.roles.includes(Role.CUSTOMER)) {
+    if (input.address !== undefined) user.address = input.address;
+    if (input.savedAddresses !== undefined || input.addressData !== undefined) {
+      const savedAddresses = normalizeSavedAddresses(input.savedAddresses, input.addressData || (user as any).addressData);
+      if (savedAddresses.length === 0) {
+        throw AppError.badRequest('Customer profile must keep at least one pinned saved address.', ErrorCode.VALIDATION_ERROR);
+      }
+      (user as any).savedAddresses = savedAddresses;
+      const defaultAddress = getDefaultSavedAddress(savedAddresses, input.addressData || (user as any).addressData);
+      (user as any).addressData = defaultAddress;
+      if (defaultAddress?.formattedAddress) user.address = defaultAddress.formattedAddress;
     }
-    (user as any).savedAddresses = savedAddresses;
-    const defaultAddress = getDefaultSavedAddress(savedAddresses, input.addressData || (user as any).addressData);
-    (user as any).addressData = defaultAddress;
-    if (defaultAddress?.formattedAddress) user.address = defaultAddress.formattedAddress;
+  } else {
+    // For internal staff, silently ignore address submissions (backward compatibility)
+    // Address fields are not allowed for non-customer roles
   }
   if (input.notificationPreferences) {
     user.notificationPreferences = {

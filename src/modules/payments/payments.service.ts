@@ -926,7 +926,7 @@ export async function handleStagePaymongoPayment(checkoutSessionId: string) {
   });
   appendPaymentEvidenceVersion(payment, {
     source: 'paymongo_checkout_webhook',
-    note: 'Proof captured from PayMongo webhook, pending cashier verification',
+    note: 'Payment captured from PayMongo webhook, pending cashier verification',
   });
   await payment.save();
 
@@ -948,7 +948,7 @@ export async function handleStagePaymongoPayment(checkoutSessionId: string) {
   await createAndSendNotification(
     project.customerId,
     NotificationCategory.PAYMENT,
-    'Payment Received — Awaiting Verification',
+    'Payment Received — Awaiting Cashier Verification',
     `Your QRPH payment of ${formatCurrency(amountPaid)} for "${project.title}" — ${stage.label} has been received and is awaiting cashier verification.`,
     buildProjectPaymentsLink(project._id.toString(), plan.projectItemId?.toString()),
   );
@@ -957,7 +957,7 @@ export async function handleStagePaymongoPayment(checkoutSessionId: string) {
   await notifyRole(
     Role.CASHIER,
     NotificationCategory.PAYMENT,
-    'QR Payment Awaiting Verification',
+    'QR Payment Awaiting Cashier Verification',
     `QRPH payment of ${formatCurrency(amountPaid)} for "${project.title}" — ${stage.label} needs verification.`,
     `/cashier-queue`,
   );
@@ -1014,7 +1014,7 @@ export async function simulateStagePayment(
   });
   appendPaymentEvidenceVersion(payment, {
     source: 'simulated_checkout',
-    note: 'Simulated proof capture for testing',
+    note: 'Simulated payment capture for testing',
     actorId,
   });
   await payment.save();
