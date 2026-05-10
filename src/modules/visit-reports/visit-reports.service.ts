@@ -291,19 +291,9 @@ async function ensureAppointmentServiceTypeReports(
     }
   }
 
-  const requestedServiceTypeSet = new Set(requestedServiceTypes);
-  for (let index = existingReports.length - 1; index >= 0; index -= 1) {
-    const report = existingReports[index];
-    if (
-      requestedServiceTypes.length > 0
-      && !requestedServiceTypeSet.has(report.serviceType)
-      && [VisitReportStatus.DRAFT, VisitReportStatus.RETURNED].includes(report.status)
-      && isEmptyDraftReport(report)
-    ) {
-      await VisitReport.deleteOne({ _id: report._id });
-      existingReports.splice(index, 1);
-    }
-  }
+  // Keep manually added report items even when they are not part of the original
+  // appointment service list. This prevents add-item regressions where new
+  // selections (e.g. Gates/Fences) disappear on the next sync/refetch.
 
   const existingServiceTypes = new Set(existingReports.map((report) => report.serviceType));
   const missingServiceTypes = requestedServiceTypes.filter((serviceType) => !existingServiceTypes.has(serviceType));
@@ -1297,13 +1287,6 @@ export async function getByAppointment(appointmentId: string) {
   const appointment = await Appointment.findById(appointmentId)
     .select('customerId salesStaffId type serviceTypes serviceTypeCustom customerSiteDetails')
     .lean();
-  const requestedServiceTypes = appointment
-    ? getInitialReportServiceTypes(
-      appointment.customerSiteDetails,
-      appointment.serviceTypes,
-      appointment.serviceTypes?.[0],
-    )
-    : [];
 
   if (appointment?.salesStaffId) {
     await ensureAppointmentServiceTypeReports(
@@ -1318,12 +1301,7 @@ export async function getByAppointment(appointmentId: string) {
     );
   }
 
-  const reportFilter: Record<string, unknown> = { appointmentId };
-  if (requestedServiceTypes.length > 0) {
-    reportFilter.serviceType = { $in: requestedServiceTypes };
-  }
-
-  const reports = await VisitReport.find(reportFilter)
+  const reports = await VisitReport.find({ appointmentId })
     .populate('customerId', 'firstName lastName email phone')
     .populate('salesStaffId', 'firstName lastName email')
     .populate('appointmentId', 'date slotCode type customerAddress attendanceStatus actualArrivalAt consultationStartedAt consultationCompletedAt attendanceNotes attendanceUpdatedAt')

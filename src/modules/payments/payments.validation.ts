@@ -1,10 +1,12 @@
 import { z } from 'zod';
 import { PaymentMethod } from '../../utils/constants.js';
 
+const MAX_PAYMENT_AMOUNT = 999_999_999; // disallow billions/trillions
+
 export const createPaymentPlanSchema = z.object({
   projectId: z.string().min(1),
   projectItemId: z.string().min(1).optional(),
-  totalAmount: z.number().positive(),
+  totalAmount: z.number().positive().max(MAX_PAYMENT_AMOUNT),
   stages: z.array(z.object({
     percentage: z.number().positive().max(100),
     qrCodeKey: z.string().optional(),
@@ -18,7 +20,7 @@ export const createPaymentPlanSchema = z.object({
 });
 
 export const updatePaymentPlanSchema = z.object({
-  totalAmount: z.number().positive().optional(),
+  totalAmount: z.number().positive().max(MAX_PAYMENT_AMOUNT).optional(),
   stages: z.array(z.object({
     percentage: z.number().positive().max(100),
     qrCodeKey: z.string().optional(),
@@ -28,7 +30,7 @@ export const updatePaymentPlanSchema = z.object({
 export const submitPaymentProofSchema = z.object({
   stageId: z.string().min(1),
   method: z.nativeEnum(PaymentMethod),
-  amountPaid: z.number().positive(),
+  amountPaid: z.number().positive().max(MAX_PAYMENT_AMOUNT),
   referenceNumber: z.string().max(100).trim().optional(),
   proofKey: z.string().min(1),
 });
@@ -44,7 +46,7 @@ export const declinePaymentSchema = z.object({
 
 export const recordCashPaymentSchema = z.object({
   stageId: z.string().min(1),
-  amountPaid: z.number().positive(),
+  amountPaid: z.number().positive().max(MAX_PAYMENT_AMOUNT),
 });
 
 export type CreatePaymentPlanInput = z.infer<typeof createPaymentPlanSchema>;

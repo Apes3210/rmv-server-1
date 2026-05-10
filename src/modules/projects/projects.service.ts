@@ -316,6 +316,8 @@ async function syncProjectItemFromReport(project: any, report: any) {
         preferredDesign: report.preferredDesign,
         customerRequirements: report.customerRequirements,
         notes: report.notes,
+        selectedDesignTemplateId: report.selectedDesignTemplateId,
+        selectedDesignTemplateName: report.selectedDesignTemplateName,
         mediaKeys,
         ...(report.visitType === 'ocular'
           ? { ocularVisitReportId: report._id }

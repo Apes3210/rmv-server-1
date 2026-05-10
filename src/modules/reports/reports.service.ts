@@ -334,6 +334,8 @@ export async function acknowledgeLifecycleMismatchHotspot(
 
 // ── Revenue Report (Admin + Cashier) ──
 
+const MAX_REPORTABLE_PAYMENT_AMOUNT = 999_999_999;
+
 export async function getRevenueReport(query: {
   dateFrom?: string;
   dateTo?: string;
@@ -341,6 +343,7 @@ export async function getRevenueReport(query: {
 }) {
   const filter: Record<string, unknown> = {
     status: PaymentStageStatus.VERIFIED,
+    amountPaid: { $lte: MAX_REPORTABLE_PAYMENT_AMOUNT },
   };
 
   if (query.dateFrom || query.dateTo) {
@@ -712,7 +715,7 @@ export async function getDashboardSummary(userId?: string, userRoles?: string[])
         ? Payment.countDocuments({ status: PaymentStageStatus.PROOF_SUBMITTED, projectId: { $in: customerProjectIds } }).exec()
         : Payment.countDocuments({ status: PaymentStageStatus.PROOF_SUBMITTED }).exec(),
       Payment.aggregate([
-        { $match: { status: PaymentStageStatus.VERIFIED, verifiedAt: { $gte: monthStart } } },
+        { $match: { status: PaymentStageStatus.VERIFIED, verifiedAt: { $gte: monthStart }, amountPaid: { $lte: MAX_REPORTABLE_PAYMENT_AMOUNT } } },
         { $group: { _id: null, total: { $sum: '$amountPaid' } } },
       ]).exec(),
       Appointment.countDocuments({

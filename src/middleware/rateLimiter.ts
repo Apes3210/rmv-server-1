@@ -4,7 +4,7 @@ import rateLimit from 'express-rate-limit';
  * Rate limiters:
  * - Login: 15/min
  * - OTP: 5/min
- * - API: 100/min per user
+ * - API: 300/min for mutating API calls
  * - Signed URL: 30/min
  */
 
@@ -38,7 +38,8 @@ export const otpLimiter = rateLimit({
 
 export const apiLimiter = rateLimit({
   windowMs: 60 * 1000,
-  max: 100,
+  max: 300,
+  skip: (req) => ['GET', 'HEAD', 'OPTIONS'].includes(req.method),
   standardHeaders: true,
   legacyHeaders: false,
   message: {

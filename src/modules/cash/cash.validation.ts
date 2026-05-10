@@ -1,14 +1,16 @@
 import { z } from 'zod';
 
+const MAX_CASH_AMOUNT = 999_999_999; // disallow billions/trillions
+
 export const recordCashCollectionSchema = z.object({
   appointmentId: z.string().min(1),
-  amountCollected: z.number().positive(),
+  amountCollected: z.number().positive().max(MAX_CASH_AMOUNT),
   notes: z.string().max(500).trim().optional(),
   photoKey: z.string().optional(),
 });
 
 export const receiveCashSchema = z.object({
-  amountReceived: z.number().min(0),
+  amountReceived: z.number().min(0).max(MAX_CASH_AMOUNT),
 });
 
 export const resolveDiscrepancySchema = z.object({

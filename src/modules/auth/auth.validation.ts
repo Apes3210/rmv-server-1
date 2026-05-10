@@ -13,9 +13,9 @@ const pinnedAddressSchema = z.object({
   zip: z.string().max(10).trim().optional().or(z.literal('')),
   country: z.string().max(50).trim().optional().or(z.literal('')),
   addressType: z.enum(['personal', 'business']).optional(),
-  lat: z.number(),
-  lng: z.number(),
-  formattedAddress: z.string().min(1, 'Pinned map address is required').max(500).trim(),
+  lat: z.number().optional(),
+  lng: z.number().optional(),
+  formattedAddress: z.string().max(500).trim().optional().or(z.literal('')),
   isDefault: z.boolean().optional(),
 });
 
@@ -31,7 +31,7 @@ export const registerSchema = z.object({
   firstName: z.string().min(1).max(50).regex(nameRegex, 'Name contains invalid characters').trim(),
   lastName: z.string().min(1).max(50).regex(nameRegex, 'Name contains invalid characters').trim(),
   phone: z.string().regex(phoneRegex, 'Must be a valid PH mobile number (09XXXXXXXXX)').transform(v => v.startsWith('09') ? '+63' + v.slice(1) : v),
-  addressData: pinnedAddressSchema,
+  addressData: pinnedAddressSchema.optional(),
 });
 
 export const verifyEmailSchema = z.object({

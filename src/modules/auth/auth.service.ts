@@ -157,9 +157,8 @@ async function verifyOtp(email: string, otp: string, purpose: OtpPurpose): Promi
 
 export async function register(input: RegisterInput, ip?: string, ua?: string) {
   const { email, password, firstName, lastName, phone, addressData } = input;
-  requirePinnedAddress(addressData);
-  const defaultAddress = normalizeUserAddress({ ...addressData, isDefault: true }, 'Primary address');
-  const savedAddresses = normalizeSavedAddresses([defaultAddress], defaultAddress);
+  const defaultAddress = addressData ? normalizeUserAddress({ ...addressData, isDefault: true }, 'Primary address') : null;
+  const savedAddresses = defaultAddress ? normalizeSavedAddresses([defaultAddress], defaultAddress) : [];
 
   // Check existing
   const existing = await User.findOne({ email });
@@ -180,8 +179,8 @@ export async function register(input: RegisterInput, ip?: string, ua?: string) {
     firstName,
     lastName,
     phone,
-    address: defaultAddress.formattedAddress,
-    addressData: defaultAddress,
+    address: defaultAddress?.formattedAddress,
+    addressData: defaultAddress || undefined,
     savedAddresses,
     roles: [Role.CUSTOMER],
     isEmailVerified: false,

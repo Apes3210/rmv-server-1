@@ -582,7 +582,7 @@ export async function listPendingPayments(query: {
   const page = parseInt(query.page || '1');
   const limit = Math.min(parseInt(query.limit || '20'), 100);
 
-  const [payments, total] = await Promise.all([
+  const [payments] = await Promise.all([
     Payment.find({ status: PaymentStageStatus.PROOF_SUBMITTED })
       .populate({
         path: 'projectId',
@@ -591,11 +591,48 @@ export async function listPendingPayments(query: {
       })
       .sort({ createdAt: 1 })
       .skip((page - 1) * limit)
-      .limit(limit),
-    Payment.countDocuments({ status: PaymentStageStatus.PROOF_SUBMITTED }),
+      .limit(limit)
+      .lean(),
   ]);
 
-  return payments;
+  const missingProjectIds = Array.from(
+    new Set(
+      payments
+        .filter((payment: any) => !payment?.projectId || typeof payment.projectId !== 'object')
+        .map((payment: any) => String(payment.projectId || ''))
+        .filter(Boolean),
+    ),
+  );
+
+  const fallbackProjects = missingProjectIds.length
+    ? await Project.find({ _id: { $in: missingProjectIds } })
+        .select('title customerId')
+        .populate('customerId', 'firstName lastName')
+        .lean()
+    : [];
+  const fallbackProjectMap = new Map(fallbackProjects.map((project: any) => [String(project._id), project]));
+
+  return payments.map((payment: any) => {
+    const populatedProject =
+      payment?.projectId && typeof payment.projectId === 'object'
+        ? payment.projectId
+        : fallbackProjectMap.get(String(payment.projectId || ''));
+    const customer =
+      populatedProject?.customerId && typeof populatedProject.customerId === 'object'
+        ? populatedProject.customerId
+        : null;
+
+    const customerName = customer
+      ? `${String(customer.firstName || '').trim()} ${String(customer.lastName || '').trim()}`.trim()
+      : 'Unknown Customer';
+    const projectTitle = populatedProject?.title || 'Unknown Project';
+
+    return {
+      ...payment,
+      customerName,
+      projectTitle,
+    };
+  });
 }
 
 // ── Get Payment by ID ──
