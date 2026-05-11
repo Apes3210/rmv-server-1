@@ -266,6 +266,7 @@ async function ensureAppointmentServiceTypeReports(
   serviceTypeOverride?: string,
   serviceTypeCustomOverride?: string,
   linkedProjectId?: Types.ObjectId | string,
+  preferredReportId?: Types.ObjectId | string,
 ) {
   const requestedServiceTypes = getInitialReportServiceTypes(
     customerSiteDetails,
@@ -286,6 +287,7 @@ async function ensureAppointmentServiceTypeReports(
       salesStaffId,
       requestedServiceTypes,
       linkedProjectId,
+      preferredReportId,
     );
   }
 
@@ -510,6 +512,7 @@ async function transitionConsultationReportsToOcularAppointment(
   salesStaffId: Types.ObjectId | string,
   requestedServiceTypes: string[],
   linkedProjectId?: Types.ObjectId | string,
+  preferredReportId?: Types.ObjectId | string,
 ) {
   const serviceTypeFilter = requestedServiceTypes.length > 0
     ? { serviceType: { $in: requestedServiceTypes } }
@@ -561,7 +564,9 @@ async function transitionConsultationReportsToOcularAppointment(
       .filter((report) => report.serviceType === serviceType);
     if (candidates.length === 0) continue;
 
-    const canonical = pickCanonicalLifecycleReport(candidates);
+    const canonical = preferredReportId
+      ? candidates.find((report) => report._id.toString() === preferredReportId.toString()) || pickCanonicalLifecycleReport(candidates)
+      : pickCanonicalLifecycleReport(candidates);
     const duplicates = candidates.filter((report) => report._id.toString() !== canonical._id.toString());
     const conflictFields = new Set<string>();
 
@@ -608,6 +613,7 @@ async function promoteConsultationReportsToOcularAppointment(
   salesStaffId: Types.ObjectId | string,
   requestedServiceTypes: string[],
   linkedProjectId?: Types.ObjectId | string,
+  preferredReportId?: Types.ObjectId | string,
 ) {
   return transitionConsultationReportsToOcularAppointment(
     ocularAppointmentId,
@@ -616,6 +622,7 @@ async function promoteConsultationReportsToOcularAppointment(
     salesStaffId,
     requestedServiceTypes,
     linkedProjectId,
+    preferredReportId,
   );
 }
 
@@ -1215,11 +1222,76 @@ export async function createReport(
 
 // ── Get by ID ──
 
-export async function getVisitReport(reportId: string) {
-  let report = await VisitReport.findById(reportId)
+function populateVisitReportDetail(query: any) {
+  return query
     .populate('customerId', 'firstName lastName email phone')
     .populate('salesStaffId', 'firstName lastName email')
     .populate('appointmentId', 'customerId date slotCode type status customerAddress serviceTypes serviceTypeCustom customerSiteDetails salesStaffId sourceConsultationAppointmentId sourceConsultationReportId attendanceStatus actualArrivalAt consultationStartedAt consultationCompletedAt attendanceNotes attendanceUpdatedAt updatedAt createdAt');
+}
+
+async function findFirstVisitReportForAppointment(appointmentId: string) {
+  return populateVisitReportDetail(
+    VisitReport.findOne({ appointmentId }).sort({ createdAt: 1 }),
+  );
+}
+
+async function resolveVisitReportFromAppointmentId(appointmentId: string) {
+  let report = await findFirstVisitReportForAppointment(appointmentId);
+  if (report) return report;
+
+  const appointment = await Appointment.findById(appointmentId)
+    .select('customerId salesStaffId type serviceTypes serviceTypeCustom customerSiteDetails sourceConsultationAppointmentId');
+
+  if (!appointment?.salesStaffId) return null;
+
+  await ensureAppointmentServiceTypeReports(
+    appointment._id,
+    appointment.customerId,
+    appointment.salesStaffId,
+    appointment.type === AppointmentType.OCULAR ? 'ocular' : 'consultation',
+    appointment.customerSiteDetails,
+    appointment.serviceTypes,
+    appointment.serviceTypes?.[0],
+    appointment.serviceTypeCustom,
+  );
+
+  return findFirstVisitReportForAppointment(appointmentId);
+}
+
+async function resolveVisitReportFromAuditLog(reportId: string) {
+  const replacementLog = await AuditLog.findOne({
+    targetType: 'visit_report',
+    'details.duplicateIdsRemoved': reportId,
+  })
+    .select('targetId details')
+    .sort({ createdAt: -1 })
+    .lean();
+
+  if (replacementLog?.targetId) {
+    const replacementReport = await populateVisitReportDetail(VisitReport.findById(replacementLog.targetId));
+    if (replacementReport) return replacementReport;
+  }
+
+  const creationLog = await AuditLog.findOne({
+    targetType: 'visit_report',
+    targetId: reportId,
+    'details.appointmentId': { $exists: true },
+  })
+    .select('details')
+    .sort({ createdAt: -1 })
+    .lean();
+  const appointmentId = (creationLog?.details as { appointmentId?: unknown } | undefined)?.appointmentId;
+
+  return appointmentId ? findFirstVisitReportForAppointment(String(appointmentId)) : null;
+}
+
+export async function getVisitReport(reportId: string) {
+  let report: any = await populateVisitReportDetail(VisitReport.findById(reportId));
+
+  if (!report) {
+    report = await resolveVisitReportFromAuditLog(reportId)
+      || await resolveVisitReportFromAppointmentId(reportId);
+  }
 
   if (!report) throw AppError.notFound('Visit report not found');
 
@@ -1263,6 +1335,7 @@ export async function getVisitReport(reportId: string) {
       refreshedAppointment.serviceTypes?.[0],
       refreshedAppointment.serviceTypeCustom,
       report.linkedProjectId,
+      report._id,
     );
   }
 
@@ -1868,6 +1941,7 @@ export async function submitReport(
         report.salesStaffId,
         consultationServiceTypes,
         project._id,
+        report._id,
       );
 
       if (appt.status === AppointmentStatus.READY_FOR_OCULAR) {
