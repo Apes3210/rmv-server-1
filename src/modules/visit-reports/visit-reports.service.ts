@@ -67,6 +67,14 @@ function getAddressStructured(address: UserAddressInput) {
   };
 }
 
+function getVisitReportProjectSiteAddress(appt: any, report: any) {
+  return appt.formattedAddress
+    || appt.customerAddress
+    || report.recommendedOcularAddress?.formattedAddress
+    || report.recommendedOcularAddress?.address
+    || '';
+}
+
 async function applyRecommendedOcularAddress(appointment: any, addressInput: UserAddressInput) {
   requirePinnedAddress(addressInput);
   const address = normalizeUserAddress(addressInput, addressInput.label || 'Ocular site');
@@ -961,7 +969,7 @@ async function ensureConsultationDraftProject(
     serviceType: serviceLabel,
     serviceTypes,
     description: report.customerRequirements || report.notes || 'Created from consultation',
-    siteAddress: appt.customerAddress || 'TBD',
+    siteAddress: getVisitReportProjectSiteAddress(appt, report),
     measurements: report.measurements,
     materialType: report.materials,
     finishColor: report.finishes,
@@ -2017,7 +2025,7 @@ export async function submitReport(
           title: titleBase,
           serviceType: serviceLabel,
           description: report.customerRequirements || report.notes || 'Created from visit report',
-          siteAddress: appt.customerAddress || 'TBD',
+          siteAddress: getVisitReportProjectSiteAddress(appt, report),
           measurements: report.measurements,
           materialType: report.materials,
           finishColor: report.finishes,
